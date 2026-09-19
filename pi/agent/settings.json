@@ -1,0 +1,25 @@
+{
+  "lastChangelogVersion": "0.85.1",
+  "theme": "light/dark",
+  "defaultProvider": "opencode",
+  "defaultModel": "muse-spark-1.2-contributor-free",
+  "defaultThinkingLevel": "high",
+  "steeringMode": "all",
+  "hideThinkingBlock": true,
+  "tuiMode": "fullscreen",
+  "packages": [],
+  "terminal": {
+    "showTerminalProgress": true
+  },
+  "markdown": {
+    "mermaid": "streaming"
+  },
+  "collapseChangelog": true,
+  "quietStartup": false,
+  "enabledModels": [
+    "opencode-go/muse-spark-1.3-contributor",
+    "opencode-go/deepseek-v4.1-flash",
+    "opencode-go/mimo-v2.5"
+  ],
+  "fullscreenScrollbar": "always"
+}

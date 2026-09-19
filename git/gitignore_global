@@ -1,0 +1,7 @@
+# Global ignores, wired via [core] excludesFile in git/gitconfig.
+*.pyc
+__pycache__/
+.DS_Store
+node_modules/
+.env
+.venv/
