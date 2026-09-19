@@ -38,7 +38,7 @@ fi
 
 section "pi"
 if ! command -v pi >/dev/null; then
-  [ -z "$CHECK_ONLY" ] && npm install -g @earendil-works/pi-coding-agent
+  echo "TODO: install pi (requires Node, kept outside this env)"
 fi
 mkdir -p "$PI/skills" "$PI/extensions"
 link "$REPO/pi/agent/AGENTS.md" "$PI/AGENTS.md"
