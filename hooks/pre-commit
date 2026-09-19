@@ -1,0 +1,4 @@
+#!/bin/sh
+# Block commits while live state hasn't been synced into the repo.
+# Enabled via: git config core.hooksPath "$PWD/hooks"
+"$(dirname "$0")/../sync.sh" --check

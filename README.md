@@ -26,13 +26,15 @@ verification checklist.
   tmux config. Bash only, by choice.
 - `git/` — gitconfig (noreply identity, LFS, gh credential helper, global
   ignores, `main` default) + global ignores.
-- `pi/` — AGENTS.md, settings, keybindings, all skills, all extensions, and
-  a vendored snapshot of pi-subagents (re-snapshot from GitHub to update).
-  `settings.json` is the one file copied rather than symlinked: bootstrap
-  injects the machine-local package path.
+- `pi/` — AGENTS.md, settings, keybindings, all skills, all extensions.
+  Everything is symlinked live, so the repo is always the source of truth.
 - `apt-requirements.txt` — system packages. Python only by choice: no
   nvm/cargo/Go here.
 - `bootstrap.sh` — the whole setup, re-runnable.
+- `sync.sh` — the other direction: pulls live state into the repo.
+  Run `./sync.sh` before every commit. `./sync.sh --check` reports drift
+  without writing; wire it as a pre-commit hook to never forget:
+  `git config core.hooksPath "$PWD/hooks"`.
 
 ## Out of scope on purpose
 

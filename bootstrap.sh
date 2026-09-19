@@ -6,8 +6,11 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="$HOME/.pi/agent"
 CHECK_ONLY="${1:-}"
 
-link() { # link <source> <dest>: symlink file/dir, creating parents
+link() { # link <source> <dest>: symlink file/dir, creating parents.
+  # A real (non-symlink) directory at dest is removed first: repo content
+  # originates from live, so this only ever discards a stale duplicate.
   mkdir -p "$(dirname "$2")"
+  if [ -d "$2" ] && [ ! -L "$2" ]; then rm -rf "$2"; fi
   ln -sfn "$1" "$2"
 }
 
@@ -43,17 +46,9 @@ fi
 mkdir -p "$PI/skills" "$PI/extensions"
 link "$REPO/pi/agent/AGENTS.md" "$PI/AGENTS.md"
 link "$REPO/pi/agent/keybindings.json" "$PI/keybindings.json"
+link "$REPO/pi/agent/settings.json" "$PI/settings.json"
 for s in "$REPO"/pi/agent/skills/*/; do link "$s" "$PI/skills/$(basename "$s")"; done
 for e in "$REPO"/pi/agent/extensions/*; do link "$e" "$PI/extensions/$(basename "$e")"; done
-# settings.json is copied (not linked): the packages path is machine-local.
-python3 - "$REPO/pi/agent/settings.json" "$PI/settings.json" \
-  "$REPO/pi/packages/pi-subagents" <<'EOF'
-import json, sys
-repo_settings, live_settings, package = sys.argv[1], sys.argv[2], sys.argv[3]
-settings = json.load(open(repo_settings))
-settings["packages"] = [package]
-json.dump(settings, open(live_settings, "w"), indent=2)
-EOF
 
 section "verify"
 command -v git gh rg tmux python3 pi >/dev/null && echo "tools present"
