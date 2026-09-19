@@ -24,8 +24,9 @@ fi
 
 section "shell"
 LOADER="for f in \"$REPO\"/shell/bashrc.d/*.sh; do . \"\$f\"; done"
-grep -qF 'shell/bashrc.d/*.sh' "$HOME/.bashrc" 2>/dev/null \
-  || echo "$LOADER" >> "$HOME/.bashrc"
+if ! grep -qF 'shell/bashrc.d/*.sh' "$HOME/.bashrc" 2>/dev/null; then
+  echo "$LOADER" >> "$HOME/.bashrc"
+fi
 link "$REPO/shell/tmux.conf" "$HOME/.tmux.conf"
 
 section "git"
@@ -33,10 +34,11 @@ link "$REPO/git/gitconfig" "$HOME/.gitconfig"
 link "$REPO/git/gitignore_global" "$HOME/.gitignore_global"
 
 section "ssh"
-if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
-  [ -z "$CHECK_ONLY" ] && ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
-  echo "Add this key to GitHub:"
-  cat "$HOME/.ssh/id_ed25519.pub"
+if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ -z "$CHECK_ONLY" ]; then
+  ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
+fi
+if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
+  echo "Add this key to GitHub:"; cat "$HOME/.ssh/id_ed25519.pub"
 fi
 
 section "pi"
@@ -47,13 +49,32 @@ mkdir -p "$PI/skills" "$PI/extensions"
 link "$REPO/pi/agent/AGENTS.md" "$PI/AGENTS.md"
 link "$REPO/pi/agent/keybindings.json" "$PI/keybindings.json"
 link "$REPO/pi/agent/settings.json" "$PI/settings.json"
-for s in "$REPO"/pi/agent/skills/*/; do link "$s" "$PI/skills/$(basename "$s")"; done
-for e in "$REPO"/pi/agent/extensions/*; do link "$e" "$PI/extensions/$(basename "$e")"; done
+link_area() { # link_area <repo-dir> <live-dir>: link every repo entry live.
+  # Live real files/dirs are never touched (unadopted work?): sync.sh owns
+  # that direction. Stale live symlinks (gone from repo) are pruned.
+  for src in "$1"/*; do
+    [ -e "$src" ] || continue
+    dst="$2/$(basename "$src")"
+    if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+      echo "KEEP: $dst is real, not linked — run ./sync.sh first"
+      continue
+    fi
+    link "$src" "$dst"
+  done
+  for dst in "$2"/*; do
+    { [ -e "$dst" ] || [ -L "$dst" ]; } || continue
+    if [ ! -e "$1/$(basename "$dst")" ]; then
+      if [ -L "$dst" ]; then echo "PRUNE: stale link $dst"; rm "$dst";
+      else echo "UNADOPTED: $dst — run ./sync.sh to adopt it"; fi
+    fi
+  done
+}
+for s in skills extensions; do link_area "$REPO/pi/agent/$s" "$PI/$s"; done
 
 section "verify"
-command -v git gh rg tmux python3 pi >/dev/null && echo "tools present"
-test -L "$HOME/.gitconfig" && echo "gitconfig linked"
-test -f "$HOME/.ssh/id_ed25519" && echo "ssh key present"
+if command -v git >/dev/null && command -v gh >/dev/null && command -v rg >/dev/null && command -v tmux >/dev/null && command -v python3 >/dev/null && command -v pi >/dev/null; then echo "tools present"; fi
+if [ -L "$HOME/.gitconfig" ]; then echo "gitconfig linked"; fi
+if [ -f "$HOME/.ssh/id_ed25519" ]; then echo "ssh key present"; fi
 gh auth status >/dev/null 2>&1 && echo "gh authed" || echo "TODO: gh auth login"
 test -f "$PI/auth.json" && echo "pi authed" || echo "TODO: pi auth"
 echo "DONE"

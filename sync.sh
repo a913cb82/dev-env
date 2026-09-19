@@ -13,23 +13,23 @@ CHECK="${1:-}"
 drift() { echo "DRIFT: $1"; DIRTY=1; }
 note() { [ -n "$CHECK" ] || echo "=== $1"; }
 DIRTY=0
-
 copy_dir() { # copy_dir <live> <repo>: exact mirror minus git/node debris
   if [ -n "$CHECK" ]; then
     diff -r -x .git -x node_modules "$1" "$2" >/dev/null 2>&1 || drift "$1"
     return
   fi
-  [ -d "$2/node_modules" ] && mv "$2/node_modules" /tmp/sync-keep-nm
+  if [ -d "$2/node_modules" ]; then mv "$2/node_modules" /tmp/sync-keep-nm; fi
   rm -rf "$2"
   cp -r "$1" "$2"
   rm -rf "$2/.git" "$2/node_modules"
-  [ -d /tmp/sync-keep-nm ] && mv /tmp/sync-keep-nm "$2/node_modules"
+  if [ -d /tmp/sync-keep-nm ]; then mv /tmp/sync-keep-nm "$2/node_modules"; fi
 }
 
 in_repo() { [[ "$(readlink -f "$1")" == "$REPO"* ]]; }
 
 note "pi files"
 for f in AGENTS.md keybindings.json settings.json; do
+  if [ -L "$PI/$f" ] && in_repo "$PI/$f"; then continue; fi
   if [ -n "$CHECK" ]; then
     cmp -s "$PI/$f" "$REPO/pi/agent/$f" || drift "$f"
   else
@@ -64,5 +64,5 @@ for area in skills extensions; do
   fi
 done
 
-[ -z "$CHECK" ] && echo DONE
-[ -n "$CHECK" ] && exit "$DIRTY"
+if [ -n "$CHECK" ]; then exit "$DIRTY"; fi
+echo DONE
