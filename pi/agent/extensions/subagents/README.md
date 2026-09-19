@@ -168,6 +168,10 @@ While subagents are outstanding, a passive footer lists them, indented by depth:
 
 A child disappears the moment its result is read by its direct parent — delivered on the next tool result, in the idle batch, or by `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
 
+## Registry maintenance
+
+Run records accumulate in `~/.pi/agent/subagents/runs/`. On every session start the extension prunes delivered terminal records older than 14 days (always keeping the newest 50), plus their marker sidecars and orphan markers. Running children, queued work, and undelivered results are never pruned. Hot paths (footer ticks, tool results, waits) share one mtime-guarded scan per registry state instead of re-reading every file, so steady-state overhead is a single directory stat.
+
 ## Development
 
 The extension is plain TypeScript loaded directly by Pi. The regression suite uses a local fake Pi child and makes no API calls:

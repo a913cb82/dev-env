@@ -1,8 +1,14 @@
 import { resolve } from "node:path";
-import { descendantsOf, isTerminalStatus, readRecords } from "./registry.ts";
+import { descendantsOf, getCachedRecords, isTerminalStatus } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
-const DEFAULT_POLL_MS = 250;
+/** Default registry re-read interval for cross-process change detection.
+ * Same-process changes wake via notifyWaiters instantly; the poll covers child
+ * processes writing their own records. Kept at 250ms for explicit waits
+ * (check_subagents wait:true collects cross-process finishes): each poll is
+ * now a ~microsecond cache check plus tree walk instead of a full rescan,
+ * so responsiveness no longer costs churn. */
+export const DEFAULT_POLL_MS = 250;
 
 export interface WaitUntilIdleOptions {
 	timeoutMs: number;
@@ -27,7 +33,7 @@ function dirKey(agentDir: string): string {
 }
 
 function snapshotDescendants(agentDir: string, parentRunId: string): AgentRecord[] {
-	return descendantsOf(readRecords(agentDir), parentRunId);
+	return descendantsOf(getCachedRecords(agentDir), parentRunId);
 }
 
 /** Build the predicate over a (optionally targeted) selection of descendants. */

@@ -1,10 +1,13 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
-import { descendantsOf, isTerminalStatus, readRecords, relativeDepths } from "./registry.ts";
+import { descendantsOf, getCachedRecords, isTerminalStatus, relativeDepths } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
-/** How often the live activity line is refreshed. */
-const POLL_MS = 500;
+/** How often the live activity line is refreshed. 2s: the line is passive
+ * status, and every tick runs on the TUI thread (select/copy stutter if hot).
+ * Freshness is exact anyway: registry writes bump the runs-dir mtime, which
+ * the shared record cache checks on every tick. */
+export const POLL_MS = 2000;
 
 function statusIcon(record: AgentRecord): string {
 	switch (record.status) {
@@ -59,7 +62,7 @@ export class SubagentStatusWidget implements Component {
 
 	/** Outstanding descendants: not yet read by their direct parent. */
 	private outstanding(): AgentRecord[] {
-		return descendantsOf(readRecords(this.agentDir), this.currentRunId).filter(
+		return descendantsOf(getCachedRecords(this.agentDir), this.currentRunId).filter(
 			(record) => !(isTerminalStatus(record.status) && record.resultsDelivered),
 		);
 	}

@@ -164,16 +164,19 @@ export function clearRecordClosedMarker(agentDir: string, runId: string): void {
 	rmSync(markerPath(agentDir, runId, "closed"), { force: true });
 }
 
-function sleepSync(ms: number): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function sleepAsync(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function randomToken(): string {
 	return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-/** Serialize the launch/cancel decision for one run across Pi processes. */
-export function withRecordLock<T>(agentDir: string, runId: string, operation: () => T): T {
+/** Serialize the launch/cancel decision for one run across Pi processes.
+ * Async: waiting contenders yield the event loop (5ms naps) instead of
+ * spin-blocking it, so TUI input, timers and I/O keep flowing while a lock
+ * is held. mkdir remains the atomic arbiter; semantics are unchanged. */
+export async function withRecordLock<T>(agentDir: string, runId: string, operation: () => T | Promise<T>): Promise<T> {
 	const dir = registryDir(agentDir);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const lock = join(dir, `${safeRunId(runId)}.lock`);
@@ -213,11 +216,11 @@ export function withRecordLock<T>(agentDir: string, runId: string, operation: ()
 				continue;
 			}
 			if (Date.now() >= deadline) throw new Error(`Timed out waiting for subagent record lock: ${runId}`);
-			sleepSync(5);
+			await sleepAsync(5);
 		}
 	}
 	try {
-		return operation();
+		return await operation();
 	} finally {
 		try {
 			if (readFileSync(join(lock, "owner"), "utf8").trim() === token) {
@@ -283,6 +286,182 @@ export function readRecords(agentDir: string): AgentRecord[] {
 		}
 	}
 	return records;
+}
+
+/** Mtime-guarded shared record cache (perf).
+ *
+ * Pure-read hot paths (widget ticks, tool_result, wait polls, delivery) share
+ * one scan per registry state instead of re-reading hundreds of files each.
+ * Invalidation is exact, not timed: every registry mutation in this codebase
+ * (saveRecord, markers, locks, prune deletes) goes through an atomic
+ * rename/create/delete inside the runs dir, which bumps its mtime.
+ *
+ * The returned array is shared: callers must treat it as frozen (filter/map
+ * freely, never mutate in place). Write paths (spawn/cancel/resume/publish)
+ * keep using readRecords directly.
+ */
+interface RecordCacheEntry {
+	mtimeMs: number;
+	records: AgentRecord[];
+}
+const recordCache = new Map<string, RecordCacheEntry>();
+let recordCacheHits = 0;
+let recordCacheMisses = 0;
+
+function registryMtimeMs(agentDir: string): number {
+	try {
+		return statSync(registryDir(agentDir)).mtimeMs;
+	} catch {
+		return -1;
+	}
+}
+
+export function getCachedRecords(agentDir: string): AgentRecord[] {
+	const mtimeMs = registryMtimeMs(agentDir);
+	const hit = recordCache.get(agentDir);
+	if (hit && hit.mtimeMs === mtimeMs) {
+		recordCacheHits++;
+		return refreshLiveness(hit.records);
+	}
+	recordCacheMisses++;
+	const records = readRecords(agentDir);
+	recordCache.set(agentDir, { mtimeMs, records });
+	return refreshLiveness(records);
+}
+
+/** Drop cached scans: one directory, or the whole cache when omitted. */
+export function invalidateRecordCache(agentDir?: string): void {
+	if (agentDir === undefined) recordCache.clear();
+	else recordCache.delete(agentDir);
+}
+
+/** Test/observability helper: cache size and hit/miss totals. */
+export function recordCacheDebug(): { entries: number; hits: number; misses: number } {
+	return { entries: recordCache.size, hits: recordCacheHits, misses: recordCacheMisses };
+}
+
+/**
+ * Re-derive volatile liveness on every access. File state (records, markers)
+ * is covered by the mtime guard, but process death is invisible to mtime:
+ * a crashed child must read as failed on the very next access, not only
+ * after some unrelated registry write. Kill-probes are ~microseconds and
+ * only run for non-terminal records holding a pid (usually none or few).
+ * Returns the same reference when nothing flipped.
+ */
+function refreshLiveness(records: AgentRecord[]): AgentRecord[] {
+	let changed = false;
+	const out = records.map((record) => {
+		if (TERMINAL.has(record.status) || !record.pid || isProcessAlive(record.pid)) return record;
+		changed = true;
+		return {
+			...record,
+			status: "failed" as AgentRecord["status"],
+			activity: "process exited unexpectedly",
+			error: record.error ?? "Subagent process is no longer running",
+		};
+	});
+	return changed ? out : records;
+}
+
+export interface PruneOptions {
+	/** Delete delivered terminal records older than this. Default 14 days. */
+	olderThanMs?: number;
+	/** Always keep this many newest candidates. Default 50. */
+	keepMinimum?: number;
+	/** Clock override (tests). Default Date.now(). */
+	now?: number;
+}
+
+export interface PruneResult {
+	pruned: string[];
+	kept: number;
+}
+
+const DEFAULT_PRUNE_OLDER_THAN_MS = 14 * 24 * 3600 * 1000;
+const DEFAULT_PRUNE_KEEP_MINIMUM = 50;
+
+/** Known sidecar suffixes prunable alongside a record. Locks (.lock dirs)
+ * and in-flight atomic writes (.tmp-) are never touched. */
+function isPrunableSidecar(name: string): boolean {
+	if (name.includes(".tmp-")) return false;
+	return (
+		name.endsWith(".cancelled") ||
+		name.endsWith(".closed") ||
+		name.endsWith(".resultsDelivered") ||
+		name.endsWith(".footerDismissed")
+	);
+}
+
+function recordAgeStamp(record: AgentRecord): number {
+	const stamp = Date.parse(record.finishedAt ?? record.updatedAt);
+	// Unparseable timestamps sort newest: never prune what we cannot age.
+	return Number.isFinite(stamp) ? stamp : Number.MAX_SAFE_INTEGER;
+}
+
+/**
+ * Bound runs-dir growth: delete delivered terminal records older than
+ * `olderThanMs`, always keeping the newest `keepMinimum` candidates.
+ * Only terminal records whose result was already delivered to the parent
+ * are eligible — running children, queued work, and undelivered results
+ * (terminal or not) are never touched. Sidecars of pruned runs and orphan
+ * sidecars (markers whose record JSON is already gone) go with them.
+ * Best-effort: never throws for I/O races (concurrent child writes).
+ */
+export function pruneRecords(agentDir: string, options: PruneOptions = {}): PruneResult {
+	const olderThanMs = options.olderThanMs ?? DEFAULT_PRUNE_OLDER_THAN_MS;
+	const keepMinimum = Math.max(0, options.keepMinimum ?? DEFAULT_PRUNE_KEEP_MINIMUM);
+	const now = options.now ?? Date.now();
+	let records: AgentRecord[];
+	try {
+		records = getCachedRecords(agentDir);
+	} catch {
+		return { pruned: [], kept: 0 };
+	}
+	const candidates = records
+		.filter((record) => isTerminalStatus(record.status) && record.resultsDelivered === true)
+		.sort((a, b) => recordAgeStamp(a) - recordAgeStamp(b));
+	const keepFrom = Math.max(0, candidates.length - keepMinimum);
+	const doomed = candidates
+		.slice(0, keepFrom)
+		.filter((record) => now - recordAgeStamp(record) > olderThanMs);
+	const dir = registryDir(agentDir);
+	let entries: string[];
+	try {
+		entries = readdirSync(dir);
+	} catch {
+		return { pruned: [], kept: candidates.length };
+	}
+	const liveJson = new Set(
+		entries.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)),
+	);
+	const removeFile = (name: string) => {
+		try {
+			const target = join(dir, name);
+		if (statSync(target).isDirectory()) return;
+		rmSync(target, { force: true });
+		} catch {
+			// Concurrent writer (child settle, lock recovery) won the race.
+		}
+	};
+	for (const record of doomed) {
+		const prefix = `${safeRunId(record.runId)}.`;
+		for (const name of entries) {
+			if (name === `${prefix.slice(0, -1)}.json` || (name.startsWith(prefix) && isPrunableSidecar(name))) {
+				removeFile(name);
+			liveJson.delete(name.slice(0, -5));
+		}
+		}
+	}
+	// Orphan sweep: sidecars whose record JSON is absent (crash leftovers).
+	for (const name of entries) {
+		if (!isPrunableSidecar(name)) continue;
+		const owner = name.endsWith(".resultsDelivered")
+			? name.split(".").slice(0, -2).join(".")
+			: name.split(".").slice(0, -1).join(".");
+		if (!liveJson.has(owner)) removeFile(name);
+	}
+	if (doomed.length > 0) invalidateRecordCache(agentDir);
+	return { pruned: doomed.map((record) => record.runId), kept: candidates.length - doomed.length };
 }
 
 export function descendantsOf(records: readonly AgentRecord[], parentRunId: string): AgentRecord[] {

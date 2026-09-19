@@ -9,7 +9,7 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
-import { isProcessAlive, isTerminalStatus, markRecordResultState, readRecords } from "./registry.ts";
+import { getCachedRecords, isProcessAlive, isTerminalStatus, markRecordResultState, pruneRecords } from "./registry.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
@@ -110,7 +110,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		`### ${record.name} — ${record.status}${meta ? `\n${meta}` : ""}\n\n${resultBody(record)}`;
 	/** Re-read a record so send/cancel decisions use the latest on-disk state. */
 	const latestRecord = (record: AgentRecord): AgentRecord =>
-		readRecords(getAgentDir()).find((item) => item.runId === record.runId) ?? record;
+		getCachedRecords(getAgentDir()).find((item) => item.runId === record.runId) ?? record;
 	const rememberDelivered = (records: AgentRecord[]) => {
 		for (const record of records) {
 			deliveredResults.add(resultKey(record));
@@ -138,7 +138,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	/** Hold the event loop open while background children run (matters for print-mode parents). */
 	const refreshKeepAlive = () => {
 		if (!runtime || shuttingDown) return;
-		const pending = readRecords(getAgentDir()).some(
+		const pending = getCachedRecords(getAgentDir()).some(
 			(record) => record.parentRunId === runtime!.runId && !isTerminalStatus(record.status),
 		);
 		if (pending && !keepAlive) {
@@ -174,7 +174,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		// Tool results drain the inbox during a run; agent_settled wakes it at idle.
 		if (!runtime || shuttingDown || delivering || deliveryPaused || agentActive || isIdle?.() === false) return;
 		const agentDir = getAgentDir();
-		const children = readRecords(agentDir).filter((record) => record.parentRunId === runtime!.runId);
+		const children = getCachedRecords(agentDir).filter((record) => record.parentRunId === runtime!.runId);
 		const pending = undelivered(children);
 		if (pending.length === 0) return;
 		const stillRunning = children.filter((record) => !isTerminalStatus(record.status)).length;
@@ -234,7 +234,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		const details = event.details as Record<string, unknown> | undefined;
 		const previousKeys = Array.isArray(details?.resultKeys) ? details.resultKeys : [];
 		const agentDir = getAgentDir();
-		const records = readRecords(agentDir);
+		const records = getCachedRecords(agentDir);
 		const pending = undelivered(records.filter((record) => record.parentRunId === runtime!.runId));
 		// Flush unreported descendant spend as usage on this tool result, whatever
 		// the tool was. Independent of pending reports: running children accrue
@@ -274,6 +274,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		deliveredResults.clear();
 		restoreReceipts(ctx.sessionManager.getBranch?.() ?? []);
 		restoreCostFloor(costFloor, ctx.sessionManager);
+		try {
+			// Best-effort rotation of delivered terminal records; keeps every
+			// registry scan (widget, tool_result, waits) proportional to live work.
+			pruneRecords(getAgentDir());
+		} catch {
+			// Rotation must never break session startup.
+		}
 		const runId = process.env.PI_SUBAGENT_RUN_ID || ctx.sessionManager.getSessionId();
 		const rootRunId = process.env.PI_SUBAGENT_ROOT_ID || runId;
 		try {
@@ -326,7 +333,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
 	const resolveRecord = (target: string): AgentRecord => {
 		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
-		const rows = descendantsOf(readRecords(getAgentDir()), runtime.runId);
+		const rows = descendantsOf(getCachedRecords(getAgentDir()), runtime.runId);
 		return resolveAgentRecord(rows, target);
 	};
 
@@ -414,13 +421,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		// stragglers plus the await for still-running turns.
 		if (!runtime) return;
 		const agentDir = getAgentDir();
-		const records = descendantsOf(readRecords(agentDir), runtime.runId);
+		const records = descendantsOf(getCachedRecords(agentDir), runtime.runId);
 		for (const record of records.slice().reverse()) {
 			try {
 				if (isTerminalStatus(record.status)) {
 					if (record.pid && isProcessAlive(record.pid)) killPidTree(record.pid, record.pidStartTime);
 				} else {
-					cancelSubagent(agentDir, record);
+					await cancelSubagent(agentDir, record);
 				}
 			} catch {
 				// Cross-process cleanup is best effort. Owned children are awaited below.
@@ -513,10 +520,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			// of this session (unknown or ambiguous targets fail before waiting).
 			const requested = params.targets && params.targets.length > 0 ? params.targets : undefined;
 			const targetIds = requested
-				? new Set(requested.map((target) => resolveAgentRecord(descendantsOf(readRecords(agentDir), runtime!.runId), target).runId))
+				? new Set(requested.map((target) => resolveAgentRecord(descendantsOf(getCachedRecords(agentDir), runtime!.runId), target).runId))
 				: undefined;
 			const snapshot = () => {
-				const rows = descendantsOf(readRecords(agentDir), runtime!.runId);
+				const rows = descendantsOf(getCachedRecords(agentDir), runtime!.runId);
 				return targetIds ? rows.filter((record) => targetIds.has(record.runId)) : rows;
 			};
 			if (params.wait) {
@@ -599,7 +606,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			if (isTerminalStatus(record.status)) {
 				return { content: [{ type: "text", text: `${record.name} already finished (${record.status}).` }], details: { record } };
 			}
-			const cancelled = cancelSubagent(agentDir, record);
+			const cancelled = await cancelSubagent(agentDir, record);
 			trackChild(cancelled);
 			return { content: [{ type: "text", text: `Cancelled ${cancelled.name}.` }], details: { record: cancelled } };
 		},

@@ -424,14 +424,14 @@ function ownChild(runId: string, child: ChildProcessWithoutNullStreams): OwnedCh
  * The child process is always stopped so no idle pi process lingers; a later
  * message resumes the session via a fresh process from the saved transcript.
  * Session shutdown still reaps everything via terminateOwnedSubagents. */
-export function cancelSubagent(agentDir: string, record: AgentRecord): AgentRecord {
-	const cancelOne = (item: AgentRecord): AgentRecord => {
+export async function cancelSubagent(agentDir: string, record: AgentRecord): Promise<AgentRecord> {
+	const cancelOne = async (item: AgentRecord): Promise<AgentRecord> => {
 		let updated!: AgentRecord;
 		let live: LiveChild | undefined;
 		let owned: OwnedChild | undefined;
 		let pid: number | undefined;
 		let pidStartTime: string | undefined;
-		withRecordLock(agentDir, item.runId, () => {
+		await withRecordLock(agentDir, item.runId, () => {
 			const latest = readRecords(agentDir).find((candidate) => candidate.runId === item.runId) ?? item;
 			const now = new Date().toISOString();
 			updated = saveRecord(agentDir, {
@@ -455,7 +455,7 @@ export function cancelSubagent(agentDir: string, record: AgentRecord): AgentReco
 		return updated;
 	};
 	for (const child of descendantsOf(readRecords(agentDir), record.runId).reverse()) {
-		if (!isTerminalStatus(child.status)) cancelOne(child);
+		if (!isTerminalStatus(child.status)) await cancelOne(child);
 	}
 	return cancelOne(record);
 }
@@ -609,7 +609,7 @@ export async function resumeSubagent(
 	// Reap any lingering process before a new writer opens the same session.
 	await terminateOwnedSubagents([record.runId]);
 	let reset!: AgentRecord;
-	withRecordLock(context.agentDir, record.runId, () => {
+	await withRecordLock(context.agentDir, record.runId, () => {
 		const current = readRecords(context.agentDir).find((candidate) => candidate.runId === record.runId) ?? latest;
 		if (!isTerminalStatus(current.status)) throw new Error(`${current.name} is still running`);
 		clearRecordCancellation(context.agentDir, record.runId);
@@ -759,7 +759,7 @@ async function runSubagentProcess(
 		);
 
 		let child: ChildProcessWithoutNullStreams | undefined;
-		withRecordLock(context.agentDir, record.runId, () => {
+		await withRecordLock(context.agentDir, record.runId, () => {
 			if (diskCancelled()) return;
 			// Re-resolve immediately before spawn so a swapped symlink cannot keep --approve.
 			record.cwd = ensureDirectory(record.cwd);

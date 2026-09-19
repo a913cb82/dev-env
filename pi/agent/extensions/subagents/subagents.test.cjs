@@ -17,6 +17,18 @@ fs.renameSync = (from, to) => {
 	return realRenameSync(from, to);
 };
 
+// Registry scan counter for perf tests. Installed before jiti imports node:fs
+// (same capture reason as above): counts readdirSync calls on one runs dir.
+// The registry performs exactly one readdir per full scan, so this observes
+// scan frequency without timing flakiness.
+let countReaddirFor = null;
+let readdirScanCount = 0;
+const realReaddirSync = fs.readdirSync;
+fs.readdirSync = function (...args) {
+	if (countReaddirFor !== null && String(args[0]) === countReaddirFor) readdirScanCount++;
+	return realReaddirSync.apply(this, args);
+};
+
 function findPiRoot() {
 	const bin = execSync("command -v pi", { encoding: "utf8" }).trim();
 	const real = fs.realpathSync(bin);
@@ -56,7 +68,7 @@ function check(name, cond, extra) {
 	const spawn = await jiti.import(path.join(HERE, "spawn-agent.ts"));
 	const wait = await jiti.import(path.join(HERE, "wait.ts"));
 	const cost = await jiti.import(path.join(HERE, "cost.ts"));
-	const { SubagentStatusWidget } = await jiti.import(path.join(HERE, "widget.ts"));
+	const { SubagentStatusWidget, POLL_MS } = await jiti.import(path.join(HERE, "widget.ts"));
 	const { default: subagentsExtension } = await jiti.import(path.join(HERE, "index.ts"));
 
 	// --- config ---
@@ -180,6 +192,103 @@ function check(name, cond, extra) {
 	check("descendants order", JSON.stringify(desc) === JSON.stringify(["child1", "grand", "child2"]), desc.join(","));
 	const depths = registry.relativeDepths(all, "root");
 	check("relative depths", depths.get("child1") === 0 && depths.get("grand") === 1, JSON.stringify([...depths]));
+
+	// --- record cache (perf: mtime-guarded shared scan) ---
+	check("record cache API exists", typeof registry.getCachedRecords === "function" && typeof registry.invalidateRecordCache === "function" && typeof registry.recordCacheDebug === "function");
+	if (typeof registry.getCachedRecords === "function") {
+		const cacheDir = path.join(sandbox, "cache");
+		registry.saveRecord(cacheDir, mk("c1", "root"));
+		const first = registry.getCachedRecords(cacheDir);
+		const second = registry.getCachedRecords(cacheDir);
+		check("cache returns identical records when unchanged", first === second && first.length === 1, String(first.length));
+		registry.saveRecord(cacheDir, mk("c2", "root"));
+		const third = registry.getCachedRecords(cacheDir);
+		check("cache re-reads after a registry write", third !== first && third.length === 2, String(third.length));
+		const otherDir = path.join(sandbox, "cache-other");
+		registry.saveRecord(otherDir, mk("o1", "root"));
+		check("cache is isolated per directory", registry.getCachedRecords(otherDir).length === 1 && registry.getCachedRecords(cacheDir).length === 2);
+		registry.invalidateRecordCache(cacheDir);
+		const fourth = registry.getCachedRecords(cacheDir);
+		check("explicit invalidate forces a re-read", fourth !== third && fourth.length === 2);
+		const missing = registry.getCachedRecords(path.join(sandbox, "cache-missing-xyz"));
+		check("cache matches readRecords on a missing dir", Array.isArray(missing) && missing.length === 0);
+		const dbg0 = registry.recordCacheDebug();
+		registry.getCachedRecords(cacheDir);
+		registry.getCachedRecords(cacheDir);
+		const dbg1 = registry.recordCacheDebug();
+		check("cache debug counts hits without misses", dbg1.hits === dbg0.hits + 2 && dbg1.misses === dbg0.misses, JSON.stringify({ dbg0, dbg1 }));
+		registry.markRecordResultState(cacheDir, third.find((r) => r.runId === "c1"), "resultsDelivered");
+		const fifth = registry.getCachedRecords(cacheDir);
+		check("marker writes invalidate the cache", fifth !== fourth && fifth.find((r) => r.runId === "c1").resultsDelivered === true);
+		// Process death is invisible to mtime: the cache must re-derive it.
+		const liveDir = path.join(sandbox, "cache-liveness");
+		const sleeper = spawnProcess("sleep", ["30"], { stdio: "ignore" });
+		try {
+			registry.saveRecord(liveDir, mk("live-pid", "root", { status: "thinking", pid: sleeper.pid }));
+			const alive = registry.getCachedRecords(liveDir);
+			check("live pid reads as thinking", alive.find((r) => r.runId === "live-pid").status === "thinking");
+			sleeper.kill("SIGKILL");
+			await new Promise((resolveWait) => sleeper.once("close", resolveWait));
+			const ghost = registry.getCachedRecords(liveDir).find((r) => r.runId === "live-pid");
+			check("cached records re-derive death without a registry write", ghost && ghost.status === "failed", ghost && ghost.status);
+		} finally {
+			try { sleeper.kill("SIGKILL"); } catch { /* already reaped */ }
+		}
+	}
+
+	// --- registry prune (perf: bound unbounded runs-dir growth) ---
+	check("prune API exists", typeof registry.pruneRecords === "function");
+	if (typeof registry.pruneRecords === "function") {
+		const pruneDir = path.join(sandbox, "prune");
+		const oldStamp = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+		const freshStamp = new Date().toISOString();
+		const delivered = { resultsDelivered: true };
+		for (const id of ["old-1", "old-2", "old-3"]) {
+			registry.saveRecord(pruneDir, mk(id, "root", { status: "completed", ...delivered, updatedAt: oldStamp, finishedAt: oldStamp }));
+			registry.markRecordResultState(pruneDir, { runId: id }, "resultsDelivered");
+			const full = registry.readRecords(pruneDir).find((r) => r.runId === id);
+			registry.clearRecordPid(pruneDir, full);
+		}
+		registry.saveRecord(pruneDir, mk("recent", "root", { status: "completed", ...delivered, updatedAt: freshStamp, finishedAt: freshStamp }));
+		registry.saveRecord(pruneDir, mk("undelivered", "root", { status: "completed", updatedAt: oldStamp, finishedAt: oldStamp }));
+		registry.saveRecord(pruneDir, mk("running", "root", { status: "running_tool", updatedAt: oldStamp }));
+		const runsFiles = () => fs.readdirSync(registry.registryDir(pruneDir));
+		const before = runsFiles();
+		check("prune fixture has sidecars", before.some((f) => f.endsWith(".resultsDelivered")) && before.some((f) => f.endsWith(".closed")), before.join(","));
+		const res = registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 1, now: Date.now() });
+		check("prune removes old delivered terminal records", ["old-1", "old-2", "old-3"].every((id) => res.pruned.includes(id)) && res.pruned.length === 3, JSON.stringify(res));
+		const remaining = registry.readRecords(pruneDir).map((r) => r.runId).sort();
+		check("prune keeps recent, undelivered and running", JSON.stringify(remaining) === JSON.stringify(["recent", "running", "undelivered"]), remaining.join(","));
+		const after = runsFiles();
+		check("prune removes sidecars of pruned runs", !after.some((f) => f.startsWith("old-")), after.join(","));
+		check("prune with empty options keeps everything young", registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 10, now: Date.now() }).pruned.length === 0);
+		// keepMinimum protects even ancient records when nothing is young.
+		const res2 = registry.pruneRecords(pruneDir, { olderThanMs: 0, keepMinimum: 2, now: Date.now() });
+		check("keepMinimum retains newest candidates", res2.pruned.length === 0 && res2.kept === 1, JSON.stringify(res2));
+	}
+
+	// --- async record lock (perf: lock wait must not freeze the event loop) ---
+	check("record lock is async", registry.withRecordLock.constructor.name === "AsyncFunction", registry.withRecordLock.constructor.name);
+	{
+		const lockDir = path.join(sandbox, "lock-async");
+		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+		const holder = registry.withRecordLock(lockDir, "run-1", async () => { await sleep(300); return "held"; });
+		await sleep(20); // let the holder take the lock
+		let beats = 0;
+		const heart = setInterval(() => { beats++; }, 10);
+		const waiter = await registry.withRecordLock(lockDir, "run-1", () => "waiter");
+		clearInterval(heart);
+		const held = await holder;
+		check("lock wait does not freeze the event loop", beats >= 3, `beats=${beats}`);
+		check("contended lock still hands off", waiter === "waiter" && held === "held", `${waiter}/${held}`);
+		check("sync operations still work", (await registry.withRecordLock(lockDir, "run-1", () => 42)) === 42);
+		const order = [];
+		await Promise.all([
+			registry.withRecordLock(lockDir, "run-2", async () => { order.push("a-start"); await sleep(50); order.push("a-end"); }),
+			registry.withRecordLock(lockDir, "run-2", async () => { order.push("b-start"); await sleep(10); order.push("b-end"); }),
+		]);
+		check("async lock serializes critical sections", JSON.stringify(order) === JSON.stringify(["a-start", "a-end", "b-start", "b-end"]), order.join(","));
+	}
 
 	// --- actionable run IDs ---
 	const targetA = mk("12345678-aaaa-4000-8000-000000000001", "root", { name: "review", sessionId: "session-a" });
@@ -409,6 +518,54 @@ function check(name, cond, extra) {
 		}
 	}
 
+	// --- tool_result serves steady state from the record cache (perf) ---
+	// Ungated behavioral test: passes only when the handler avoids registry
+	// scans while nothing changed (scan counting via the pre-import hook).
+	{
+		const dir = path.join(sandbox, "cache-hook");
+		const hookHandlers = new Map();
+		const prevHookDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = dir;
+		try {
+			subagentsExtension({
+				registerFlag: () => {},
+				on: (event, handler) => hookHandlers.set(event, handler),
+				registerMessageRenderer: () => {},
+				registerCommand: () => {},
+				registerTool: () => {},
+				getFlag: () => undefined,
+				sendMessage: () => {},
+				sendUserMessage: () => {},
+			});
+			await hookHandlers.get("session_start")({}, {
+				sessionManager: { getSessionId: () => "cache-parent", getEntries: () => [], getBranch: () => [] },
+				cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false,
+			});
+			const hookEvent = { toolName: "read", content: [{ type: "text", text: "out" }] };
+			// Ensure the runs dir exists before priming so dir creation itself
+			// does not count as a registry mutation inside the window below.
+			fs.mkdirSync(path.join(dir, "subagents", "runs"), { recursive: true });
+			check("childless tool result emits nothing", hookHandlers.get("tool_result")(hookEvent, {}) === undefined);
+			countReaddirFor = path.join(dir, "subagents", "runs");
+			readdirScanCount = 0;
+			try {
+				check("steady-state tool result emits nothing", hookHandlers.get("tool_result")(hookEvent, {}) === undefined);
+			} finally {
+				countReaddirFor = null;
+			}
+			check("steady-state tool result performs no registry scan", readdirScanCount === 0, `scans=${readdirScanCount}`);
+			// A registry write must invalidate: new child spend still flushes.
+			registry.saveRecord(dir, { ...mk("cache-kid", "cache-parent", { rootRunId: "cache-parent", status: "thinking" }), usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: 0.001 } });
+			const flushed = hookHandlers.get("tool_result")(hookEvent, {});
+			check("post-write tool result still flushes child spend", flushed && flushed.usage && flushed.usage.input === 10 && !("content" in flushed), JSON.stringify(flushed && flushed.usage));
+			check("no replay after cached flush", hookHandlers.get("tool_result")(hookEvent, {}) === undefined);
+		} finally {
+			await hookHandlers.get("session_shutdown")?.({}, { mode: "rpc" });
+			if (prevHookDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = prevHookDir;
+		}
+	}
+
 	// --- execution-scoped parent state (including legacy records) ---
 	{
 		const dir = path.join(sandbox, "result-state");
@@ -462,6 +619,29 @@ function check(name, cond, extra) {
 		const started = Date.now();
 		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000 });
 		check("wait returns immediately when all terminal", rows.length === 1 && Date.now() - started < 200, String(Date.now() - started));
+	}
+
+	// --- wait default poll interval (perf: polls must stay cheap, not rare) ---
+	// Explicit waits need a responsive default (cross-process finishes), so the
+	// interval stays 250ms; the shared record cache is what makes each poll
+	// cheap. This guards that composition: ~2s pending must cost few scans.
+	check("default wait poll interval is 250ms", wait.DEFAULT_POLL_MS === 250, String(wait.DEFAULT_POLL_MS));
+
+	{
+		// Behavioral: a pending wait with no in-process notify polls via the
+		// default interval, but every poll must be a cache hit, not a rescan.
+		// 2100ms at 250ms polls ~= 11 polls; total directory scans must stay
+		// at the pre-checks + final snapshot (~3). Scan counting via hook.
+		const dir = waitCase("poll-rate");
+		waitRecord(dir, "parent", "live", "thinking");
+		countReaddirFor = path.join(dir, "subagents", "runs");
+		readdirScanCount = 0;
+		try {
+			await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 2100 });
+		} finally {
+			countReaddirFor = null;
+		}
+		check("pending wait polls from cache without rescanning", readdirScanCount <= 3, `scans=${readdirScanCount}`);
 	}
 
 	{
@@ -884,7 +1064,7 @@ function check(name, cond, extra) {
 	registry.saveRecord(agentDir2, mk("child1", "root", { status: "thinking" }));
 	registry.saveRecord(agentDir2, mk("grand", "child1", { status: "running_tool" }));
 	const child1StaleWriter = registry.readRecords(agentDir2).find((r) => r.runId === "child1");
-	spawn.cancelSubagent(agentDir2, child1StaleWriter);
+	await spawn.cancelSubagent(agentDir2, child1StaleWriter);
 	const cancelledTree = registry.readRecords(agentDir2);
 	check("cancelling parent cancels descendants", ["child1", "grand"].every((id) => cancelledTree.find((r) => r.runId === id)?.status === "cancelled"));
 	fs.writeFileSync(
@@ -1004,6 +1184,29 @@ function check(name, cond, extra) {
 	const nested = widget.render(100);
 	check("widget nests grandchildren", nested.some((l) => l.includes("a1")) && nested.some((l) => l.includes("b")), nested.join(" | "));
 	widget.dispose();
+
+	// Widget refresh must not rescan the registry when nothing changed (perf:
+	// the 500ms... now 2000ms tick runs on the TUI thread during select/copy).
+	check("widget poll interval is 2000ms", POLL_MS === 2000, String(POLL_MS));
+	{
+		const dir = path.join(sandbox, "widget-cache");
+		registry.saveRecord(dir, mk("w1", "wroot", { status: "running_tool", currentTool: "bash x" }));
+		const countingTui = { requestRender: () => {} };
+		const cached = new SubagentStatusWidget(countingTui, theme, dir, "wroot");
+		check("widget shows running child", cached.render(100).some((l) => l.includes("w1")));
+		countReaddirFor = path.join(dir, "subagents", "runs");
+		readdirScanCount = 0;
+		try {
+			cached.refresh();
+		} finally {
+			countReaddirFor = null;
+		}
+		check("unchanged widget refresh performs no registry scan", readdirScanCount === 0, `scans=${readdirScanCount}`);
+		registry.saveRecord(dir, mk("w2", "wroot", { status: "thinking" }));
+		cached.refresh();
+		check("widget picks up new children after refresh", cached.render(100).some((l) => l.includes("w2")), cached.render(100).join(" | "));
+		cached.dispose();
+	}
 
 	// --- async spawn: returns immediately, settles in background, auto-cancels ---
 	const fakePi = path.join(HERE, "fake-pi.cjs");
@@ -1417,7 +1620,7 @@ function check(name, cond, extra) {
 		if (slowRow && ["thinking", "running_tool", "idle", "completed"].includes(slowRow.status)) break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
-	const cancelled = spawn.cancelSubagent(spawnAgentDir, slowRec);
+	const cancelled = await spawn.cancelSubagent(spawnAgentDir, slowRec);
 	check("cancel marks cancelled", cancelled.status === "cancelled", cancelled.status);
 	let cancelledRow;
 	for (let i = 0; i < 100; i++) {
@@ -1484,7 +1687,7 @@ function check(name, cond, extra) {
 		await waitSleep(10);
 	}
 	check("resume waits as queued while the slot is held", contQueued, contRowOf()?.status);
-	spawn.cancelSubagent(spawnAgentDir, contRowOf());
+	await spawn.cancelSubagent(spawnAgentDir, contRowOf());
 	let contFinal;
 	for (let i = 0; i < 200; i++) {
 		contFinal = contRowOf();
@@ -1567,7 +1770,7 @@ function check(name, cond, extra) {
 		{ task: "must not launch", name: "cancelled-queued" },
 		{ ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 } },
 	);
-	spawn.cancelSubagent(spawnAgentDir, cancelledQueued);
+	await spawn.cancelSubagent(spawnAgentDir, cancelledQueued);
 	let queuedCancelDrained = false;
 	await Promise.race([
 		spawn.terminateOwnedSubagents([cancelledQueued.runId]).then(() => { queuedCancelDrained = true; }),
@@ -1582,7 +1785,7 @@ function check(name, cond, extra) {
 	process.env.FAKE_DELAY_MS = "4000";
 	const raceRec = await spawn.startSubagent({ task: "race", name: "racer" }, baseCtx());
 	await new Promise((r) => setTimeout(r, 300));
-	spawn.cancelSubagent(spawnAgentDir, raceRec);
+	await spawn.cancelSubagent(spawnAgentDir, raceRec);
 	let raceFinal;
 	for (let i = 0; i < 80; i++) {
 		raceFinal = registry.readRecords(spawnAgentDir).find((r) => r.runId === raceRec.runId);
