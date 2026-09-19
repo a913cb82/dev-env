@@ -13,7 +13,7 @@ cd ~/dev-env && ./bootstrap.sh
 ## What you get
 
 **System tools.** `bootstrap.sh` installs git, gh, tmux, ripgrep, curl,
-jq, Python 3 with pip. No Node, no Rust, no Go. Python is sufficient.
+jq, Python 3 with pip.
 
 **Shell.** Bash reads two new files at startup. `10-env.sh` adds
 `~/.local/bin` to PATH. `20-aliases.sh` adds `ll`, `gs`, `gp`.
@@ -44,8 +44,8 @@ opencode provider, fullscreen UI, and high thinking level.
 Live files are symlinks into this repo. Edits sync automatically.
 Only new or deleted skills/extensions can drift. Two commands fix that.
 
-Receive: `git pull`, then `./bootstrap.sh`. It links new repo files,
-prunes stale links, and never touches real live files.
+Receive: `git pull`, then `./bootstrap.sh`. It links new repo files
+and prunes stale links.
 
 Send: `./sync.sh`, then commit and push. It adopts new live files and
 reports deletions. The pre-commit hook blocks unsynced commits. Enable it:
@@ -56,9 +56,5 @@ git config core.hooksPath "$PWD/hooks"
 
 ## Manual steps
 
-`bootstrap.sh` ends with a checklist. It never stores credentials.
-Complete `gh auth login`, pi auth, and GitHub ssh key setup by hand.
-
-## Out of scope
-
-No VS Code settings, no credentials, no caches, nothing project-specific.
+`bootstrap.sh` ends with a checklist. Complete `gh auth login`, pi
+auth, and GitHub ssh key setup by hand.
