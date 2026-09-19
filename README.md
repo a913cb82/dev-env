@@ -1,6 +1,6 @@
 # dev-env
 
-Full dev environment in a repo. New machine (WSL2 Ubuntu) to working setup:
+Reproduce this dev environment on any WSL2 Ubuntu machine:
 
 ```sh
 sudo apt-get update && sudo apt-get install -y git gh
@@ -9,48 +9,30 @@ git clone git@github.com:a913cb82/dev-env.git ~/dev-env
 cd ~/dev-env && ./bootstrap.sh
 ```
 
-## The two flows (the core of this repo)
+## Sync
 
-Everything in `~/.pi/agent` is a symlink into this repo, so file *content*
-is always in sync in both directions — editing a skill edits the repo file
-directly. The only thing that can drift is the file *set* (new or deleted
-skills/extensions). The two scripts cover exactly that:
+Live files are symlinks into this repo. Edits sync automatically.
+Only new or deleted skills/extensions can drift. Two commands fix that.
 
-**Pull (repo → machine): `./bootstrap.sh`**
-Links every repo entry live. Safe by construction: live real files are never
-touched (reported as KEEP/UNADOPTED instead), stale live symlinks are pruned.
-Re-run after every `git pull`.
+Receive: `git pull`, then `./bootstrap.sh`. It links new repo files,
+prunes stale links, and never touches real live files.
 
-**Push (machine → live): `./sync.sh`**
-Adopts new live skills/extensions into the repo (and re-links them),
-refreshes changed files. Deletions are reported, never applied. Run before
-every commit — `hooks/pre-commit` enforces it (enabled via
-`git config core.hooksPath "$PWD/hooks"`).
+Send: `./sync.sh`, then commit and push. It adopts new live files and
+reports deletions. The pre-commit hook blocks unsynced commits. Enable it:
 
-So: pull + bootstrap to receive, sync + commit + push to send. Content never
-needs syncing; structure syncs through these two commands.
+```sh
+git config core.hooksPath "$PWD/hooks"
+```
 
-## Manual steps (never automated, never stored here)
+## Manual steps
 
-- `gh auth login` (if the verify step nags)
-- pi auth (if the verify step nags)
-- Add `~/.ssh/id_ed25519.pub` to GitHub (printed by bootstrap on first run)
+`bootstrap.sh` ends with a checklist. It never stores credentials.
+Complete `gh auth login`, pi auth, and GitHub ssh key setup by hand.
 
-## Layout
+## Contents
 
-- `shell/` — bash snippets sourced from stock `.bashrc` (one appended line),
-  tmux config. Bash only, general tooling only.
-- `git/` — gitconfig (noreply identity, gh credential helper, global
-  ignores, `main` default) + global ignores.
-- `pi/` — AGENTS.md, settings, keybindings, all skills, all extensions.
-- `apt-requirements.txt` — system packages. Python only by choice: no
-  nvm/cargo/Go here.
-- `bootstrap.sh` / `sync.sh` / `hooks/` — above.
+`shell/` (bash snippets, tmux), `git/` (gitconfig, global ignores),
+`pi/` (AGENTS.md, settings, keybindings, skills, extensions),
+`apt-requirements.txt` (system packages, Python only).
 
-## Out of scope on purpose
-
-No VS Code settings, no credentials of any kind (`.aws`, `.kaggle`,
-`auth.json`, private keys), no caches or shell history, nothing
-project-specific.
-
-Tested with pi 0.85.1 on Ubuntu 24.04 (WSL2).
+No VS Code settings, no credentials, no caches, nothing project-specific.
