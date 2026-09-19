@@ -153,6 +153,8 @@ All fields are optional. Defaults are `maxDepth: 2` and `maxConcurrency: 4`.
 - `maxDepth` — maximum recursive depth. The root is depth `0`; `maxDepth: 0` disables spawning. Descendants inherit the root limit and may only tighten it.
 - `maxConcurrency` — number of children allowed to run at once per creating session. Use `-1` for unlimited or a positive integer for a limit; extra children queue automatically. Resuming a finished child waits for the creator's slot; steering a running child does not require another slot.
 - `rpcMaxLineChars` — defensive limit per child stdout JSONL record, default `67108864` (64 Mi UTF-16 code units, including an optional trailing CR but excluding LF). Must be a positive safe integer; there is no unlimited mode.
+- `pruneDeliveredAfterDays` (default `14`) / `pruneDeliveredKeep` (default `50`) — rotation for delivered terminal runs: older than N days go, newest K are always kept.
+- `pruneUndeliveredAfterDays` (default `30`, `0` disables) / `pruneUndeliveredKeep` (default `500`, `0` disables) — rotation for terminal runs whose result was never collected. A terminal result older than the threshold has no live claimant left, so reaping it is safe. The count cap only takes runs older than 7 days, so a burst of fresh uncollected results is never trimmed.
 
 The `--subagent-depth N` Pi flag overrides configured depth for the tree; descendants inherit that override rather than reapplying file limits. Without a flag override, explicit global or trusted-project depth settings may tighten the inherited limit. Built-in defaults never tighten an inherited limit. An explicit descendant `--subagent-depth N` may also tighten the limit and overrides file limits for its subtree. No descendant can raise an inherited limit.
 
@@ -170,7 +172,7 @@ A child disappears the moment its result is read by its direct parent — delive
 
 ## Registry maintenance
 
-Run records accumulate in `~/.pi/agent/subagents/runs/`. On every session start the extension prunes delivered terminal records older than 14 days (always keeping the newest 50), plus their marker sidecars and orphan markers. Running children, queued work, and undelivered results are never pruned. Hot paths (footer ticks, tool results, waits) share one mtime-guarded scan per registry state instead of re-reading every file, so steady-state overhead is a single directory stat.
+Run records accumulate in `~/.pi/agent/subagents/runs/`. On every session start the extension prunes terminal runs: delivered ones older than `pruneDeliveredAfterDays` (default 14, always keeping the newest `pruneDeliveredKeep`, default 50), and undelivered ones older than `pruneUndeliveredAfterDays` (default 30, `0` disables) or beyond the newest `pruneUndeliveredKeep` (default 500, `0` disables; the cap never takes runs younger than 7 days). Running children, queued work, and young undelivered results are never pruned. Marker sidecars of pruned runs — and orphan markers whose record is already gone — go with them. Hot paths (footer ticks, tool results, waits) share one mtime-guarded scan per registry state instead of re-reading every file, so steady-state overhead is a single directory stat.
 
 ## Development
 

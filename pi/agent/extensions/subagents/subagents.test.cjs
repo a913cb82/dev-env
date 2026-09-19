@@ -156,6 +156,28 @@ function check(name, cond, extra) {
 	check("concurrency -1 kept", s.maxConcurrency === -1, s.maxConcurrency);
 	check("depth 100 kept (no cap)", s.maxDepth === 100, s.maxDepth);
 
+	// --- prune settings ---
+	const pruneDefaults = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} });
+	check("prune delivered defaults", pruneDefaults.pruneDeliveredAfterDays === 14 && pruneDefaults.pruneDeliveredKeep === 50, JSON.stringify(pruneDefaults));
+	check("prune undelivered defaults", pruneDefaults.pruneUndeliveredAfterDays === 30 && pruneDefaults.pruneUndeliveredKeep === 500, JSON.stringify(pruneDefaults));
+	for (const [label, bad] of [["negative delivered days", { pruneDeliveredAfterDays: -1 }], ["negative undelivered days", { pruneUndeliveredAfterDays: -1 }], ["negative delivered keep", { pruneDeliveredKeep: -1 }], ["negative undelivered keep", { pruneUndeliveredKeep: -1 }], ["fractional keep", { pruneUndeliveredKeep: 1.5 }], ["NaN days", { pruneUndeliveredAfterDays: NaN }]]) {
+		fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify(bad));
+		let threw = false;
+		try { config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} }); } catch { threw = true; }
+		check(`invalid ${label} throws`, threw);
+	}
+	fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ pruneUndeliveredAfterDays: 0, pruneUndeliveredKeep: 7 }));
+	s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} });
+	check("zero undelivered days disables age reap", s.pruneUndeliveredAfterDays === 0, s.pruneUndeliveredAfterDays);
+	check("custom undelivered keep loads", s.pruneUndeliveredKeep === 7, s.pruneUndeliveredKeep);
+	check("project prune settings untouched by global", s.pruneDeliveredAfterDays === 14, s.pruneDeliveredAfterDays);
+	fs.writeFileSync(path.join(sandbox, ".pi", "subagents.json"), JSON.stringify({ pruneUndeliveredAfterDays: 60 }));
+	s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: true, env: {} });
+	check("trusted project overrides prune days", s.pruneUndeliveredAfterDays === 60, s.pruneUndeliveredAfterDays);
+	check("untrusted project prune ignored", config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} }).pruneUndeliveredAfterDays === 0);
+	fs.writeFileSync(path.join(agentDir, "subagents.json"), "{}");
+	fs.writeFileSync(path.join(sandbox, ".pi", "subagents.json"), JSON.stringify({ maxDepth: 1 }));
+
 	for (const [label, bad] of [["depth -1", { maxDepth: -1 }], ["depth 1.5", { maxDepth: 1.5 }], ["concurrency 0", { maxConcurrency: 0 }], ["concurrency -2", { maxConcurrency: -2 }], ["bad thinking", { defaultThinking: "ultra" }]]) {
 		fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify(bad));
 		let threw = false;
@@ -255,16 +277,51 @@ function check(name, cond, extra) {
 		const runsFiles = () => fs.readdirSync(registry.registryDir(pruneDir));
 		const before = runsFiles();
 		check("prune fixture has sidecars", before.some((f) => f.endsWith(".resultsDelivered")) && before.some((f) => f.endsWith(".closed")), before.join(","));
-		const res = registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 1, now: Date.now() });
+		const res = registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 1, undeliveredAfterMs: 90 * 24 * 3600 * 1000, undeliveredKeep: 500, now: Date.now() });
 		check("prune removes old delivered terminal records", ["old-1", "old-2", "old-3"].every((id) => res.pruned.includes(id)) && res.pruned.length === 3, JSON.stringify(res));
 		const remaining = registry.readRecords(pruneDir).map((r) => r.runId).sort();
 		check("prune keeps recent, undelivered and running", JSON.stringify(remaining) === JSON.stringify(["recent", "running", "undelivered"]), remaining.join(","));
 		const after = runsFiles();
 		check("prune removes sidecars of pruned runs", !after.some((f) => f.startsWith("old-")), after.join(","));
-		check("prune with empty options keeps everything young", registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 10, now: Date.now() }).pruned.length === 0);
+		check("prune with empty options keeps everything young", registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 10, undeliveredAfterMs: 90 * 24 * 3600 * 1000, undeliveredKeep: 500, now: Date.now() }).pruned.length === 0);
 		// keepMinimum protects even ancient records when nothing is young.
-		const res2 = registry.pruneRecords(pruneDir, { olderThanMs: 0, keepMinimum: 2, now: Date.now() });
-		check("keepMinimum retains newest candidates", res2.pruned.length === 0 && res2.kept === 1, JSON.stringify(res2));
+		// kept counts both delivered and undelivered retained (recent + undelivered).
+		const res2 = registry.pruneRecords(pruneDir, { olderThanMs: 0, keepMinimum: 2, undeliveredAfterMs: 90 * 24 * 3600 * 1000, undeliveredKeep: 500, now: Date.now() });
+		check("keepMinimum retains newest candidates", res2.pruned.length === 0 && res2.kept === 2, JSON.stringify(res2));
+	}
+	// --- undelivered reap: age threshold, count cap, youth guard ---
+	{
+		const day = 24 * 3600 * 1000;
+		const t0 = Date.now();
+		const stamp = (daysAgo) => new Date(t0 - daysAgo * day).toISOString();
+		const udir = path.join(sandbox, "prune-undelivered");
+		for (const [id, age] of [["u-old-1", 60], ["u-old-2", 45], ["u-old-3", 31]]) {
+			registry.saveRecord(udir, mk(id, "root", { status: "completed", updatedAt: stamp(age), finishedAt: stamp(age) }));
+		}
+		registry.saveRecord(udir, mk("u-new", "root", { status: "completed", updatedAt: stamp(1), finishedAt: stamp(1) }));
+		registry.saveRecord(udir, mk("d-old", "root", { status: "completed", resultsDelivered: true, updatedAt: stamp(60), finishedAt: stamp(60) }));
+		const r1 = registry.pruneRecords(udir, { olderThanMs: 14 * day, keepMinimum: 0, undeliveredAfterMs: 30 * day, undeliveredKeep: 500, now: t0 });
+		check("undelivered older than threshold reaped", ["u-old-1", "u-old-2", "u-old-3", "d-old"].every((id) => r1.pruned.includes(id)) && r1.pruned.length === 4, JSON.stringify(r1));
+		check("recent undelivered kept", registry.readRecords(udir).some((r) => r.runId === "u-new"));
+		registry.saveRecord(udir, mk("u-keep", "root", { status: "completed", updatedAt: stamp(90), finishedAt: stamp(90) }));
+		const r2 = registry.pruneRecords(udir, { olderThanMs: 14 * day, keepMinimum: 50, undeliveredAfterMs: 0, undeliveredKeep: 500, now: t0 });
+		check("zero undelivered threshold disables age reap", !r2.pruned.includes("u-keep") && !r2.pruned.includes("u-new"), JSON.stringify(r2));
+		// Count cap: newest 2 survive, oldest go (all past the grace floor).
+		const cdir = path.join(sandbox, "prune-cap");
+		for (const [id, age] of [["c-30", 30], ["c-20", 20], ["c-10", 10], ["c-8", 8]]) {
+			registry.saveRecord(cdir, mk(id, "root", { status: "completed", updatedAt: stamp(age), finishedAt: stamp(age) }));
+		}
+		registry.pruneRecords(cdir, { olderThanMs: 14 * day, keepMinimum: 50, undeliveredAfterMs: 90 * day, undeliveredKeep: 2, capGraceMs: 7 * day, now: t0 });
+		const rem3 = registry.readRecords(cdir).map((r) => r.runId).sort();
+		check("cap keeps newest undelivered", JSON.stringify(rem3) === JSON.stringify(["c-10", "c-8"]), rem3.join(","));
+		// Youth guard: the cap never takes records younger than the grace floor.
+		const ydir = path.join(sandbox, "prune-youth");
+		registry.saveRecord(ydir, mk("y-old", "root", { status: "completed", updatedAt: stamp(30), finishedAt: stamp(30) }));
+		registry.saveRecord(ydir, mk("y-hour", "root", { status: "completed", updatedAt: stamp(0.04), finishedAt: stamp(0.04) }));
+		registry.saveRecord(ydir, mk("y-min", "root", { status: "completed", updatedAt: stamp(0.01), finishedAt: stamp(0.01) }));
+		registry.pruneRecords(ydir, { olderThanMs: 14 * day, keepMinimum: 50, undeliveredAfterMs: 90 * day, undeliveredKeep: 1, capGraceMs: 7 * day, now: t0 });
+		const rem4 = registry.readRecords(ydir).map((r) => r.runId).sort();
+		check("cap never reaps young records", JSON.stringify(rem4) === JSON.stringify(["y-hour", "y-min"]), rem4.join(","));
 	}
 
 	// --- async record lock (perf: lock wait must not freeze the event loop) ---
@@ -563,6 +620,45 @@ function check(name, cond, extra) {
 			await hookHandlers.get("session_shutdown")?.({}, { mode: "rpc" });
 			if (prevHookDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = prevHookDir;
+		}
+	}
+
+	// --- session_start pruning hook (perf: rotation covers undelivered too) ---
+	{
+		const dir = path.join(sandbox, "prune-hook");
+		const day = 24 * 3600 * 1000;
+		const stamp = (daysAgo) => new Date(Date.now() - daysAgo * day).toISOString();
+		// Custom keep exercises the settings wiring: a lone delivered
+		// candidate is otherwise always retained by keepMinimum.
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, "subagents.json"), JSON.stringify({ pruneDeliveredKeep: 0 }));
+		registry.saveRecord(dir, mk("hook-old-d", "hook-parent", { rootRunId: "hook-parent", status: "completed", resultsDelivered: true, updatedAt: stamp(60), finishedAt: stamp(60) }));
+		registry.saveRecord(dir, mk("hook-old-u", "hook-parent", { rootRunId: "hook-parent", status: "completed", updatedAt: stamp(60), finishedAt: stamp(60) }));
+		registry.saveRecord(dir, mk("hook-new", "hook-parent", { rootRunId: "hook-parent", status: "completed", updatedAt: stamp(1), finishedAt: stamp(1) }));
+		const pruneHookHandlers = new Map();
+		const prevHookDir2 = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = dir;
+		try {
+			subagentsExtension({
+				registerFlag: () => {},
+				on: (event, handler) => pruneHookHandlers.set(event, handler),
+				registerMessageRenderer: () => {},
+				registerCommand: () => {},
+				registerTool: () => {},
+				getFlag: () => undefined,
+				sendMessage: () => {},
+				sendUserMessage: () => {},
+			});
+			await pruneHookHandlers.get("session_start")({}, {
+				sessionManager: { getSessionId: () => "hook-parent", getEntries: () => [], getBranch: () => [] },
+				cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false,
+			});
+			const left = registry.readRecords(dir).map((r) => r.runId).sort();
+			check("session start prunes old delivered and undelivered", JSON.stringify(left) === JSON.stringify(["hook-new"]), left.join(","));
+		} finally {
+			await pruneHookHandlers.get("session_shutdown")?.({}, { mode: "rpc" });
+			if (prevHookDir2 === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = prevHookDir2;
 		}
 	}
 

@@ -274,13 +274,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		deliveredResults.clear();
 		restoreReceipts(ctx.sessionManager.getBranch?.() ?? []);
 		restoreCostFloor(costFloor, ctx.sessionManager);
-		try {
-			// Best-effort rotation of delivered terminal records; keeps every
-			// registry scan (widget, tool_result, waits) proportional to live work.
-			pruneRecords(getAgentDir());
-		} catch {
-			// Rotation must never break session startup.
-		}
 		const runId = process.env.PI_SUBAGENT_RUN_ID || ctx.sessionManager.getSessionId();
 		const rootRunId = process.env.PI_SUBAGENT_ROOT_ID || runId;
 		try {
@@ -302,6 +295,21 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 
 		if (!runtime) return;
+		try {
+			// Best-effort rotation of terminal records; keeps every registry
+			// scan (widget, tool_result, waits) proportional to live work.
+			// Undelivered runs are covered too: anything terminal older than
+			// the threshold has no live claimant left to read it.
+			const DAY_MS = 24 * 3600 * 1000;
+			pruneRecords(getAgentDir(), {
+				olderThanMs: (runtime.settings.pruneDeliveredAfterDays ?? 14) * DAY_MS,
+				keepMinimum: runtime.settings.pruneDeliveredKeep ?? 50,
+				undeliveredAfterMs: (runtime.settings.pruneUndeliveredAfterDays ?? 30) * DAY_MS,
+				undeliveredKeep: runtime.settings.pruneUndeliveredKeep ?? 500,
+			});
+		} catch {
+			// Rotation must never break session startup.
+		}
 		scheduleDelivery();
 
 		sessionAbort = new AbortController();

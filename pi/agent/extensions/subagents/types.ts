@@ -59,6 +59,14 @@ export interface SubagentSettings {
 	maxConcurrency: number;
 	/** Maximum UTF-16 code units per child RPC stdout record (default 64 Mi). */
 	rpcMaxLineChars?: number;
+	/** Prune delivered terminal runs older than this many days (default 14). */
+	pruneDeliveredAfterDays?: number;
+	/** Always keep this many newest delivered candidates (default 50). */
+	pruneDeliveredKeep?: number;
+	/** Prune undelivered terminal runs older than this many days (default 30, 0 disables). */
+	pruneUndeliveredAfterDays?: number;
+	/** Keep this many newest undelivered runs; excess oldest go past the cap grace floor (default 500, 0 disables). */
+	pruneUndeliveredKeep?: number;
 }
 
 export interface SpawnAgentInput {

@@ -368,6 +368,12 @@ export interface PruneOptions {
 	olderThanMs?: number;
 	/** Always keep this many newest candidates. Default 50. */
 	keepMinimum?: number;
+	/** Reap undelivered terminal runs older than this (0 disables). Default 30 days. */
+	undeliveredAfterMs?: number;
+	/** Keep this many newest undelivered runs (0 disables the cap). Default 500. */
+	undeliveredKeep?: number;
+	/** The count cap never reaps runs younger than this. Default 7 days. */
+	capGraceMs?: number;
 	/** Clock override (tests). Default Date.now(). */
 	now?: number;
 }
@@ -379,6 +385,9 @@ export interface PruneResult {
 
 const DEFAULT_PRUNE_OLDER_THAN_MS = 14 * 24 * 3600 * 1000;
 const DEFAULT_PRUNE_KEEP_MINIMUM = 50;
+const DEFAULT_PRUNE_UNDELIVERED_AFTER_MS = 30 * 24 * 3600 * 1000;
+const DEFAULT_PRUNE_UNDELIVERED_KEEP = 500;
+const DEFAULT_PRUNE_CAP_GRACE_MS = 7 * 24 * 3600 * 1000;
 
 /** Known sidecar suffixes prunable alongside a record. Locks (.lock dirs)
  * and in-flight atomic writes (.tmp-) are never touched. */
@@ -400,16 +409,22 @@ function recordAgeStamp(record: AgentRecord): number {
 
 /**
  * Bound runs-dir growth: delete delivered terminal records older than
- * `olderThanMs`, always keeping the newest `keepMinimum` candidates.
- * Only terminal records whose result was already delivered to the parent
- * are eligible — running children, queued work, and undelivered results
- * (terminal or not) are never touched. Sidecars of pruned runs and orphan
- * sidecars (markers whose record JSON is already gone) go with them.
+ * `olderThanMs` (keeping the newest `keepMinimum`), and reap undelivered
+ * terminal runs older than `undeliveredAfterMs` or beyond the newest
+ * `undeliveredKeep` (the cap never takes runs younger than `capGraceMs`).
+ * Running children and queued work are never touched. An undelivered result
+ * older than the threshold has no live claimant — no pi session lives that
+ * long — so reaping it cannot destroy a result anyone will still read.
+ * Sidecars of pruned runs and orphan sidecars (markers whose record JSON
+ * is already gone) go with them.
  * Best-effort: never throws for I/O races (concurrent child writes).
  */
 export function pruneRecords(agentDir: string, options: PruneOptions = {}): PruneResult {
 	const olderThanMs = options.olderThanMs ?? DEFAULT_PRUNE_OLDER_THAN_MS;
 	const keepMinimum = Math.max(0, options.keepMinimum ?? DEFAULT_PRUNE_KEEP_MINIMUM);
+	const undeliveredAfterMs = options.undeliveredAfterMs ?? DEFAULT_PRUNE_UNDELIVERED_AFTER_MS;
+	const undeliveredKeep = Math.max(0, options.undeliveredKeep ?? DEFAULT_PRUNE_UNDELIVERED_KEEP);
+	const capGraceMs = options.capGraceMs ?? DEFAULT_PRUNE_CAP_GRACE_MS;
 	const now = options.now ?? Date.now();
 	let records: AgentRecord[];
 	try {
@@ -424,12 +439,27 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 	const doomed = candidates
 		.slice(0, keepFrom)
 		.filter((record) => now - recordAgeStamp(record) > olderThanMs);
+	const undelivered = records
+		.filter((record) => isTerminalStatus(record.status) && record.resultsDelivered !== true)
+		.sort((a, b) => recordAgeStamp(a) - recordAgeStamp(b));
+	const doomedIds = new Set(doomed.map((record) => record.runId));
+	if (undeliveredAfterMs > 0) {
+		for (const record of undelivered) {
+			if (now - recordAgeStamp(record) > undeliveredAfterMs) doomedIds.add(record.runId);
+		}
+	}
+	if (undeliveredKeep > 0 && undelivered.length > undeliveredKeep) {
+		for (const record of undelivered.slice(0, undelivered.length - undeliveredKeep)) {
+			if (now - recordAgeStamp(record) > capGraceMs) doomedIds.add(record.runId);
+		}
+	}
+	const doomedAll = records.filter((record) => doomedIds.has(record.runId));
 	const dir = registryDir(agentDir);
 	let entries: string[];
 	try {
 		entries = readdirSync(dir);
 	} catch {
-		return { pruned: [], kept: candidates.length };
+		return { pruned: [], kept: candidates.length + undelivered.length };
 	}
 	const liveJson = new Set(
 		entries.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)),
@@ -443,7 +473,7 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 			// Concurrent writer (child settle, lock recovery) won the race.
 		}
 	};
-	for (const record of doomed) {
+	for (const record of doomedAll) {
 		const prefix = `${safeRunId(record.runId)}.`;
 		for (const name of entries) {
 			if (name === `${prefix.slice(0, -1)}.json` || (name.startsWith(prefix) && isPrunableSidecar(name))) {
@@ -460,8 +490,9 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 			: name.split(".").slice(0, -1).join(".");
 		if (!liveJson.has(owner)) removeFile(name);
 	}
-	if (doomed.length > 0) invalidateRecordCache(agentDir);
-	return { pruned: doomed.map((record) => record.runId), kept: candidates.length - doomed.length };
+	if (doomedAll.length > 0) invalidateRecordCache(agentDir);
+	const retained = candidates.length + undelivered.length - doomedAll.length;
+	return { pruned: doomedAll.map((record) => record.runId), kept: retained };
 }
 
 export function descendantsOf(records: readonly AgentRecord[], parentRunId: string): AgentRecord[] {

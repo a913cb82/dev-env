@@ -7,6 +7,10 @@ export const DEFAULT_SETTINGS: SubagentSettings = {
 	maxDepth: 2,
 	maxConcurrency: 4,
 	rpcMaxLineChars: 64 * 1024 * 1024,
+	pruneDeliveredAfterDays: 14,
+	pruneDeliveredKeep: 50,
+	pruneUndeliveredAfterDays: 30,
+	pruneUndeliveredKeep: 500,
 };
 
 export const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -61,6 +65,20 @@ export function validateThinkingLevel(value: unknown, field: string): string {
 	return level;
 }
 
+function pruneDays(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+		throw new Error(`${field} must be a non-negative number of days (0 disables)`);
+	}
+	return value;
+}
+
+function pruneKeep(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		throw new Error(`${field} must be a non-negative integer (0 disables)`);
+	}
+	return value;
+}
+
 function validate(raw: RawSettings, source: string): RawSettings {
 	const result: RawSettings = {};
 	if (raw.defaultModel !== undefined) result.defaultModel = optionalString(raw.defaultModel, `${source}.defaultModel`);
@@ -73,6 +91,18 @@ function validate(raw: RawSettings, source: string): RawSettings {
 	if (raw.maxDepth !== undefined) result.maxDepth = depth(raw.maxDepth, `${source}.maxDepth`);
 	if (raw.maxConcurrency !== undefined) {
 		result.maxConcurrency = concurrency(raw.maxConcurrency, `${source}.maxConcurrency`);
+	}
+	if (raw.pruneDeliveredAfterDays !== undefined) {
+		result.pruneDeliveredAfterDays = pruneDays(raw.pruneDeliveredAfterDays, `${source}.pruneDeliveredAfterDays`);
+	}
+	if (raw.pruneDeliveredKeep !== undefined) {
+		result.pruneDeliveredKeep = pruneKeep(raw.pruneDeliveredKeep, `${source}.pruneDeliveredKeep`);
+	}
+	if (raw.pruneUndeliveredAfterDays !== undefined) {
+		result.pruneUndeliveredAfterDays = pruneDays(raw.pruneUndeliveredAfterDays, `${source}.pruneUndeliveredAfterDays`);
+	}
+	if (raw.pruneUndeliveredKeep !== undefined) {
+		result.pruneUndeliveredKeep = pruneKeep(raw.pruneUndeliveredKeep, `${source}.pruneUndeliveredKeep`);
 	}
 	return result;
 }
