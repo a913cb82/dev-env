@@ -2,7 +2,6 @@ git
 gh
 tmux
 ripgrep
-git-lfs
 curl
 jq
 python3
