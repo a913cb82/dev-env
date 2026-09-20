@@ -17,6 +17,13 @@ PC proof comes first, always:
 
 Pure Kotlin modules (no Android imports) carry all decisions: math, timers, state machines, verdicts. The Android layer stays thin. A bug caught by a unit test costs seconds. The same bug on the phone costs minutes.
 
+Two rules keep the loop honest:
+
+- When a test fails, check the fixture's own assumptions before the production
+  code. Two real regressions were wrong fixtures, not wrong code.
+- One causal variable per build. Batch only independent changes; a build that
+  changes three things answers nothing about any of them.
+
 ## 2. Install in Background
 
 Foreground shell calls die on long hangs. MIUI verification takes 1 to 4 minutes even when healthy. Background the install and poll a log file:
@@ -34,6 +41,9 @@ nohup adb install -r app.apk > install.log 2>&1 &
 Confirm the install landed:
 
 - The APK holds the change: `unzip -p app.apk classes*.dex | strings | grep <marker>`.
+- The APK holds every asset change too: `unzip -l app.apk | grep <asset>`. aapt2
+  can rename or transform assets (`*.gz` is decompressed and the suffix
+  stripped), so an asset path that works in the source tree can fail on device.
 - The device runs it: `dumpsys package <pkg> | grep lastUpdateTime`.
 - `versionCode` rises per installed build, so `dumpsys` always tells which build is live.
 
@@ -52,8 +62,11 @@ adb exec-out screencap -p > shot.png
 ```
 
 - `monkey` opens apps. `am start` opens exact activities. `keyevent 3` goes home.
-- `uiautomator dump` asserts which package owns the screen.
+- `uiautomator dump` asserts which package owns the screen. Use its bounds for
+  taps on text controls instead of screen-fraction math.
 - `screencap` works on any screen, locked or not. The agent inspects the image. No human eyes are necessary.
+- Screenshot after every tap step. Layouts shift between builds; blind
+  coordinates corrupt user state (a blind sequence changed a saved rank).
 
 Encode each check as a script: `scripts/verify-<feature>.sh` with PASS/FAIL output. Every install then self-certifies. This replaces all "can you check X" messages. Example shape:
 

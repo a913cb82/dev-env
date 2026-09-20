@@ -90,3 +90,35 @@ A ROM-blinded detector loses to a user toggle every time. When detection of
 an overlay class fails on-device, stop detecting. Ship a per-app declared
 flag with versioned seeding instead. Seeding covers unlistable packages
 (no launcher activity) that no picker can ever show.
+
+## Post-Install Verification Can Block Launch
+
+After an install, HyperOS may open a full-screen verification surface ("Open for
+5 minutes" / "Open for 12 seconds"). `am start` still reports success, the app
+process starts, and every launch assertion fails because the app never becomes
+visible. Ask the user to disable the installer verification once, or dismiss the
+dialog, before trusting launch assertions.
+
+## USB Vendor ID Can Change
+
+The phone can enumerate under a different vendor ID than usual (observed: an
+`18d1` "Google" descriptor instead of the vendor's `2717`). The udev rule then
+matches nothing, and `adb devices` shows the serial with `no permissions`.
+
+```bash
+lsusb | grep -iE "2717|18d1"
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0666", GROUP="plugdev"' \
+  | sudo tee /etc/udev/rules.d/52-google.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# replug the cable, then check for the on-phone RSA prompt
+```
+
+Keep one rule per observed `idVendor`. The user must run the install command;
+the agent usually has no passwordless sudo.
+
+## Installs Can Stall
+
+Streamed installs can hang for minutes with no error. Do not wait in the
+foreground: background the install, poll `dumpsys package <pkg>` until
+`versionCode` changes, and treat the change as the success signal. A wedged
+session blocks the next install; kill the stale client and retry.

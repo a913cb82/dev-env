@@ -1,6 +1,6 @@
 ---
 name: android-development
-description: Build, install, debug, and test Android apps from WSL, without Android Studio. Covers toolchain setup, the adb bridge, the PC-first dev loop, and HyperOS gotchas. Use when device behavior differs from code logic.
+description: Build, install, debug, and test Android apps from WSL, without Android Studio. Covers toolchain setup, the adb bridge, the PC-first dev loop, HyperOS gotchas, native engine integration, and device probes. Use when device behavior differs from code logic.
 ---
 
 # Android Development
@@ -24,7 +24,7 @@ Do the one time setup before any dev work. See [env setup](references/env-setup.
 
 - Java 17, Gradle wrapper pinned, AGP via version catalog. No Android Studio.
 - SDK under `~/Android/Sdk`, pointed at by untracked `local.properties`.
-- Phone reaches WSL through `usbipd` (bind once, auto-attach on logon) plus a udev rule.
+- Phone reaches WSL through `usbipd` (bind once, auto-attach on logon) plus a udev rule per observed vendor ID.
 - Phone grants up front: USB debugging, battery unrestricted, autostart, pinned in Recents.
 
 ## Dev Loop
@@ -39,9 +39,13 @@ Each iteration follows the same loop. See [dev loop](references/dev-loop.md).
 Rules for the loop:
 
 - PC proof comes first. Write a failing unit test (RED), then fix the code (GREEN). Only then touch the phone.
+- When a test fails, check the fixture's own assumptions before the production code. Two real failures were wrong fixtures, not wrong code.
+- One causal variable per build. Batch only independent changes; otherwise an install cycle answers nothing.
+- Verify the APK holds the change before install: `unzip -l` for assets, `unzip -p` plus `strings` for code. aapt2 transforms some assets (see Packaging).
 - Never judge a feature before the power exemptions hold (FGS plus battery unrestricted plus autostart).
 - Never `force-stop` a dev app. It drops accessibility bindings. Never `uninstall` casually. Fresh installs need a manual Allow tap plus fresh permission grants.
 - A locked phone cannot unlock over `adb`. Detection, alarms, and screenshots work locked. UI checks need it unlocked.
+- Screenshot after each tap step. Layouts shift between builds; blind coordinates corrupt user state.
 - Keep a phone-active budget. Wrap `adb` calls with `time`. Record seconds in a ledger. Stay under 10 minutes total and under 5 minutes per test.
 
 ## Testing Order
@@ -53,6 +57,34 @@ Test in this order, cheapest first:
 3. `adb` black box: `logcat` plus `uiautomator` plus `dumpsys`.
 4. Screenshots. The agent inspects them. No human eyes are necessary.
 5. Human on-device pass last. Use it only for feel, latency, and aesthetics.
+
+## Native Engines
+
+A bundled native engine (KataGo, Lc0, any prebuilt `.so` plus models) adds a second build system and a second failure mode. See [native engine](references/native-engine.md).
+
+- Launch through the system linker: `/system/bin/linker64 <lib.so> <args>`. argv reaches the engine.
+- A vendored binary may enforce a package or cwd check. Read its strings and disasm, then patch with an assertive script. Never trust it to explain its own refusal.
+- Stage the whole DT_NEEDED closure plus config into `filesDir`, and carry `LD_LIBRARY_PATH`.
+- Send stderr to a file, watch it for a ready banner, and log the exit code on death. A pipe can lose the only evidence.
+- Record a patch revision file. mtime and size lie across rebuilds; recopy when the revision changes.
+- Parse the protocol of the exact binary version, not the docs of master.
+
+## Measure Before Tuning
+
+Latency work fails when guesses drive it. See [performance](references/performance.md).
+
+- Split timing by phase in one log line (queue wait, setup, search) before any change.
+- Measure the engine alone (probe) and in-app. Trust neither alone: a warm probe measures state real play may never have.
+- Change one parameter per build and A/B it. A single query flag cost seconds per call in one real case.
+- Mirror the reference app's recipe before tuning from scratch.
+
+## Device Probes
+
+A probe script runs in seconds where a rebuild plus install costs minutes. See [device probe](references/device-probe.md).
+
+- Push a shell script to `/data/local/tmp` and run it with `run-as <pkg>`: same uid, same private paths as the app.
+- Use a FIFO harness for engines that speak on stdin and stdout. Poll with a deadline and print step seconds.
+- `python3` is absent on device. Parse on the PC.
 
 ## HyperOS Gotchas
 
@@ -68,6 +100,8 @@ HyperOS breaks standard Android behavior. See [gotchas](references/hyperos-gotch
 - `logcat -c` destroys evidence. Dump first. Clear deliberately.
 - DataStore needs exactly one instance per file, from `applicationContext`. Pair each store write with a synchronous in-memory mirror update.
 - Fast builds lie through up-to-date checks. Confirm the APK holds the change before install. Bump `versionCode` per install and check `lastUpdateTime` after.
+- An install can open a verification surface that blocks launch. Ask the user to disable it.
+- The phone can enumerate under a different USB vendor ID. Keep a udev rule per observed ID.
 
 ## Design Rules
 
@@ -76,9 +110,14 @@ HyperOS breaks standard Android behavior. See [gotchas](references/hyperos-gotch
 - Prefer declared state over ROM detection. Detection that HyperOS blinds loses to a user toggle every time.
 - Launch decisions use live truth at fire time. Sticky state is a fallback only.
 - Every background feature ships a kill switch plus an `adb` break-glass path.
+- Match a third-party engine or app by reading its exact recipe first: decompile, strings, configs, argv. Guessing its behavior cost the longest debugging stretch of one project.
 
 ## References
 
 - See [env setup](references/env-setup.md) for toolchain, bridge, and phone grants.
 - See [dev loop](references/dev-loop.md) for the iteration loop, verify commands, and budgets.
 - See [HyperOS gotchas](references/hyperos-gotchas.md) for the full device gotcha catalog.
+- See [native engine](references/native-engine.md) for vendoring, launching, and patching native binaries.
+- See [performance](references/performance.md) for measurement method and tuning order.
+- See [device probe](references/device-probe.md) for probe scripts, FIFO harnesses, and UI hygiene.
+- See [templates](templates/install-poll.sh) for the install-and-verify loop.

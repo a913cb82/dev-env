@@ -46,6 +46,9 @@ Project skeleton that works with the above:
 - No `kotlin-android` plugin. AGP 9 provides Kotlin. The old plugin breaks the build.
 - Repos `google()` plus `mavenCentral()` in `settings.gradle.kts`.
 - `versionCode` tracks `git rev-list --count HEAD`. This needs a git checkout with history.
+- For fast dev loops, a timestamp versionCode (`currentTimeMillis/1000`) is
+  unique per build; a commit-count versionCode collides on rebuilds, and the
+  device then reuses the stale install.
 
 Traps hit during setup:
 
@@ -86,8 +89,12 @@ adb kill-server; adb devices   # expect: <id>  device
 
 Traps hit during bridge setup:
 
-- `no permissions` means the udev rule or server restart is missing.
+- `no permissions` means the udev rule or server restart is missing. The phone
+  can re-enumerate under a second vendor ID (an 18d1 "Google" descriptor was
+  observed). Keep one udev rule per observed `idVendor`.
 - `unauthorized` means the on-phone RSA prompt is unanswered.
+- The RSA key lives in `~/.android/adbkey`; copying it to another machine
+  carries the trust with it.
 
 ## Phone Grants (Per Phone, Up Front)
 
