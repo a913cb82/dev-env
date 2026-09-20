@@ -41,7 +41,7 @@ Rules for the loop:
 - PC proof comes first. Write a failing unit test (RED), then fix the code (GREEN). Only then touch the phone.
 - When a test fails, check the fixture's own assumptions before the production code. Two real failures were wrong fixtures, not wrong code.
 - One causal variable per build. Batch only independent changes; otherwise an install cycle answers nothing.
-- Verify the APK holds the change before install: `unzip -l` for assets, `unzip -p` plus `strings` for code. aapt2 transforms some assets (see Packaging).
+- Verify the APK holds the change before install: `unzip -l` for assets, `unzip -p` plus `strings` for code. aapt2 transforms some assets (see native engine).
 - Never judge a feature before the power exemptions hold (FGS plus battery unrestricted plus autostart).
 - Never `force-stop` a dev app. It drops accessibility bindings. Never `uninstall` casually. Fresh installs need a manual Allow tap plus fresh permission grants.
 - A locked phone cannot unlock over `adb`. Detection, alarms, and screenshots work locked. UI checks need it unlocked.
