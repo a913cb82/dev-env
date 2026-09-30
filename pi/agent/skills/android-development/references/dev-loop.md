@@ -59,13 +59,21 @@ step so the failing step names itself:
 - No 120s+ caps on adb ops, ever. Only Gradle test/record runs may exceed
   120s, and only under their own cap.
 - Chain steps with `&&` so failure exits before the next step burns time.
-- Over-budget triage, by empirical record (11 pushes: retry 1/3,
-  kill-server 0/2, usbipd rebind 2/2): a push past its 12s cap is a stale
-  usbipd attach, not a slow link. Skip retry and kill-server — go straight
-  to `usbipd detach + attach`, then push (1s). Shell stays alive through
-  bulk stalls, so a shell check predicts nothing; don't spend a step on it.
-  If push is fast but pm hangs, the phone wants attention (install prompt,
-  doze). Keep the daemon warm between iterations.
+- Over-budget triage, by empirical record: a push past its 12s cap is a
+  sick usbip channel, not a slow link. Small transfers keep working, so a
+  shell check predicts nothing; don't spend a step on it. Skip retry
+  (1/3) and kill-server (0/2) — rebind once (`usbipd detach + attach`).
+  If the push still fails after a rebind, the episode is time-bound:
+  wait 2-3 min and retry, or abandon USB bulk for the install (below).
+- USB bulk can corrupt, not just stall: full byte counts and exit-0 pushes
+  have delivered truncated files (caught by md5) and phantom files that
+  vanish before `pm install`. md5-check every pushed APK before
+  installing — local md5 is instant, remote takes ~2s. Trust nothing else.
+- WiFi adb bypasses sick USB entirely: `adb tcpip 5555` is a tiny command
+  that works over a wedged link, then `adb connect <wlan-ip>:5555`.
+  ~80 MB pushes in ~7s at 11 MB/s. Get the IP once per network
+  (`ip addr show wlan0`); it survives USB flaps. Use `-s <ip>:5555` for
+  the push/install/verify steps.
 - Chain install, launch, and settle-checks in one `adb shell` to save
   round-trips. Poll logcat for the app's ready signal instead of `sleep`.
 

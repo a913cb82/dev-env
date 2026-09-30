@@ -23,12 +23,25 @@ BEFORE="$(stamp)"
 echo "before: ${BEFORE:-<not installed>}"
 
 timeout 12 $ADB push "$APK" "$TMP_APK" > /dev/null || {
-  echo "PUSH FAILED: stale usbipd attach (shell may still answer; retry and"
-  echo "kill-server have losing records against this). Rebind, then rerun:"
+  echo "PUSH FAILED: sick usbip channel (shell may still answer; retry and"
+  echo "kill-server have losing records against this). Rebind once, then rerun:"
   echo "  powershell.exe -NoProfile -Command \"usbipd detach --busid <BUSID>\""
   echo "  powershell.exe -NoProfile -Command \"usbipd attach --wsl --busid <BUSID>\""
+  echo "If it still fails after a rebind, wait 2-3 min (episodes self-clear)"
+  echo "or switch bulk to WiFi adb: adb tcpip 5555; adb connect <wlan-ip>:5555"
   exit 1
 }
+
+# Byte counts lie on a sick channel: full-size exit-0 pushes have delivered
+# truncated files and phantoms. md5 is the only truth (local is instant).
+LOCAL_MD5="$(md5sum "$APK" | cut -d' ' -f1)"
+REMOTE_MD5="$($ADB shell "md5sum $TMP_APK" 2>/dev/null | cut -d' ' -f1)"
+if [ "$LOCAL_MD5" != "$REMOTE_MD5" ]; then
+  echo "MD5 MISMATCH: local=$LOCAL_MD5 remote=${REMOTE_MD5:-<missing>}"
+  echo "The channel corrupted the transfer. Rebind or use WiFi adb, then rerun."
+  exit 1
+fi
+echo "md5 ok: $LOCAL_MD5"
 
 timeout 60 $ADB shell "pm install -r $TMP_APK" || {
   echo "PM INSTALL FAILED: on-device commit stuck."
