@@ -1,10 +1,10 @@
 # Environment Setup
 
-Do once per PC. Then do once per phone. Then never again unless the machine is rebuilt.
+Do this setup once per PC. Do it once per phone. Never repeat it unless someone rebuilds the machine.
 
 ## PC Toolchain (WSL Ubuntu, No Studio)
 
-Java first:
+Install Java first:
 
 ```bash
 java -version   # want: openjdk 17
@@ -12,7 +12,7 @@ java -version   # want: openjdk 17
 
 No `JAVA_HOME` is necessary if `java` is on PATH. This machine sets neither `JAVA_HOME` nor `ANDROID_HOME`.
 
-SDK command line tools:
+Install the SDK command line tools:
 
 ```bash
 mkdir -p ~/Android/Sdk/cmdline-tools && cd ~/Android/Sdk/cmdline-tools
@@ -21,9 +21,9 @@ unzip -q commandlinetools-linux-13114758_latest.zip
 mkdir -p latest && mv cmdline-tools/* latest/ && rmdir cmdline-tools
 ```
 
-The `latest/` nesting is required. `sdkmanager` errors out without it. Persist the `bin` dir on PATH in `~/.bashrc`.
+`sdkmanager` needs the `latest/` nesting. It fails without it. Persist the `bin` dir on PATH in `~/.bashrc`.
 
-Platform, build tools, licenses:
+Install the platform, build tools, and licenses:
 
 ```bash
 yes | sdkmanager --licenses
@@ -39,23 +39,23 @@ Point Gradle at the SDK. This file is machine-specific. Never commit it:
 sdk.dir=/home/<you>/Android/Sdk
 ```
 
-Project skeleton that works with the above:
+Use this project skeleton with the setup above:
 
-- Gradle wrapper pinned per project (example: 9.7.1).
-- AGP via version catalog (example: 9.4.0). Kotlin via the Compose plugin.
-- No `kotlin-android` plugin. AGP 9 provides Kotlin. The old plugin breaks the build.
-- Repos `google()` plus `mavenCentral()` in `settings.gradle.kts`.
+- Pin the Gradle wrapper per project (example: 9.7.1).
+- Declare AGP in the version catalog (example: 9.4.0). Add Kotlin through the Compose plugin.
+- Do not add the `kotlin-android` plugin. AGP 9 provides Kotlin. The old plugin breaks the build.
+- Declare repos `google()` plus `mavenCentral()` in `settings.gradle.kts`.
 - `versionCode` tracks `git rev-list --count HEAD`. This needs a git checkout with history.
-- For fast dev loops, a timestamp versionCode (`currentTimeMillis/1000`) is
-  unique per build; a commit-count versionCode collides on rebuilds, and the
-  device then reuses the stale install.
+- For fast dev loops, a timestamp versionCode (`currentTimeMillis/1000`)
+  is unique per build. A commit-count versionCode collides on rebuilds.
+  The device then reuses the stale install.
 
-Traps hit during setup:
+Traps from past setups:
 
-- Gradle below 9.6 is refused by AGP 9.
+- AGP 9 refuses Gradle below 9.6.
 - A missing `local.properties` shows a cryptic SDK-location error, not a missing-file error.
 
-Verify the whole chain:
+Check the whole chain:
 
 ```bash
 ./gradlew ktlintFormat testDebugUnitTest assembleDebug lintDebug
@@ -65,27 +65,25 @@ adb shell "pm install -r /data/local/tmp/app.apk"
 
 ## ADB Bridge (WSL to Phone)
 
-Windows PowerShell, once ever (admin shell):
+Open Windows PowerShell once ever (admin shell):
 
 ```powershell
 usbipd bind --busid <BUSID>   # persistent
 ```
 
-Hidden logon task re-attaches on every logon (needs a WSL terminal open at plug time). Pattern: one scheduled task runs `usbipd attach --wsl --hardware-id <VID:PID> --auto-attach` hidden. If attach lapses:
+A hidden logon task re-attaches on every logon (it needs a WSL terminal open at plug time). Use this pattern. One scheduled task runs `usbipd attach --wsl --hardware-id <VID:PID> --auto-attach` hidden. If attach lapses:
 
 ```powershell
 usbipd attach --wsl --busid <BUSID>
 ```
 
-No Windows terminal needed: WSL reaches `usbipd` through interop, so the
-same re-attach runs from the dev shell (real case: phone plugged in but
-`adb devices` empty; attach below brought it back):
+You need no Windows terminal. WSL reaches `usbipd` through interop. Run the same re-attach from the dev shell. Real case: you plugged in the phone, but `adb devices` was empty. The attach below restored it:
 
 ```bash
 powershell.exe -NoProfile -Command "usbipd attach --wsl --busid <BUSID>"
 ```
 
-WSL side (persistent via udev):
+Make the WSL side persistent with udev:
 
 ```bash
 echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="<VID>", MODE="0666", GROUP="plugdev"' \
@@ -96,25 +94,27 @@ adb kill-server; adb devices   # expect: <id>  device
 
 `platform-tools` lives in `~/` and on PATH. The RSA key lives in WSL `~/.android/adbkey`, so the phone trust survives reboots.
 
-Traps hit during bridge setup:
+Traps from bridge setup:
 
-- `no permissions` means the udev rule or server restart is missing. The phone
-  can re-enumerate under a second vendor ID (an 18d1 "Google" descriptor was
-  observed). Keep one udev rule per observed `idVendor`.
-- `unauthorized` means the on-phone RSA prompt is unanswered.
-- The RSA key lives in `~/.android/adbkey`; copying it to another machine
-  carries the trust with it.
+- `no permissions` means the udev rule or server restart is missing. The
+  phone can re-enumerate under a second vendor ID (we observed an 18d1
+  "Google" descriptor). Keep one udev rule per observed `idVendor`.
+- `unauthorized` means you have not answered the on-phone RSA prompt.
+- The RSA key lives in `~/.android/adbkey`. Copying it to another machine
+  moves the trust with it.
 
 ## Phone Grants (Per Phone, Up Front)
 
-Developer options first (tap the OS version 7 times). Then enable:
+Enable developer options first (tap the OS version 7 times). Then enable:
 
 - USB debugging.
-- USB debugging (Security settings). Needed for input and screenshots. HyperOS may switch this off after a reboot. Re-check it when screenshots or input stop working while `adb devices` still shows `device`.
+- USB debugging (Security settings) for input and screenshots.
 - Install via USB.
-- On the Allow USB debugging prompt, tick Always allow from this computer.
+- On the prompt that allows USB debugging, tick Always allow from this computer.
 
-App exemptions before any feature judgment:
+HyperOS may switch Security settings off after a reboot. Re-check it when screenshots or input stop working while `adb devices` still shows `device`.
+
+Set app exemptions before you judge any feature:
 
 - Autostart allowed.
 - Battery unrestricted.
@@ -122,4 +122,4 @@ App exemptions before any feature judgment:
 - High screen timeout during dev (`settings put system screen_off_timeout 600000`).
 - Wake with `adb shell input keyevent 26`.
 
-Steady state: replugs and reboots need no action. Verify with `adb devices` plus one `screencap`.
+In steady state, replugs and reboots need no action. Check with `adb devices` plus one `screencap`.
