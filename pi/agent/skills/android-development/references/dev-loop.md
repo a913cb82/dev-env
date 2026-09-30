@@ -35,6 +35,7 @@ nohup adb install -r app.apk > install.log 2>&1 &
 
 - Updates (`-r`) are prompt-free. Fresh installs need one on-screen Allow tap.
 - A stuck install with no `AdbInstallActivity` in `logcat` means the phone dozes. Wake it with `input keyevent 224`. If still stuck, kill the stale client and retry. A wedged session blocks the next install.
+- When `adb install` hangs but shell is alive, split the op: `adb push app.apk /data/local/tmp/x.apk` tests the transport, then `adb shell "pm install -r /data/local/tmp/x.apk"` commits on device. Real case: an 83 MB APK pushed in 1 s while `adb install` hung repeatedly; direct `pm install` returned Success in seconds. The wrapper was wedged, not the link.
 - `screen_off_timeout` is ignored by HyperOS. Use `svc power stayon true` while USB-plugged for dev. Revert with `false` after.
 - A locked phone cannot unlock over `adb`. This is a hard boundary. Plan UI checks for unlocked windows.
 

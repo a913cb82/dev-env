@@ -76,6 +76,14 @@ Hidden logon task re-attaches on every logon (needs a WSL terminal open at plug 
 usbipd attach --wsl --busid <BUSID>
 ```
 
+No Windows terminal needed: WSL reaches `usbipd` through interop, so the
+same re-attach runs from the dev shell (real case: phone plugged in but
+`adb devices` empty; attach below brought it back):
+
+```bash
+powershell.exe -NoProfile -Command "usbipd attach --wsl --busid <BUSID>"
+```
+
 WSL side (persistent via udev):
 
 ```bash
