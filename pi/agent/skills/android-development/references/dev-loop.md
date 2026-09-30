@@ -26,9 +26,12 @@ Two rules keep the loop honest:
 
 ## 2. Install Fast
 
-Device steps take ~5s total. Never background-and-poll, never `adb install`
-(it stalls over usbip while shell stays alive). Push, commit on device,
-verify — see [install template](../templates/install-poll.sh):
+> The transport is WORK IN PROGRESS: log every install in
+> [install data](install-data.md) and follow it over any prose here.
+
+Device steps take ~5s total when healthy. Never background-and-poll, never
+`adb install` (it stalls over usbip while shell stays alive). Push, md5,
+commit on device, verify — see [install template](../templates/install-poll.sh):
 
 ```bash
 adb push app.apk /data/local/tmp/app.apk          # ~1s even at 80 MB
