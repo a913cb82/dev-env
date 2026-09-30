@@ -40,8 +40,25 @@ Budgets (caps, not waits — a cap surfaces a wedge, waiting never fixes one):
 
 - PC rebuild (`assembleDebug`, no adb): under 30s incremental. Never `clean`.
 - Each device step: under 10s. Whole push+install+verify: ~5s.
-- Timeout caps: push 60s, pm install 60s, plain shell 30s. Never 120s+.
-  A step that hits its cap is broken, not slow — diagnose, don't re-wait.
+- A step that hits its cap is broken, not slow — diagnose, don't re-wait
+  with a bigger number.
+
+Approved caps (expected cost, then the wedge line). One step per command;
+never one big timeout around a chained command — put `timeout` on each
+step so the failing step names itself:
+
+| Step | Expected | Cap |
+|---|---|---|
+| shell probe (echo, dumpsys, screencap, tap) | 1–3s | 30s |
+| push APK (~80 MB) | ~1s | 30s |
+| pm install | 2–4s | 30s |
+| powershell.exe interop (cold VM spin-up) | 10–30s | 90s |
+| assembleDebug incremental | 8–23s | 90s |
+| test + Paparazzi record | 30–60s | 180s |
+
+- No 120s+ caps on adb ops, ever. Only Gradle test/record runs may exceed
+  120s, and only under their own cap.
+- Chain steps with `&&` so failure exits before the next step burns time.
 - Over-budget triage: is shell alive (`adb shell echo`)? If yes and push
   is fast but pm hangs, the phone wants attention (install prompt, doze).
   `kill-server` only when the daemon itself is wedged; every restart costs
