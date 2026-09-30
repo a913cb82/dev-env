@@ -22,9 +22,11 @@ stamp() {
 BEFORE="$(stamp)"
 echo "before: ${BEFORE:-<not installed>}"
 
-timeout 60 $ADB push "$APK" "$TMP_APK" > /dev/null || {
-  echo "PUSH FAILED: transport wedged (shell may still answer)."
-  echo "Retry once; if it persists, adb kill-server + start-server, then reattach usbipd."
+timeout 12 $ADB push "$APK" "$TMP_APK" > /dev/null || {
+  echo "PUSH FAILED: stale usbipd attach (shell may still answer; retry and"
+  echo "kill-server have losing records against this). Rebind, then rerun:"
+  echo "  powershell.exe -NoProfile -Command \"usbipd detach --busid <BUSID>\""
+  echo "  powershell.exe -NoProfile -Command \"usbipd attach --wsl --busid <BUSID>\""
   exit 1
 }
 
