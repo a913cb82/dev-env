@@ -32,7 +32,7 @@ Do the one time setup before any dev work. See [env setup](references/env-setup.
 Each iteration follows the same loop. See [dev loop](references/dev-loop.md).
 
 1. Build and prove on PC: `./gradlew ktlintFormat testDebugUnitTest assembleDebug lintDebug`.
-2. Install in background and poll a log file. MIUI verification takes 1 to 4 minutes when healthy.
+2. Install fast: push plus pm install plus timestamp check, ~5s total. Never background-and-poll, never `adb install`.
 3. Verify without touching the phone: `logcat`, `uiautomator dump`, `screencap`.
 4. Encode each check as a `scripts/verify-<feature>.sh` PASS/FAIL script.
 

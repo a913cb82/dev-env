@@ -24,14 +24,30 @@ Two rules keep the loop honest:
 - One causal variable per build. Batch only independent changes; a build that
   changes three things answers nothing about any of them.
 
-## 2. Install in Background
+## 2. Install Fast
 
-Foreground shell calls die on long hangs. MIUI verification takes 1 to 4 minutes even when healthy. Background the install and poll a log file:
+Device steps take ~5s total. Never background-and-poll, never `adb install`
+(it stalls over usbip while shell stays alive). Push, commit on device,
+verify — see [install template](../templates/install-poll.sh):
 
 ```bash
-nohup adb install -r app.apk > install.log 2>&1 &
-# poll install.log; report streaming waits separately from test time
+adb push app.apk /data/local/tmp/app.apk          # ~1s even at 80 MB
+adb shell "pm install -r /data/local/tmp/app.apk"  # ~2-4s, prints Success
+dumpsys package <pkg> | grep lastUpdateTime        # timestamp must move
 ```
+
+Budgets (caps, not waits — a cap surfaces a wedge, waiting never fixes one):
+
+- PC rebuild (`assembleDebug`, no adb): under 30s incremental. Never `clean`.
+- Each device step: under 10s. Whole push+install+verify: ~5s.
+- Timeout caps: push 60s, pm install 60s, plain shell 30s. Never 120s+.
+  A step that hits its cap is broken, not slow — diagnose, don't re-wait.
+- Over-budget triage: is shell alive (`adb shell echo`)? If yes and push
+  is fast but pm hangs, the phone wants attention (install prompt, doze).
+  `kill-server` only when the daemon itself is wedged; every restart costs
+  a rediscovery. Keep the daemon warm between iterations.
+- Chain install, launch, and settle-checks in one `adb shell` to save
+  round-trips. Poll logcat for the app's ready signal instead of `sleep`.
 
 - Updates (`-r`) are prompt-free. Fresh installs need one on-screen Allow tap.
 - A stuck install with no `AdbInstallActivity` in `logcat` means the phone dozes. Wake it with `input keyevent 224`. If still stuck, kill the stale client and retry. A wedged session blocks the next install.

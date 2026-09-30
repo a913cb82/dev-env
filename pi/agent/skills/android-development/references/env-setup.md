@@ -59,7 +59,8 @@ Verify the whole chain:
 
 ```bash
 ./gradlew ktlintFormat testDebugUnitTest assembleDebug lintDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb push app/build/outputs/apk/debug/app-debug.apk /data/local/tmp/app.apk
+adb shell "pm install -r /data/local/tmp/app.apk"
 ```
 
 ## ADB Bridge (WSL to Phone)

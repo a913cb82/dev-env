@@ -1,42 +1,45 @@
 #!/usr/bin/env bash
-# Install an APK in the background and wait until the device runs it.
+# Fast install: push the APK, commit on device, verify it landed.
 #
 #   ./install-poll.sh app/build/outputs/apk/debug/app-debug.apk <pkg>
 #
-# Prints LANDED with the new versionCode, or the install log when the install
-# failed. Designed for MIUI/HyperOS, where streamed installs can take minutes
-# and report nothing while they work. Poll, never block.
+# Prints LANDED with the new lastUpdateTime, or fails fast. Device steps
+# take ~5s total (push ~1s, pm install ~2-4s); each step has a tight cap so
+# a wedged transport surfaces immediately instead of hanging the loop.
+# Never background-and-poll: `adb install` streaming stalls over usbip
+# while push + `pm install` on the same link flies.
 set -uo pipefail
 
 APK="${1:?usage: install-poll.sh <apk> <package>}"
 PKG="${2:?usage: install-poll.sh <apk> <package>}"
-LOG="${TMPDIR:-/tmp}/install-$(basename "$PKG").log"
+ADB="${ADB:-adb}"
+TMP_APK="/data/local/tmp/$(basename "$APK")"
 
-# Unique per build: a repeated versionCode lets the device reuse the old
-# install. Timestamp code is the cheapest guarantee.
-ver_code() {
-  adb shell dumpsys package "$PKG" 2>/dev/null | grep -m1 -o 'versionCode=[0-9]*' | cut -d= -f2
+stamp() {
+  $ADB shell dumpsys package "$PKG" 2>/dev/null | grep -m1 lastUpdateTime || true
 }
 
-BEFORE="$(ver_code)"
-echo "before: versionCode=${BEFORE:-<not installed>}"
-nohup adb install -r "$APK" > "$LOG" 2>&1 &
-INSTALL_PID=$!
+BEFORE="$(stamp)"
+echo "before: ${BEFORE:-<not installed>}"
 
-for _ in $(seq 1 60); do
-  sleep 5
-  NOW="$(ver_code)"
-  if [ -n "$NOW" ] && [ "$NOW" != "$BEFORE" ]; then
-    echo "LANDED: versionCode=$NOW"
-    exit 0
-  fi
-  if ! kill -0 "$INSTALL_PID" 2>/dev/null; then
-    echo "install finished without a version change:"
-    cat "$LOG"
-    exit 1
-  fi
-done
+timeout 60 $ADB push "$APK" "$TMP_APK" > /dev/null || {
+  echo "PUSH FAILED: transport wedged (shell may still answer)."
+  echo "Retry once; if it persists, adb kill-server + start-server, then reattach usbipd."
+  exit 1
+}
 
-echo "install still running after 5 minutes; last log:"
-cat "$LOG" 2>/dev/null
+timeout 60 $ADB shell "pm install -r $TMP_APK" || {
+  echo "PM INSTALL FAILED: on-device commit stuck."
+  echo "Check the phone for an install prompt; wake it with: adb shell input keyevent 224"
+  exit 1
+}
+
+AFTER="$(stamp)"
+if [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ]; then
+  echo "LANDED: $AFTER"
+  exit 0
+fi
+echo "install returned but timestamp unchanged:"
+echo "  before: $BEFORE"
+echo "  after:  $AFTER"
 exit 1
