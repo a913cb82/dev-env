@@ -34,8 +34,8 @@ the public key. Add it to GitHub by hand.
 It links four skills: `selphy-print` (print photos on Canon SELPHY),
 `asd-ste100` (rewrite text in Simple Technical English), `web-fetch`
 (read URLs as clean text), `web-search` (search the live web).
-It links four extensions: `btw` (ask side questions in parallel),
-`fullscreen-scroll` (scroll the fullscreen UI), `goal` (track session
+It links three extensions: `btw` (ask side questions in parallel),
+`goal` (track session
 goals), `subagents` (run background subagents). Pi starts with the
 opencode provider, fullscreen UI, and high thinking level.
 

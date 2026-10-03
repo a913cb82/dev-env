@@ -22,6 +22,7 @@
     "opencode-go/mimo-v2.5"
   ],
   "fullscreenScrollbar": "always",
+  "fullscreenWheelScrollLines": 10,
   "compaction": {
     "reserveTokens": 750000
   }
