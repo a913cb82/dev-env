@@ -141,6 +141,27 @@ validated:
 - When logcat stays inconclusive, draw the state on screen. A dot that
   shows while a value is frozen broke a deadlock that three logging rounds
   did not. Remove the probe with the fix.
+- On-draw text probes can lie about composition state. A `State` read
+  inside `onDraw` subscribes the draw without recomposing, so the canvas
+  repaints with fresh probe text over stale captures: one frame then reads
+  as an impossible mixed state (a full hour lost to a "zombie
+  composition" that was a healthy pipeline plus a misleading probe).
+  Prefer logging transitions in event handlers plus body recompose lines
+  plus a change-gated draw-signature log (`ticks@lo,hi`, logged only when
+  it changes). Never treat pixels of probe text as the state of record.
+- Before instrumenting a rendering discrepancy, compute the expected
+  rendering from the logged state on PC. Ten seconds of label arithmetic
+  (`rankLabel(12)` is `"8k"`) would have shown the labels correct and
+  convicted the domain spec, saving three installs.
+- When state, draw, and labels agree with each other but not with your
+  expectation, suspect the spec (mapping, thresholds, padding direction),
+  not staleness. A pipeline that checks out end to end is telling you the
+  design is wrong.
+- Batch all instrumentation into one install when the repro needs user
+  gestures. Every install wipes UI state (zoom, scroll, sheets), so each
+  probe round costs a full human repro. Four sequential probe installs
+  (draw text, split text, small text, logcat) should have been one
+  logging build.
 
 - `monkey` opens apps. `am start` opens exact activities. `keyevent 3` goes home.
 - `uiautomator dump` reports which package owns the screen. Use its bounds
