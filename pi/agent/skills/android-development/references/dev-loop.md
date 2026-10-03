@@ -124,11 +124,33 @@ adb shell uiautomator dump /dev/stdout | grep -oE 'package="[^"]+"'
 adb exec-out screencap -p > shot.png
 ```
 
+Probe discipline. A negative probe proves nothing until its channel is
+validated:
+
+- Positive control first. Actuate a known-working control and confirm its
+  log appears before concluding silent code is dead code. Logcat silence
+  indicted a gesture loop that was alive; the injected input never reached
+  its composable.
+- Synthetic input is a suspect channel. `adb shell input tap` and `swipe`
+  can drive buttons while never reaching other composables on the same
+  screen. Confirm a synthetic gesture moves your target's state (screenshot
+  the before and after) before trusting anything it does not log.
+- Execution before theory. When a fix changes nothing, prove the new code
+  runs before theorizing about timing. One real case shipped a freezer
+  that was never called, then blamed a timer leak that did not exist.
+- When logcat stays inconclusive, draw the state on screen. A dot that
+  shows while a value is frozen broke a deadlock that three logging rounds
+  did not. Remove the probe with the fix.
+
 - `monkey` opens apps. `am start` opens exact activities. `keyevent 3` goes home.
 - `uiautomator dump` reports which package owns the screen. Use its bounds
   for taps on text controls instead of screen-fraction math.
 - `screencap` works on any screen, locked or not. The agent inspects the
   image. No human eyes are necessary.
+- Never tap from screenshot-scaled coordinates. Dump `uiautomator` bounds
+  first, tap centers, then screenshot-verify the navigation landed. Guessed
+  coordinates hit the wrong control (fourteen wasted taps hit undo instead
+  of the chart icon).
 - Take a screenshot after every tap step. Layouts shift between builds.
   Blind coordinates corrupt user state (a blind sequence changed a saved
   rank).

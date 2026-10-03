@@ -42,6 +42,7 @@ Rules for the loop:
 - PC proof comes first. Write a failing unit test (RED). Then fix the code (GREEN). Only then touch the phone.
 - When a test fails, check the fixture's own assumptions before the production code. Two real failures were wrong fixtures, not wrong code.
 - Change one causal variable per build. Batch only independent changes. A build that changes three things answers nothing about any of them.
+- Stacked Compose gesture detectors fail silently (restart amputation, eaten downs, held taps). See [compose gestures](references/compose-gestures.md) before debugging gesture feel as logic.
 - Check that the APK holds the change before install. Use `unzip -l` for assets. Use `unzip -p` plus `strings` for code. aapt2 transforms some assets (see native engine).
 - Never judge a feature before the power exemptions hold (FGS plus battery unrestricted plus autostart).
 - Never `force-stop` a dev app. It drops accessibility bindings. Never `uninstall` casually. Fresh installs need a manual Allow tap plus fresh permission grants.
@@ -118,6 +119,7 @@ HyperOS breaks standard Android behavior. See [gotchas](references/hyperos-gotch
 - See [env setup](references/env-setup.md) for toolchain, bridge, and phone grants.
 - See [dev loop](references/dev-loop.md) for the iteration loop, check commands, and budgets.
 - See [HyperOS gotchas](references/hyperos-gotchas.md) for the full device gotcha catalog.
+- See [compose gestures](references/compose-gestures.md) for pointer-input rules: restarts, consumption, tap latency, finger tracking.
 - See [native engine](references/native-engine.md) for vendoring, starting, and patching native binaries.
 - See [performance](references/performance.md) for measurement method and tuning order.
 - See [device probe](references/device-probe.md) for probe scripts, FIFO harnesses, and UI hygiene.
