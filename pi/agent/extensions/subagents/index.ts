@@ -92,6 +92,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	let deliveryPaused = false;
 	let activeSignal: AbortSignal | undefined;
 	const deliveredResults = new Set<string>();
+	const notifiedResults = new Set<string>();
 	const seenDescendantResults = new Set<string>();
 	/** Per-child reported subtree-cost totals. Rebuilt from session entries on start/tree; advanced by flushes. */
 	const costFloor: CostFloor = new Map();
@@ -101,6 +102,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	/** Terminal records whose report this session has not consumed yet. */
 	const undelivered = (records: readonly AgentRecord[]) =>
 		records.filter((record) => isTerminalStatus(record.status) && !record.resultsDelivered && !deliveredResults.has(resultKey(record)));
+	/** Terminal records this session has not pinged yet (steering notice, not body). */
+	const unpinged = (records: readonly AgentRecord[]) =>
+		records.filter((record) => isTerminalStatus(record.status) && !record.resultsDelivered && !deliveredResults.has(resultKey(record)) && !notifiedResults.has(resultKey(record)));
 	/** Finished report body, or the live activity line while the child runs. */
 	const resultBody = (record: AgentRecord): string =>
 		isTerminalStatus(record.status)
@@ -111,9 +115,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	/** Re-read a record so send/cancel decisions use the latest on-disk state. */
 	const latestRecord = (record: AgentRecord): AgentRecord =>
 		getCachedRecords(getAgentDir()).find((item) => item.runId === record.runId) ?? record;
+	const formatPing = (record: AgentRecord): string =>
+		`Subagent ${record.name} finished (${record.status}, run ${shortId(record.runId)}). Use check_subagents to read its result.`;
+	const rememberNotified = (records: AgentRecord[]) => {
+		for (const record of records) {
+			notifiedResults.add(resultKey(record));
+		}
+	};
 	const rememberDelivered = (records: AgentRecord[]) => {
 		for (const record of records) {
 			deliveredResults.add(resultKey(record));
+			notifiedResults.add(resultKey(record));
 			try { markRecordResultState(getAgentDir(), record, "resultsDelivered"); } catch {
 				// Keep the report in the returned content even if disk persistence fails.
 				// Session receipts restore this in-memory claim after reload.
@@ -125,9 +137,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		for (const entry of entries) {
 			const rawDetails = entry.type === "custom_message" && entry.customType === "subagent-results"
 				? entry.details : entry.type === "message" && entry.message.role === "toolResult" ? entry.message.details : undefined;
-			const details = rawDetails as { resultKeys?: unknown; seenDescendantResults?: unknown } | undefined;
+			const details = rawDetails as { resultKeys?: unknown; notifiedKeys?: unknown; seenDescendantResults?: unknown } | undefined;
 			for (const key of Array.isArray(details?.resultKeys) ? details.resultKeys : []) {
-				if (typeof key === "string") deliveredResults.add(key);
+				if (typeof key === "string") { deliveredResults.add(key); notifiedResults.add(key); }
+			}
+			for (const key of Array.isArray(details?.notifiedKeys) ? details.notifiedKeys : []) {
+				if (typeof key === "string") notifiedResults.add(key);
 			}
 			for (const key of Array.isArray(details?.seenDescendantResults) ? details.seenDescendantResults : []) {
 				if (typeof key === "string") seenDescendantResults.add(key);
@@ -138,8 +153,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	/** Hold the event loop open while background children run (matters for print-mode parents). */
 	const refreshKeepAlive = () => {
 		if (!runtime || shuttingDown) return;
-		const pending = getCachedRecords(getAgentDir()).some(
-			(record) => record.parentRunId === runtime!.runId && !isTerminalStatus(record.status),
+		const pending = descendantsOf(getCachedRecords(getAgentDir()), runtime!.runId).some(
+			(record) => !isTerminalStatus(record.status),
 		);
 		if (pending && !keepAlive) {
 			keepAlive = setInterval(() => {}, 60000);
@@ -170,34 +185,34 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	};
 
 	const deliverResults = async () => {
-		// Never put result snapshots in Pi's follow-up queue while work is active.
-		// Tool results drain the inbox during a run; agent_settled wakes it at idle.
-		if (!runtime || shuttingDown || delivering || deliveryPaused || agentActive || isIdle?.() === false) return;
+		// Steering pings may interrupt active work: the parent decides whether to
+		// address a finish straight away or keep working and pull via check_subagents.
+		if (!runtime || shuttingDown || delivering || deliveryPaused) return;
 		const agentDir = getAgentDir();
 		const children = getCachedRecords(agentDir).filter((record) => record.parentRunId === runtime!.runId);
-		const pending = undelivered(children);
+		const pending = unpinged(children);
 		if (pending.length === 0) return;
-		const stillRunning = children.filter((record) => !isTerminalStatus(record.status)).length;
-		const parts = pending.map((record) => formatResult(record));
+		const parts = pending.map((record) => formatPing(record));
 		const intro =
-			stillRunning > 0
-				? `Subagent results (${pending.length} finished, ${stillRunning} still running):`
-				: `All ${pending.length} subagent${pending.length === 1 ? "" : "s"} finished:`;
+			pending.length === 1
+				? `Subagent finished:`
+				: `${pending.length} subagents finished:`;
 		// Pi's extension binding returns void, not a model-completion receipt.
-		// At idle it starts the prompt directly instead of queueing a follow-up.
-		// Also honor rejection from hosts that return a promise.
+		// At idle it starts the prompt directly instead of queueing; while
+		// streaming it queues as steering. Also honor rejection from hosts
+		// that return a promise.
 		delivering = true;
 		try {
 			await pi.sendMessage(
 				{
 					customType: "subagent-results",
-					content: `${intro}\n\n${parts.join("\n\n")}`,
-					display: true,
-					details: { resultKeys: pending.map(resultKey) },
+					content: `${intro}\n\n${parts.join("\n")}\n\nUse check_subagents to read results.`,
+					display: false,
+					details: { notifiedKeys: pending.map(resultKey) },
 				},
-				{ triggerTurn: true, deliverAs: "followUp" },
+				{ triggerTurn: true, deliverAs: "steer" },
 			);
-			rememberDelivered(pending);
+			rememberNotified(pending);
 		} finally {
 			delivering = false;
 		}
@@ -223,19 +238,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		restoreCostFloor(costFloor, ctx.sessionManager);
 	});
 
-	// Attach fresh results to a completed tool, rather than queueing a separate
-	// prompt. Pi persists this content and includes it in the next model call.
-	// This does not steer the agent or skip any sibling tool calls.
+	// Flush unreported descendant spend as usage on completed tool results.
+	// Finished bodies are never attached here: finishes arrive as steering pings
+	// (deliverResults) and full text is pulled via check_subagents.
 	pi.on("tool_result", (event, ctx) => {
 		if (ctx.signal?.aborted) { deliveryPaused = true; return; }
 		if (!runtime || shuttingDown || delivering || deliveryPaused) return;
 		// Custom tools may use scalar/array details. Leave their result shape alone.
 		if (event.details !== undefined && (!event.details || typeof event.details !== "object" || Array.isArray(event.details))) return;
 		const details = event.details as Record<string, unknown> | undefined;
-		const previousKeys = Array.isArray(details?.resultKeys) ? details.resultKeys : [];
 		const agentDir = getAgentDir();
 		const records = getCachedRecords(agentDir);
-		const pending = undelivered(records.filter((record) => record.parentRunId === runtime!.runId));
 		// Flush unreported descendant spend as usage on this tool result, whatever
 		// the tool was. Independent of pending reports: running children accrue
 		// cost with no report yet, and terminal states all leave final usage behind.
@@ -246,15 +259,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			// A registry hiccup degrades to skipping cost this flush, never to a broken tool result.
 			cost = undefined;
 		}
-		if (pending.length === 0 && !cost) return;
-		if (pending.length > 0) rememberDelivered(pending);
+		if (!cost) return;
 		return {
-			...(pending.length > 0
-				? { content: [...event.content, { type: "text" as const, text: `Subagent results:\n\n${pending.map((record) => formatResult(record)).join("\n\n")}` }] }
-				: {}),
 			details: {
 				...details,
-				...(pending.length > 0 ? { resultKeys: [...previousKeys, ...pending.map(resultKey)] } : {}),
 				...(cost ? { costReported: cost.receipt } : {}),
 			},
 			...(cost ? { usage: cost.usage } : {}),
@@ -272,6 +280,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		isIdle = () => ctx.isIdle?.() ?? !agentActive;
 		deliveryPaused = false;
 		deliveredResults.clear();
+		notifiedResults.clear();
 		restoreReceipts(ctx.sessionManager.getBranch?.() ?? []);
 		restoreCostFloor(costFloor, ctx.sessionManager);
 		const runId = process.env.PI_SUBAGENT_RUN_ID || ctx.sessionManager.getSessionId();
@@ -448,7 +457,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		name: "spawn_agent",
 		label: "Spawn Agent",
 		description:
-			"Spawn a recursive Pi subagent that runs in the background and returns immediately. Finished results arrive with your next tool result, or automatically when idle; you can also collect them with check_subagents.",
+			"Spawn a recursive Pi subagent that runs in the background and returns immediately. Finishing sends a steering notice; use check_subagents to read results.",
 		promptSnippet: "Delegate work to a background subagent",
 		promptGuidelines: [
 			"spawn_agent returns immediately; keep working while the child runs.",

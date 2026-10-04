@@ -603,10 +603,13 @@ export async function resumeSubagent(
 	if (!isTerminalStatus(latest.status)) {
 		throw new Error(`${latest.name} is still running`);
 	}
-	if (childRuns.has(record.runId) || liveChildren.has(record.runId) || startingChildren.has(record.runId)) {
+	if (childRuns.has(record.runId) || startingChildren.has(record.runId)) {
 		throw new Error(`${latest.name} is still running`);
 	}
-	// Reap any lingering process before a new writer opens the same session.
+	// Reap any lingering idle process (kept for live descendants) before a new
+	// writer opens the same session. Terminal + liveChildren means lingered idle,
+	// not running: the record already settled, so terminate and continue.
+	liveChildren.delete(record.runId);
 	await terminateOwnedSubagents([record.runId]);
 	let reset!: AgentRecord;
 	await withRecordLock(context.agentDir, record.runId, () => {
@@ -959,9 +962,20 @@ async function runSubagentProcess(
 					initialSettled = true;
 					resolveInitial();
 				}
-				// The turn is fully settled (no retry, compaction, or queued
-				// continuation remains), so reap the process instead of idling.
-				// Follow-ups resume via a fresh process from the transcript.
+				// Linger when this child still owns live descendants: the settled
+				// turn is done but the idle process must stay to collect
+				// grandchild finishes (its own steering pings wake it). Reap once
+				// the subtree is terminal; explicit follow-ups still resume via a
+				// fresh process from the transcript (see resumeSubagent).
+				let hasLiveDescendants = false;
+				try {
+					hasLiveDescendants = descendantsOf(readRecords(context.agentDir), record.runId).some(
+						(candidate) => !isTerminalStatus(candidate.status),
+					);
+				} catch {
+					hasLiveDescendants = false;
+				}
+				if (hasLiveDescendants) return;
 				liveChildren.delete(record.runId);
 				try {
 					launchedChild.stdin.end();

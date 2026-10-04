@@ -1036,7 +1036,9 @@ function check(name, cond, extra) {
 		await childTools.get("cancel_subagent").execute("cancel-automatic-grand", { target: "automatic-grand" }, undefined, undefined, {});
 		for (let i = 0; i < 100 && automaticGrandchildMessages < 1; i++) await new Promise((r) => setTimeout(r, 25));
 		check("automatic grandchild delivery reaches direct parent", automaticGrandchildMessages === 1, String(automaticGrandchildMessages));
-		check("automatic grandchild delivery is claimed by direct parent", registry.readRecords(checkAgentDir).find((r) => r.runId === "automatic-grand")?.resultsDelivered === true);
+		check("automatic grandchild ping leaves body unclaimed for check", registry.readRecords(checkAgentDir).find((r) => r.runId === "automatic-grand")?.resultsDelivered !== true);
+		const automaticGrandBody = await childTools.get("check_subagents").execute("check-automatic-grand-body", { wait: false }, undefined, undefined, {});
+		check("pinged grandchild body is pulled via check", automaticGrandBody.content[0].text.includes("automatic-grand"), automaticGrandBody.content[0].text);
 		childHandlers.get("session_shutdown")?.({}, { mode: "rpc" });
 
 		// A failed automatic send leaves the result pending and schedules another attempt.
@@ -1048,10 +1050,12 @@ function check(name, cond, extra) {
 		registry.saveRecord(checkAgentDir, checkRecord("retry-child", "thinking"));
 		await checkTools.get("cancel_subagent").execute("cancel-retry", { target: "retry-child" }, undefined, undefined, {});
 		for (let i = 0; i < 100 && automaticSendAttempts < 1; i++) await new Promise((r) => setTimeout(r, 25));
-		check("failed automatic send leaves result unclaimed", registry.readRecords(checkAgentDir).find((r) => r.runId === "retry-child")?.resultsDelivered !== true);
+		check("failed automatic send leaves ping pending", registry.readRecords(checkAgentDir).find((r) => r.runId === "retry-child")?.resultsDelivered !== true);
 		for (let i = 0; i < 100 && automaticSendAttempts < 2; i++) await new Promise((r) => setTimeout(r, 25));
 		check("failed automatic send is retried", automaticSendAttempts >= 2, String(automaticSendAttempts));
-		check("successful automatic retry claims result", registry.readRecords(checkAgentDir).find((r) => r.runId === "retry-child")?.resultsDelivered === true);
+		check("successful automatic retry pings without claiming body", registry.readRecords(checkAgentDir).find((r) => r.runId === "retry-child")?.resultsDelivered !== true);
+		const retryBody = await checkTool.execute("check-retry-body", {}, undefined, undefined, {});
+		check("retried ping body is pulled via check", retryBody.content[0].text.includes("retry-child"), retryBody.content[0].text);
 
 		// An asynchronous send failure must behave like a synchronous one: the
 		// result stays pending and the delivery loop retries it.
@@ -1063,10 +1067,12 @@ function check(name, cond, extra) {
 		registry.saveRecord(checkAgentDir, checkRecord("async-retry-child", "thinking"));
 		await checkTools.get("cancel_subagent").execute("cancel-async-retry", { target: "async-retry-child" }, undefined, undefined, {});
 		for (let i = 0; i < 100 && asyncAutomaticSendAttempts < 1; i++) await new Promise((r) => setTimeout(r, 25));
-		check("async failed automatic send leaves result unclaimed", registry.readRecords(checkAgentDir).find((r) => r.runId === "async-retry-child")?.resultsDelivered !== true);
+		check("async failed automatic send leaves ping pending", registry.readRecords(checkAgentDir).find((r) => r.runId === "async-retry-child")?.resultsDelivered !== true);
 		for (let i = 0; i < 100 && asyncAutomaticSendAttempts < 2; i++) await new Promise((r) => setTimeout(r, 25));
 		check("async failed automatic send is retried", asyncAutomaticSendAttempts >= 2, String(asyncAutomaticSendAttempts));
-		check("successful async automatic retry claims result", registry.readRecords(checkAgentDir).find((r) => r.runId === "async-retry-child")?.resultsDelivered === true);
+		check("successful async retry pings without claiming body", registry.readRecords(checkAgentDir).find((r) => r.runId === "async-retry-child")?.resultsDelivered !== true);
+		const asyncRetryBody = await checkTool.execute("check-async-retry-body", {}, undefined, undefined, {});
+		check("async retried ping body is pulled via check", asyncRetryBody.content[0].text.includes("async-retry-child"), asyncRetryBody.content[0].text);
 
 		// A busy parent must not queue reports behind its final answer or hide
 		// them from checks. Model a real Pi follow-up queue, not immediate delivery.
@@ -1076,10 +1082,13 @@ function check(name, cond, extra) {
 		registry.saveRecord(checkAgentDir, checkRecord("busy-check", "thinking"));
 		await checkTools.get("cancel_subagent").execute("cancel-busy", { target: "busy-check" }, undefined, undefined, {});
 		await new Promise((r) => setTimeout(r, 1100));
-		check("busy parent does not queue automatic follow-ups", queuedReports.length === 0);
+		check("busy parent still queues steering ping", queuedReports.length === 1, String(queuedReports.length));
+		check("busy ping is invisible steering that wakes", queuedReports[0]?.message.display === false && queuedReports[0]?.options.deliverAs === "steer" && queuedReports[0]?.options.triggerTurn === true, JSON.stringify(queuedReports[0]?.options));
+		check("busy ping carries name not full body", queuedReports[0]?.message.content.includes("busy-check") && !queuedReports[0]?.message.content.includes("### busy-check"), queuedReports[0]?.message.content);
 		check("busy result remains available for explicit check", registry.readRecords(checkAgentDir).find((r) => r.runId === "busy-check")?.resultsDelivered !== true);
 		const busyCheck = await checkTool.execute("busy-check", {}, undefined, undefined, {});
 		check("explicit check consumes a result while parent is busy", busyCheck.content[0].text.includes("### busy-check"));
+		queuedReports.length = 0;
 
 		registry.saveRecord(checkAgentDir, checkRecord("boundary-child", "completed", { latestText: "fresh boundary result", executionId: "first" }));
 		const toolEvent = { toolName: "read", content: [{ type: "text", text: "original tool output" }] };
@@ -1091,11 +1100,11 @@ function check(name, cond, extra) {
 		check("Esc does not wake the parent with pending reports", queuedReports.length === 0);
 		checkHandlers.get("agent_start")({}, {});
 		const boundary = checkHandlers.get("tool_result")(toolEvent, {});
-		check("tool boundary preserves original output", boundary.content[0].text === "original tool output");
-		check("tool boundary includes fresh report", boundary.content[1].text.includes("fresh boundary result"));
-		check("next sibling tool result does not repeat report", checkHandlers.get("tool_result")(toolEvent, {}) === undefined);
+		check("tool boundary no longer attaches bodies (cost only)", boundary === undefined || boundary.content === undefined, JSON.stringify(boundary));
 		const afterBoundary = await checkTool.execute("after-boundary", {}, undefined, undefined, {});
-		check("check does not repeat boundary-delivered report", !afterBoundary.content[0].text.includes("fresh boundary result"));
+		check("check pulls boundary body explicitly", afterBoundary.content[0].text.includes("fresh boundary result"), afterBoundary.content[0].text);
+		const afterBoundaryRepeat = await checkTool.execute("after-boundary-repeat", {}, undefined, undefined, {});
+		check("check does not repeat explicitly delivered report", !afterBoundaryRepeat.content[0].text.includes("fresh boundary result"));
 
 		// Repeated executions replace the unread snapshot rather than creating
 		// one queued prompt per completion.
@@ -1104,10 +1113,12 @@ function check(name, cond, extra) {
 		registry.saveRecord(checkAgentDir, checkRecord("idle-batch", "completed", { latestText: "other result" }));
 		checkHandlers.get("agent_settled")();
 		await new Promise((r) => setTimeout(r, 50));
-		check("settled parent receives one fresh batch", queuedReports.length === 1);
-		check("idle batch uses latest execution only", queuedReports[0]?.message.content.includes("latest result") && !queuedReports[0]?.message.content.includes("superseded result"));
-		check("idle batch contains other finished child", queuedReports[0]?.message.content.includes("other result"));
+		check("settled parent receives one fresh ping batch", queuedReports.length === 1);
+		check("idle ping carries names not bodies", queuedReports[0]?.message.content.includes("boundary-child") && queuedReports[0]?.message.content.includes("idle-batch") && !queuedReports[0]?.message.content.includes("latest result") && !queuedReports[0]?.message.content.includes("other result"), queuedReports[0]?.message.content);
+		check("idle ping is invisible steering", queuedReports[0]?.message.display === false && queuedReports[0]?.options.deliverAs === "steer", JSON.stringify({ display: queuedReports[0]?.message.display, options: queuedReports[0]?.options }));
 		check("idle batch still wakes the parent", queuedReports[0]?.options.triggerTurn === true);
+		const idleBatchBodies = await checkTool.execute("idle-batch-bodies", {}, undefined, undefined, {});
+		check("pinged bodies are pulled via check", idleBatchBodies.content[0].text.includes("latest result") && idleBatchBodies.content[0].text.includes("other result"), idleBatchBodies.content[0].text);
 		checkHandlers.get("agent_settled")();
 		await new Promise((r) => setTimeout(r, 50));
 		check("settling after acknowledgement does not replay reports", queuedReports.length === 1);
@@ -1131,12 +1142,12 @@ function check(name, cond, extra) {
 		let faultResult;
 		try {
 			failMarkerWritesFor = "marker-failure";
-			faultResult = checkHandlers.get("tool_result")(toolEvent, {});
+			faultResult = await checkTool.execute("marker-fault", {}, undefined, undefined, {});
 		} finally { failMarkerWritesFor = undefined; }
 		check("marker failure injection exercised", injectedMarkerFailures === 1);
-		check("partial marker failure preserves all reports", faultResult.content[1].text.includes("good marker report") && faultResult.content[1].text.includes("failed marker report"));
-		check("in-memory receipt prevents failed-marker replay", checkHandlers.get("tool_result")(toolEvent, {}) === undefined);
-		check("tool result contains durable delivery receipts", faultResult.details.resultKeys.length === 2);
+		check("partial marker failure preserves all reports", faultResult.content[0].text.includes("good marker report") && faultResult.content[0].text.includes("failed marker report"));
+		check("in-memory receipt prevents failed-marker replay", !(await checkTool.execute("marker-replay", {}, undefined, undefined, {})).content[0].text.includes("failed marker report"));
+		check("check result contains durable delivery receipts", faultResult.details.resultKeys.length === 2);
 		await checkHandlers.get("session_shutdown")({}, { mode: "rpc" });
 		await checkHandlers.get("session_start")({}, {
 			sessionManager: {
@@ -1890,6 +1901,47 @@ function check(name, cond, extra) {
 	}
 	check("cancelled child stays cancelled", raceFinal && raceFinal.status === "cancelled", raceFinal && raceFinal.status);
 	delete process.env.FAKE_DELAY_MS;
+
+	// Linger: a settled child with live descendants keeps its process until the subtree settles.
+	process.env.FAKE_DELAY_MS = "200";
+	const lingerParent = await spawn.startSubagent({ task: "linger parent", name: "linger-parent" }, baseCtx());
+	registry.saveRecord(spawnAgentDir, {
+		version: 1, runId: "linger-grand", parentRunId: lingerParent.runId, rootRunId: "parent",
+		sessionId: "linger-grand", name: "linger-grand", task: "grand", cwd: spawnDir,
+		model: "fake/parent", depth: 2, maxDepth: 2, status: "thinking", activity: "thinking",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+		startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+	});
+	let lingerSettled;
+	for (let i = 0; i < 100; i++) {
+		lingerSettled = registry.readRecords(spawnAgentDir).find((r) => r.runId === lingerParent.runId);
+		if (lingerSettled?.status === "completed") break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("settled parent lingers while grandchild runs", lingerSettled?.status === "completed" && lingerSettled.pid !== undefined, JSON.stringify(lingerSettled));
+	// Resuming a lingered parent reaps the idle process and starts fresh instead of throwing.
+	await spawn.resumeSubagent(lingerSettled, "resume lingered", baseCtx());
+	const lingerExecBefore = lingerSettled.executionId;
+	let lingerResumed;
+	for (let i = 0; i < 100; i++) {
+		lingerResumed = registry.readRecords(spawnAgentDir).find((r) => r.runId === lingerParent.runId);
+		if (lingerResumed?.status === "completed" && lingerResumed.executionId !== lingerExecBefore) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("lingered parent resumes from transcript", lingerResumed?.status === "completed" && lingerResumed.executionId !== lingerExecBefore, lingerResumed && `${lingerResumed.status} ${lingerResumed.executionId === lingerExecBefore}`);
+	await spawn.terminateOwnedSubagents([lingerParent.runId]);
+	registry.saveRecord(spawnAgentDir, { ...registry.readRecords(spawnAgentDir).find((r) => r.runId === "linger-grand"), status: "completed", finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+	delete process.env.FAKE_DELAY_MS;
+
+	// Without live descendants the settled process is still reaped immediately.
+	const loneParent = await spawn.startSubagent({ task: "lone", name: "lone-parent" }, baseCtx());
+	let loneSettled;
+	for (let i = 0; i < 100; i++) {
+		loneSettled = registry.readRecords(spawnAgentDir).find((r) => r.runId === loneParent.runId);
+		if (loneSettled?.status === "completed" && loneSettled.pid === undefined) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("settled parent without descendants is reaped", loneSettled?.status === "completed" && loneSettled.pid === undefined, JSON.stringify(loneSettled));
 
 	delete process.env.PI_SUBAGENT_COMMAND;
 

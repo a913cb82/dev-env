@@ -14,7 +14,7 @@ Based on [`williamcr01/pi-subagents`](https://github.com/williamcr01/pi-subagent
 - **Status footer** — a passive footer lists outstanding subagents with model and live activity; a line disappears once its result is read.
 - **Targeted checks and quorum waits** — `check_subagents` checks all descendants or a named subset, and can block until any or all of them finish.
 - **Steering and follow-ups** — send a steering message to redirect a running child, or a follow-up to queue behind its work; messaging a finished or cancelled child restarts it from its transcript in a fresh process.
-- **Automatic delivery** — finished results arrive with the next completed parent tool result. An idle parent receives one batch and resumes. `check_subagents` can collect pending results explicitly.
+- **Automatic delivery** — finishing sends an invisible steering ping (name + status); full results are pulled via `check_subagents`.
 - **Cancellation** — abort a child's current turn by run ID, session ID, or name; its process is stopped and a later message resumes it from its transcript.
 - **No added dependencies** — uses Pi's extension and TUI APIs plus Node.js built-ins.
 
@@ -121,13 +121,13 @@ Abort a child's current turn by exact name, run ID, or session ID:
 cancel_subagent({ target: "auth-reviewer" })
 ```
 
-Cancellation stops the child process (no idle pi lingers), so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. Session shutdown still terminates everything still running.
+Cancellation stops the child process, so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. A settled child with live descendants lingers idle (no turn) until its subtree settles, so grandchild finishes wake their direct parent. Session shutdown still terminates everything still running.
 
 ## Result delivery
 
-While the parent works, finished child reports stay in the registry until a completed parent tool result or `check_subagents` consumes them. Automatic delivery appends reports to the tool output without steering the parent or skipping sibling tool calls. If the parent becomes idle first, it receives the pending reports in one message that starts a new turn.
+Finishing sends an invisible steering ping (`name + status + run`, `display:false`, `deliverAs:steer`) that wakes the parent even mid-work; the parent decides whether to address it now or keep working. Full bodies stay in the registry until `check_subagents` pulls them (once per execution). Tool results carry only subtree cost deltas, never bodies.
 
-If a child completes several follow-ups before the parent consumes its report, only the latest execution is delivered. Earlier output remains available in the child's session file.
+If a child completes several follow-ups before the parent pulls, only the latest execution is delivered. Earlier output remains available in the child's session file.
 
 ## Cost accounting
 
@@ -168,7 +168,7 @@ While subagents are outstanding, a passive footer lists them, indented by depth:
 ● test-runner · openai-codex/gpt-5.5 · running npm test
 ```
 
-A child disappears the moment its result is read by its direct parent — delivered on the next tool result, in the idle batch, or by `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
+A child disappears the moment its result is read by its direct parent via `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
 
 ## Registry maintenance
 
