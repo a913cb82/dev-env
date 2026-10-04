@@ -99,6 +99,16 @@ Traps from bridge setup:
 - `no permissions` means the udev rule or server restart is missing. The
   phone can re-enumerate under a second vendor ID (we observed an 18d1
   "Google" descriptor). Keep one udev rule per observed `idVendor`.
+- WSL-to-Windows interop itself can die (`UtilAcceptVsock: accept4
+  failed 110` from any `powershell.exe` call). It looks exactly like the
+  phone disappearing, but it sits below USB: no `usbipd` command can run.
+  Triage bottom-up and stop at the first failure: `powershell.exe` echo
+  (interop alive?) then `usbipd list` (phone visible to Windows?) then
+  attach then `adb devices`. It cannot self-heal from inside WSL.
+  Non-destructive attempts: kill stale `powershell.exe` via Task Manager,
+  pause VPN (known vsock interferer), wait 10-30 min. The real fix is
+  `wsl --shutdown` from Windows when sessions can die. Until then, WiFi
+  adb covers the whole loop at ~7s per push.
 - `unauthorized` means you have not answered the on-phone RSA prompt.
 - The RSA key lives in `~/.android/adbkey`. Copying it to another machine
   moves the trust with it.

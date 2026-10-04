@@ -80,6 +80,12 @@ step, so the failing step names itself:
   `adb connect <wlan-ip>:5555`. About 80 MB pushes in ~7s at 11 MB/s.
   Get the IP once per network (`ip addr show wlan0`). It survives USB
   flaps. Use `-s <ip>:5555` for the push/install/check steps.
+- Wireless debugging shows a changing port: read the current `IP:port`
+  off the phone's Wireless debugging screen for every reconnect
+  (`:32925`, not `:5555`). A stale port reads as "connection refused"
+  and sends you chasing ghosts. Toggling wireless debugging off and on
+  invalidates the pairing — plain `adb connect` then fails until
+  re-paired.
 - Chain install, launch, and settle-checks in one `adb shell` to save
   round-trips. Poll logcat for the app's ready signal instead of `sleep`.
 
