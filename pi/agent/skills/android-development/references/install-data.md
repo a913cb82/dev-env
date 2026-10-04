@@ -22,6 +22,22 @@ Then update the aggregates. Rules change only when the aggregates move.
 
 ## Log
 
+### 2026-10-04 (WiFi adb, Xiaomi 15 Ultra, ~80 MB APK)
+
+1. White-thinking build. `./gradlew installDebug` failed: no devices.
+   WiFi adb to 192.168.0.5:5555 refused; neighbors unrouted. Phone-side
+   wireless debugging had moved to :32925 (changing port — read it off
+   the screen). USB path unavailable: WSL-to-Windows interop down
+   (`UtilAcceptVsock`), so no `usbipd` at all. Not a push wedge; no
+   recovery attempted on the transport.
+2. Same build over `adb connect 192.168.0.5:32925`. Gradle install
+   succeeded first try (~1m10s build+install; install portion not
+   timed separately). Launch clean. Note: Gradle install path, not the
+   push-plus-`pm install` split, so not counted in WiFi push aggregates.
+   Lesson: an interop outage blocks ALL usbipd recovery (rebind needs
+   interop too) — WiFi is then the only path, which strengthens the
+   WiFi-first hypothesis under test.
+
 ### 2026-09-30 (usbipd NAT attach, Xiaomi 15 Ultra, 83 MB APK)
 
 1. Ranked-toggle build. `adb install` hung 300s (aborted). Split op.
