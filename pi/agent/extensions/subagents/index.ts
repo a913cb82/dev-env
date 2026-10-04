@@ -9,7 +9,7 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
-import { getCachedRecords, isProcessAlive, isTerminalStatus, markRecordResultState, pruneRecords } from "./registry.ts";
+import { getCachedRecords, isProcessAlive, isTerminalStatus, markRecordResultState, pruneRecords, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
@@ -69,6 +69,11 @@ const SendSchema = Type.Object({
 });
 
 const RESULT_OUTPUT_CAP = 8000;
+
+/** Message that restarts an interrupted turn from its transcript after a reload. */
+const RELOAD_RESUME_MESSAGE =
+	"The parent session reloaded and your previous turn was interrupted before it could finish. " +
+	"Continue your task from where you left off; do not restart work already present in the transcript above.";
 
 function cap(text: string, limit: number): string {
 	return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
@@ -323,6 +328,21 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
 		sessionAbort = new AbortController();
 
+		// A /reload tears down live children with the old runtime; restart the
+		// ones it interrupted so active work continues instead of dying cancelled.
+		// No markers exist on ordinary starts, so this is a no-op there.
+		void resumeInterruptedChildren({
+			cwd: ctx.cwd,
+			scopedModels: Array.isArray((ctx as { scopedModels?: unknown }).scopedModels)
+				? (ctx as unknown as { scopedModels: Array<{ model: { provider: string; id: string }; thinkingLevel?: string }> }).scopedModels.map(({ model, thinkingLevel }) => ({ provider: model.provider, id: model.id, thinkingLevel }))
+				: [],
+			ui: (ctx as { ui?: unknown }).ui,
+			hasUI: ctx.hasUI,
+		}).catch(() => {
+			// Best effort: resume failures are reported per-child (or silently
+			// dropped headless) and never break session startup.
+		});
+
 		if (ctx.mode !== "tui") return;
 
 		ctx.ui.setWidget(
@@ -419,7 +439,96 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		return { resumed: true };
 	};
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	/** Restart children a /reload interrupted. Only claims runs still carrying
+	 * their reload-interrupt marker for the interrupted execution: explicitly
+	 * cancelled children carry no marker and finished children are never
+	 * marked, so neither is resurrected. Orphans (direct parent settled while
+	 * they still ran) are adopted so the interrupted turn keeps a live claimant. */
+	const resumeInterruptedChildren = async (resumeCtx: {
+		cwd: string;
+		scopedModels: Array<{ provider: string; id: string; thinkingLevel?: string }>;
+		ui: any;
+		hasUI: boolean;
+	}): Promise<void> => {
+		if (!runtime || shuttingDown) return;
+		const agentDir = getAgentDir();
+		const markers = new Map<string, ReloadInterruptMarker>();
+		try {
+			for (const marker of listReloadInterrupted(agentDir)) markers.set(marker.runId, marker);
+		} catch {
+			return;
+		}
+		if (markers.size === 0) return;
+		const all = getCachedRecords(agentDir);
+		const byId = new Map(all.map((record) => [record.runId, record]));
+		const candidates = descendantsOf(all, runtime.runId).filter((record) => {
+			if (!markers.has(record.runId)) return false;
+			if (record.parentRunId === runtime!.runId) return true;
+			const parent = byId.get(record.parentRunId);
+			return !parent || isTerminalStatus(parent.status);
+		});
+		for (const candidate of candidates) {
+			if (!runtime || shuttingDown) return;
+			try {
+				const latest = getCachedRecords(agentDir).find((item) => item.runId === candidate.runId) ?? candidate;
+				const marker = readReloadInterrupted(agentDir, candidate.runId);
+				if (!marker || latest.status !== "cancelled" || latest.resultsDelivered || (marker.executionId ?? null) !== (latest.executionId ?? null)) {
+					try { clearReloadInterrupted(agentDir, candidate.runId); } catch {
+						// Best effort.
+					}
+					continue;
+				}
+				if (latest.parentRunId !== runtime.runId) {
+					await withRecordLock(agentDir, latest.runId, () => {
+						const current = readRecords(agentDir).find((item) => item.runId === latest.runId) ?? latest;
+						if (current.parentRunId !== runtime!.runId) {
+							saveRecord(agentDir, { ...current, parentRunId: runtime!.runId });
+						}
+					});
+				}
+				// resumeSubagent consumes the marker under its own lock. Runs that
+				// never started have no transcript: restart them with the original task.
+				await resumeSubagent(
+					latest,
+					latest.sessionFile ? RELOAD_RESUME_MESSAGE : latest.task,
+					{
+						agentDir,
+						parentRunId: runtime.runId,
+						rootRunId: runtime.rootRunId,
+						currentDepth: runtime.depth,
+						settings: runtime.settings,
+						parentTools: typeof (pi as { getActiveTools?: unknown }).getActiveTools === "function"
+							? (pi as unknown as { getActiveTools: () => string[] }).getActiveTools()
+							: [],
+						scopedModels: resumeCtx.scopedModels,
+						parentCwd: resumeCtx.cwd,
+						projectTrusted: runtime.projectTrusted,
+						signal: sessionAbort.signal,
+						onRecord: trackChild,
+						onUiRequest: resumeCtx.hasUI && resumeCtx.ui ? makeUiHandler(resumeCtx.ui) : undefined,
+						onSettled: trackChild,
+					},
+					"steer",
+					{ claimReloadMarker: true },
+				);
+			} catch (error) {
+				// A failed resume must not retry-loop on later starts: leave the
+				// child cancelled and drop the intent.
+				try { clearReloadInterrupted(agentDir, candidate.runId); } catch {
+					// Best effort.
+				}
+				if (resumeCtx.hasUI && resumeCtx.ui) {
+					try {
+						resumeCtx.ui.notify(`Could not resume interrupted subagent ${candidate.name}: ${error instanceof Error ? error.message : String(error)}`, "error");
+					} catch {
+						// Best effort.
+					}
+				}
+			}
+		}
+	};
+
+	pi.on("session_shutdown", async (event, ctx) => {
 		shuttingDown = true;
 		widget?.dispose();
 		widget = undefined;
@@ -438,6 +547,23 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		// stragglers plus the await for still-running turns.
 		if (!runtime) return;
 		const agentDir = getAgentDir();
+		// A reload tears down this runtime but the session continues: leave a
+		// resume marker on every still-running descendant so the fresh runtime
+		// restarts them instead of losing active work. Other shutdown reasons
+		// (quit, session switch) keep the cancel-and-stop behavior below.
+		if ((event as { reason?: string } | undefined)?.reason === "reload") {
+			try {
+				const owned = new Set(descendantsOf(getCachedRecords(agentDir), runtime.runId).map((child) => child.runId));
+				for (const record of readRecords(agentDir)) {
+					if (!owned.has(record.runId) || isTerminalStatus(record.status)) continue;
+					try { markReloadInterrupted(agentDir, record); } catch {
+						// Marking must never block teardown of the old runtime.
+					}
+				}
+			} catch {
+			// Marking must never block teardown of the old runtime.
+			}
+		}
 		const records = descendantsOf(getCachedRecords(agentDir), runtime.runId);
 		for (const record of records.slice().reverse()) {
 			try {
@@ -620,10 +746,31 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const agentDir = getAgentDir();
 			const record = resolveRecord(params.target);
+			// An explicit cancellation supersedes any reload-interrupt intent:
+			// the user stopped this turn on purpose, so it must not auto-resume
+			// (checked before the terminal early-return below, and again after
+			// the cancel for the whole subtree).
+			try {
+				clearReloadInterrupted(agentDir, record.runId);
+			} catch {
+				// Marker cleanup is best effort; a stale marker is dropped unread
+				// when the next session start finds no matching interrupted execution.
+			}
 			if (isTerminalStatus(record.status)) {
 				return { content: [{ type: "text", text: `${record.name} already finished (${record.status}).` }], details: { record } };
 			}
 			const cancelled = await cancelSubagent(agentDir, record);
+			// An explicit cancellation supersedes any reload-interrupt intent:
+			// the user stopped this turn on purpose, so it must not auto-resume.
+			try {
+				clearReloadInterrupted(agentDir, cancelled.runId);
+				for (const child of descendantsOf(getCachedRecords(agentDir), cancelled.runId)) {
+					clearReloadInterrupted(agentDir, child.runId);
+				}
+			} catch {
+				// Marker cleanup is best effort; a stale marker is dropped unread
+				// when the next session start finds no matching interrupted execution.
+			}
 			trackChild(cancelled);
 			return { content: [{ type: "text", text: `Cancelled ${cancelled.name}.` }], details: { record: cancelled } };
 		},

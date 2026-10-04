@@ -16,6 +16,7 @@ Based on [`williamcr01/pi-subagents`](https://github.com/williamcr01/pi-subagent
 - **Steering and follow-ups** — send a steering message to redirect a running child, or a follow-up to queue behind its work; messaging a finished or cancelled child restarts it from its transcript in a fresh process.
 - **Automatic delivery** — finishing sends an invisible steering ping (name + status); full results are pulled via `check_subagents`.
 - **Cancellation** — abort a child's current turn by run ID, session ID, or name; its process is stopped and a later message resumes it from its transcript.
+- **Reload recovery** — `/reload` interrupts live children and the fresh runtime restarts them from their transcripts; finished results are untouched and an explicit cancellation is never resurrected.
 - **No added dependencies** — uses Pi's extension and TUI APIs plus Node.js built-ins.
 
 ## Install
@@ -122,6 +123,8 @@ cancel_subagent({ target: "auth-reviewer" })
 ```
 
 Cancellation stops the child process, so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. A settled child with live descendants lingers idle (no turn) until its subtree settles, so grandchild finishes wake their direct parent. Session shutdown still terminates everything still running.
+
+A `/reload` tears down the extension runtime, which stops live children — but it leaves a resume marker on each one it interrupts, and the fresh runtime restarts them from their transcripts (never-started runs restart with their original task; orphans whose direct parent already settled are adopted). Finished children are never marked, so their results stay exactly as they were. Quits and session switches keep the plain cancel-and-stop behavior. An explicit `cancel_subagent` clears the marker, so a child stopped on purpose is never resurrected by a later start.
 
 ## Result delivery
 

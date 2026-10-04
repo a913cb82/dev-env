@@ -164,6 +164,100 @@ export function clearRecordClosedMarker(agentDir: string, runId: string): void {
 	rmSync(markerPath(agentDir, runId, "closed"), { force: true });
 }
 
+export interface ReloadInterruptMarker {
+	version: 1;
+	runId: string;
+	/** Execution that was running when the reload hit (absent for never-started runs). */
+	executionId?: string;
+	parentRunId: string;
+	interruptedAt: string;
+	reason: "reload";
+}
+
+function reloadInterruptPath(agentDir: string, runId: string): string {
+	return join(registryDir(agentDir), `${safeRunId(runId)}.reloadInterrupted`);
+}
+
+/** Mark a run as interrupted by a session reload so the next session_start can
+ * resume it from its transcript. Only the interrupted execution may claim it:
+ * the marker records the execution id (absent for never-started runs). */
+export function markReloadInterrupted(agentDir: string, record: AgentRecord): ReloadInterruptMarker {
+	mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
+	const marker: ReloadInterruptMarker = {
+		version: 1,
+		runId: record.runId,
+		executionId: record.executionId,
+		parentRunId: record.parentRunId,
+		interruptedAt: new Date().toISOString(),
+		reason: "reload",
+	};
+	atomicWrite(reloadInterruptPath(agentDir, record.runId), `${JSON.stringify(marker)}\n`);
+	return marker;
+}
+
+function readReloadInterruptFile(target: string, runId: string): ReloadInterruptMarker | undefined {
+	try {
+		const value = JSON.parse(readFileSync(target, "utf8")) as Partial<ReloadInterruptMarker>;
+		if (value?.version === 1 && value.runId === runId && typeof value.interruptedAt === "string") {
+			return value as ReloadInterruptMarker;
+		}
+	} catch {
+		// A corrupt marker is unclaimable; fall through to removal.
+	}
+	try {
+		rmSync(target, { force: true });
+	} catch {
+		// Best effort.
+	}
+	return undefined;
+}
+
+export function readReloadInterrupted(agentDir: string, runId: string): ReloadInterruptMarker | undefined {
+	const target = reloadInterruptPath(agentDir, runId);
+	if (!existsSync(target)) return undefined;
+	return readReloadInterruptFile(target, runId);
+}
+
+/** Every valid reload-interrupt marker in this registry. */
+export function listReloadInterrupted(agentDir: string): ReloadInterruptMarker[] {
+	const dir = registryDir(agentDir);
+	if (!existsSync(dir)) return [];
+	let entries: string[];
+	try {
+		entries = readdirSync(dir);
+	} catch {
+		return [];
+	}
+	const markers: ReloadInterruptMarker[] = [];
+	for (const name of entries) {
+		if (!name.endsWith(".reloadInterrupted")) continue;
+		const target = join(dir, name);
+		try {
+			if (statSync(target).isDirectory()) continue;
+			const value = JSON.parse(readFileSync(target, "utf8")) as Partial<ReloadInterruptMarker>;
+			if (value?.version === 1 && typeof value.runId === "string" && typeof value.interruptedAt === "string") {
+				markers.push(value as ReloadInterruptMarker);
+			continue;
+			}
+		} catch {
+			// Corrupt marker below.
+		}
+		try {
+			rmSync(target, { force: true });
+		} catch {
+			// Best effort.
+		}
+	}
+	return markers;
+}
+
+/** Drop the reload-interrupt marker so the run is never auto-resumed.
+ * Call when the interruption is consumed (any resume path) or superseded
+ * (explicit user cancellation). */
+export function clearReloadInterrupted(agentDir: string, runId: string): void {
+	rmSync(reloadInterruptPath(agentDir, runId), { force: true });
+}
+
 function sleepAsync(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -396,6 +490,7 @@ function isPrunableSidecar(name: string): boolean {
 	return (
 		name.endsWith(".cancelled") ||
 		name.endsWith(".closed") ||
+		name.endsWith(".reloadInterrupted") ||
 		name.endsWith(".resultsDelivered") ||
 		name.endsWith(".footerDismissed")
 	);

@@ -10,11 +10,13 @@ import {
 	clearRecordCancellation,
 	clearRecordClosedMarker,
 	clearRecordPid,
+	clearReloadInterrupted,
 	descendantsOf,
 	isProcessAlive,
 	isRecordCancelled,
 	isTerminalStatus,
 	readRecords,
+	readReloadInterrupted,
 	saveRecord,
 	withRecordLock,
 } from "./registry.ts";
@@ -596,6 +598,7 @@ export async function resumeSubagent(
 	message: string,
 	context: SpawnContext,
 	_mode: SubagentMessageMode = "steer",
+	options: { claimReloadMarker?: boolean } = {},
 ): Promise<AgentRecord> {
 	normalizeMessageMode(_mode);
 	if (context.signal?.aborted) throw new Error("Subagent message was aborted");
@@ -615,8 +618,16 @@ export async function resumeSubagent(
 	await withRecordLock(context.agentDir, record.runId, () => {
 		const current = readRecords(context.agentDir).find((candidate) => candidate.runId === record.runId) ?? latest;
 		if (!isTerminalStatus(current.status)) throw new Error(`${current.name} is still running`);
+		// Claim before mutating: a failed claim leaves the disk exactly as-is
+		// so a concurrent explicit cancellation is never undone mid-flight.
+		if (options.claimReloadMarker && !readReloadInterrupted(context.agentDir, record.runId)) {
+			throw new Error(`${current.name} is no longer awaiting resume`);
+		}
 		clearRecordCancellation(context.agentDir, record.runId);
 		clearRecordClosedMarker(context.agentDir, record.runId);
+		// A resume (manual or automatic after a reload) consumes the
+		// reload-interrupt intent: the new execution owns the run now.
+		clearReloadInterrupted(context.agentDir, record.runId);
 		const queued = gate.isFull(context.settings.maxConcurrency);
 		const now = new Date().toISOString();
 		reset = saveRecord(context.agentDir, {

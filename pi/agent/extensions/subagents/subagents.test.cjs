@@ -1943,6 +1943,201 @@ function check(name, cond, extra) {
 	}
 	check("settled parent without descendants is reaped", loneSettled?.status === "completed" && loneSettled.pid === undefined, JSON.stringify(loneSettled));
 
+	// --- reload auto-resume: /reload interrupts live children, the fresh runtime restarts them from their transcripts ---
+	const rlAgentBase = path.join(sandbox, "reload");
+	const rlPrevAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const rlPrevRunId = process.env.PI_SUBAGENT_RUN_ID;
+	const rlPrevRootId = process.env.PI_SUBAGENT_ROOT_ID;
+	delete process.env.PI_SUBAGENT_RUN_ID;
+	delete process.env.PI_SUBAGENT_ROOT_ID;
+	const rlBoot = () => {
+		const handlers = new Map();
+		const tools = new Map();
+		subagentsExtension({
+			registerFlag: () => {},
+			on: (event, handler) => handlers.set(event, handler),
+			registerMessageRenderer: () => {},
+			registerCommand: () => {},
+			registerTool: (tool) => tools.set(tool.name, tool),
+			getFlag: () => undefined,
+			sendMessage: async () => {},
+			sendUserMessage: async () => {},
+		});
+		return { handlers, tools };
+	};
+	const rlStartCtx = (sessionId) => ({
+		sessionManager: { getSessionId: () => sessionId, getEntries: () => [], getBranch: () => [] },
+		cwd: sandbox,
+		isProjectTrusted: () => false,
+		mode: "rpc",
+		hasUI: false,
+	});
+	const rlSpawnCtx = (agentDir, parent) => ({
+		agentDir,
+		parentRunId: parent,
+		rootRunId: parent,
+		currentDepth: 0,
+		settings: { maxDepth: 2, maxConcurrency: -1 },
+		parentModel: "fake/parent",
+		parentThinking: "off",
+		parentTools: ["read"],
+		scopedModels: [],
+		parentCwd: sandbox,
+		projectTrusted: false,
+	});
+	const rlUse = (name) => {
+		const dir = path.join(rlAgentBase, name);
+		fs.mkdirSync(dir, { recursive: true });
+		process.env.PI_CODING_AGENT_DIR = dir;
+		return dir;
+	};
+	const rlWaitFor = async (agentDir, runId, pred, tries = 200) => {
+		for (let i = 0; i < tries; i++) {
+			const row = registry.readRecords(agentDir).find((r) => r.runId === runId);
+			if (row && pred(row)) return row;
+			await waitSleep(25);
+		}
+		return registry.readRecords(agentDir).find((r) => r.runId === runId);
+	};
+	const rlRunning = (r) => ["thinking", "running_tool"].includes(r.status) && !!r.pid && !!r.executionId;
+	try {
+		// Reload interrupts; the fresh runtime resumes from the transcript.
+		{
+			const agentDir = rlUse("main");
+			const parent = "reload-parent";
+			const extA = rlBoot();
+			await extA.handlers.get("session_start")({ reason: "startup" }, rlStartCtx(parent));
+			process.env.FAKE_DELAY_MS = "30000";
+			const rec = await spawn.startSubagent({ task: "long work", name: "long-child" }, rlSpawnCtx(agentDir, parent));
+			const running = await rlWaitFor(agentDir, rec.runId, rlRunning);
+			check("reload interrupts the running child", !!running?.pid, running?.status);
+			delete process.env.FAKE_DELAY_MS;
+			await extA.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, { mode: "rpc" });
+			const afterReload = registry.readRecords(agentDir).find((r) => r.runId === rec.runId);
+			check("reload cancels the running child", afterReload?.status === "cancelled", afterReload?.status);
+			check("interrupted child carries a resume marker", registry.readReloadInterrupted(agentDir, rec.runId)?.reason === "reload");
+			const extB = rlBoot();
+			await extB.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
+			const resumed = await rlWaitFor(agentDir, rec.runId, (r) => r.status === "completed" && r.executionId !== afterReload?.executionId);
+			check("interrupted child auto-resumes after reload and completes",
+				resumed?.status === "completed" && resumed.executionId !== afterReload?.executionId,
+				resumed && `${resumed.status} sameExec=${resumed.executionId === afterReload?.executionId}`);
+			check("resume consumes the marker", registry.readReloadInterrupted(agentDir, rec.runId) === undefined);
+			await extB.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
+		// Quit keeps the old behavior: cancel, no marker, no resurrection.
+		{
+			const agentDir = rlUse("quit");
+			const parent = "quit-parent";
+			const extA = rlBoot();
+			await extA.handlers.get("session_start")({ reason: "startup" }, rlStartCtx(parent));
+			process.env.FAKE_DELAY_MS = "30000";
+			const rec = await spawn.startSubagent({ task: "quit work", name: "quit-child" }, rlSpawnCtx(agentDir, parent));
+			await rlWaitFor(agentDir, rec.runId, rlRunning);
+			delete process.env.FAKE_DELAY_MS;
+			await extA.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+			check("quit still cancels the running child", registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status === "cancelled");
+			check("quit leaves no resume marker", registry.listReloadInterrupted(agentDir).length === 0);
+			const extB = rlBoot();
+			await extB.handlers.get("session_start")({ reason: "startup" }, rlStartCtx(parent));
+			await waitSleep(1500);
+			check("quit-cancelled child is not resurrected on next start",
+				registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status === "cancelled");
+			await extB.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
+		// Finished children are never marked; their results survive the reload.
+		{
+			const agentDir = rlUse("done");
+			const parent = "done-parent";
+			const extA = rlBoot();
+			await extA.handlers.get("session_start")({ reason: "startup" }, rlStartCtx(parent));
+			const rec = await spawn.startSubagent({ task: "quick", name: "quick-child" }, rlSpawnCtx(agentDir, parent));
+			const done = await rlWaitFor(agentDir, rec.runId, (r) => r.status === "completed");
+			check("child finishes before reload", done?.status === "completed", done?.status);
+			await extA.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, { mode: "rpc" });
+			check("finished child is not marked on reload", registry.readReloadInterrupted(agentDir, rec.runId) === undefined);
+			const extB = rlBoot();
+			await extB.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
+			await waitSleep(1500);
+			const later = registry.readRecords(agentDir).find((r) => r.runId === rec.runId);
+			check("finished child keeps its result, no new execution",
+				later?.status === "completed" && later.executionId === done?.executionId && later.latestText === "fake done",
+				later && `${later.status} ${later.latestText}`);
+			await extB.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
+		// An explicit cancellation beats a pending auto-resume.
+		{
+			const agentDir = rlUse("cancel");
+			const parent = "cancel-parent";
+			const extA = rlBoot();
+			await extA.handlers.get("session_start")({ reason: "startup" }, rlStartCtx(parent));
+			process.env.FAKE_DELAY_MS = "30000";
+			const rec = await spawn.startSubagent({ task: "doomed", name: "doomed-child" }, rlSpawnCtx(agentDir, parent));
+			await rlWaitFor(agentDir, rec.runId, rlRunning);
+			delete process.env.FAKE_DELAY_MS;
+			await extA.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, { mode: "rpc" });
+			check("reload marks the child", registry.readReloadInterrupted(agentDir, rec.runId) !== undefined);
+			const extB = rlBoot();
+			await extB.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
+			await extB.tools.get("cancel_subagent").execute("cancel-1", { target: rec.runId }, undefined, undefined, {});
+			check("explicit cancel drops the resume marker", registry.readReloadInterrupted(agentDir, rec.runId) === undefined);
+			await waitSleep(2000);
+			check("explicitly cancelled child stays cancelled",
+				registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status === "cancelled",
+				registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status);
+			await extB.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
+		// A marker for a superseded execution is dropped, not resumed.
+		{
+			const agentDir = rlUse("stale");
+			const parent = "stale-parent";
+			registry.saveRecord(agentDir, mk("stale-run", parent, { rootRunId: parent, cwd: sandbox, status: "cancelled", executionId: "exec-new" }));
+			registry.markReloadInterrupted(agentDir, { runId: "stale-run", parentRunId: parent, executionId: "exec-old" });
+			const ext = rlBoot();
+			await ext.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
+			await waitSleep(1500);
+			const later = registry.readRecords(agentDir).find((r) => r.runId === "stale-run");
+			check("stale marker does not resurrect", later?.status === "cancelled" && later.executionId === "exec-new", later && `${later.status} ${later.executionId}`);
+			check("stale marker is dropped", registry.readReloadInterrupted(agentDir, "stale-run") === undefined);
+			await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
+		// An orphan (settled parent, live grandchild) is adopted and resumed.
+		{
+			const agentDir = rlUse("orphan");
+			const parent = "orphan-parent";
+			registry.saveRecord(agentDir, mk("settled-child", parent, { rootRunId: parent, cwd: sandbox, status: "completed", executionId: "exec-1", latestText: "settled out" }));
+			registry.saveRecord(agentDir, mk("orphan-grand", "settled-child", { rootRunId: parent, cwd: sandbox, depth: 2, status: "cancelled" }));
+			registry.markReloadInterrupted(agentDir, { runId: "orphan-grand", parentRunId: "settled-child" });
+			const ext = rlBoot();
+			await ext.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
+			const resumed = await rlWaitFor(agentDir, "orphan-grand", (r) => r.status === "completed");
+			check("orphaned grandchild is adopted and resumed",
+				resumed?.status === "completed" && resumed.parentRunId === parent,
+				resumed && `${resumed.status} parent=${resumed.parentRunId} text=${resumed.latestText}`);
+			await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
+		// Marker helpers: roundtrip, corrupt tolerance, prune cleanup.
+		{
+			const agentDir = rlUse("markers");
+			const m = registry.markReloadInterrupted(agentDir, { runId: "m1", parentRunId: "p", executionId: "e1" });
+			check("reload marker roundtrips", m.runId === "m1" && registry.readReloadInterrupted(agentDir, "m1")?.executionId === "e1");
+			check("reload marker lists", registry.listReloadInterrupted(agentDir).some((x) => x.runId === "m1"));
+			registry.clearReloadInterrupted(agentDir, "m1");
+			check("reload marker clears", registry.readReloadInterrupted(agentDir, "m1") === undefined);
+			fs.writeFileSync(path.join(agentDir, "subagents", "runs", "m2.reloadInterrupted"), "corrupt{");
+			check("corrupt reload marker reads as absent", registry.readReloadInterrupted(agentDir, "m2") === undefined);
+			check("corrupt reload marker file is removed", !fs.existsSync(path.join(agentDir, "subagents", "runs", "m2.reloadInterrupted")));
+		}
+	} finally {
+		delete process.env.FAKE_DELAY_MS;
+		if (rlPrevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = rlPrevAgentDir;
+		if (rlPrevRunId === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+		else process.env.PI_SUBAGENT_RUN_ID = rlPrevRunId;
+		if (rlPrevRootId === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
+		else process.env.PI_SUBAGENT_ROOT_ID = rlPrevRootId;
+	}
+
 	delete process.env.PI_SUBAGENT_COMMAND;
 
 	fs.rmSync(sandbox, { recursive: true, force: true });
