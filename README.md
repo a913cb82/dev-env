@@ -1,60 +1,56 @@
 # dev-env
 
-Start from a factory-reset WSL2 Ubuntu PC. End with a full dev setup.
-Run these commands:
+Configures WSL Ubuntu for development. It installs tools, shell defaults, Git defaults, SSH, and the Pi agent.
 
-```sh
-sudo apt-get update && sudo apt-get install -y git gh
-gh auth login
-git clone git@github.com:a913cb82/dev-env.git ~/dev-env
-cd ~/dev-env && ./bootstrap.sh
-```
+## Use
 
-## What you get
+This section is for PCs that run the environment. It makes no changes to this repo.
 
-**System tools.** `bootstrap.sh` installs git, gh, tmux, ripgrep, curl,
-jq, Python 3 with pip.
+### Install on a new PC
 
-**Shell.** Bash reads two new files at startup. `10-env.sh` adds
-`~/.local/bin` to PATH. `20-aliases.sh` adds `ll`, `gs`, `gp`.
-Your `.bashrc` stays stock except one loader line.
+1. Install Git and gh: `sudo apt-get update && sudo apt-get install -y git gh`
+2. Authenticate with GitHub: `gh auth login`
+3. Clone the repo: `git clone git@github.com:a913cb82/dev-env.git ~/dev-env`
+4. Run bootstrap: `cd ~/dev-env && ./bootstrap.sh`
+5. Enable the commit hook: `git config core.hooksPath "$PWD/hooks"`
+6. Complete the checklist that bootstrap prints. It covers gh auth, Pi auth, and the SSH key.
 
-**Terminal.** `tmux.conf` turns on mouse support, scroll-to-copy-mode,
-drag-to-copy through Windows clipboard, true color, long scrollback.
-It targets WSL specifically.
+### Update an existing PC
 
-**Git.** `gitconfig` sets the commit identity, uses `gh` for passwords,
-ignores junk files globally (`*.pyc`, `.DS_Store`, `node_modules`,
-`.env`), and makes `main` the default branch.
+1. Receive updates: `git pull --ff-only`
+2. Link new files and prune stale links: `./bootstrap.sh --check-only`
+3. Confirm the state: `./sync.sh --check`
 
-**SSH.** `bootstrap.sh` creates an `ed25519` key if none exists. It shows
-the public key. Add it to GitHub by hand.
+Use `./bootstrap.sh` without flags only when you also want system packages. It calls `apt-get` and can ask for `sudo`.
 
-**Pi agent.** `bootstrap.sh` links AGENTS.md, settings, and keybindings.
-It links four skills: `selphy-print` (print photos on Canon SELPHY),
-`asd-ste100` (rewrite text in Simple Technical English), `web-fetch`
-(read URLs as clean text), `web-search` (search the live web).
-It links three extensions: `btw` (ask side questions in parallel),
-`goal` (track session
-goals), `subagents` (run background subagents). Pi starts with the
-opencode provider, fullscreen UI, and high thinking level.
+### After you move the clone
 
-## Sync
+Paths are absolute. The move breaks symlinks, the `~/.bashrc` loader, and `core.hooksPath`.
 
-Live files are symlinks into this repo. Edits sync automatically.
-Only new or deleted skills/extensions can drift. Two commands fix that.
+1. Run bootstrap from the new location: `cd <new-location> && ./bootstrap.sh --check-only`
+2. Reset the hook path: `git config core.hooksPath "$PWD/hooks"`
+3. Fix the loader line in `~/.bashrc`. Change the old path to the new path.
+4. Confirm the state: `./sync.sh --check`
 
-Receive: `git pull`, then `./bootstrap.sh`. It links new repo files
-and prunes stale links.
+## Develop
 
-Send: `./sync.sh`, then commit and push. It adopts new live files and
-reports deletions. The pre-commit hook blocks unsynced commits. Enable it:
+This section is for changes to this repo itself.
 
-```sh
-git config core.hooksPath "$PWD/hooks"
-```
+Live files are symlinks into this repo. Edits to linked files write directly to the repo. Only new or deleted skills and extensions can drift.
 
-## Manual steps
+### Send a change
 
-`bootstrap.sh` ends with a checklist. Complete `gh auth login`, pi
-auth, and GitHub ssh key setup by hand.
+1. Adopt live files into the repo: `./sync.sh`
+2. Review the result: `git status -sb`
+3. Commit and push. The pre-commit hook blocks the commit when `./sync.sh --check` reports drift.
+
+Edit repo files first when possible. Avoid direct edits under `~/.pi`. Run `./sync.sh --check` before you commit.
+
+### Contents
+
+- `bootstrap.sh`: installs packages and links live files. It is safe to run more than once.
+- `sync.sh`: adopts live files into the repo. `--check` reports drift without writing.
+- `hooks/pre-commit`: blocks commits with drift. Enable it with `core.hooksPath`.
+- `shell/`: `tmux.conf` for WSL and `bashrc.d/` shell defaults.
+- `git/`: commit identity, gh credential helper, global ignores.
+- `pi/agent/`: agent instructions, settings, keybindings, skills, and extensions.
