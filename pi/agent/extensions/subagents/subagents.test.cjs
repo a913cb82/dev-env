@@ -911,6 +911,7 @@ function check(name, cond, extra) {
 		registerCommand: () => {},
 		registerTool: (tool) => checkTools.set(tool.name, tool),
 		getFlag: () => undefined,
+		getActiveTools: () => [],
 		sendMessage: () => {},
 		sendUserMessage: () => {},
 	};
@@ -975,7 +976,7 @@ function check(name, cond, extra) {
 		try {
 			await checkTools.get("send_to_subagent").execute("send-descendant", { target: "owner-grand", message: "hello" }, undefined, undefined, {});
 		} catch (error) { descendantSendError = error; }
-		check("messaging a non-direct descendant is rejected", descendantSendError?.message.includes("not a direct child"), descendantSendError?.message);
+		check("terminal descendant send needs session context", descendantSendError?.message.includes("retry with session context"), descendantSendError?.message);
 
 		// Targeted checks: an explicit target list, and any/all waiting.
 		registry.saveRecord(checkAgentDir, checkRecord("bystander", "completed", { latestText: "bystander result" }));
@@ -1001,6 +1002,178 @@ function check(name, cond, extra) {
 		check("unknown check target rejected", unknownTargetError?.message.includes("No subagent matches"), unknownTargetError?.message);
 		await checkTool.execute("check-target-cleanup", {}, undefined, undefined, {});
 
+		// --- tree-wide paths with owner-only transport ---
+		registry.saveRecord(checkAgentDir, checkRecord("path-direct", "completed", { latestText: "path-direct result" }));
+		registry.saveRecord(checkAgentDir, mk("path-grand", "path-direct", {
+			rootRunId: "check-parent", depth: 2, status: "completed", latestText: "path-grand result",
+		}));
+		const pathDirectCheck = await checkTool.execute("check-path-direct", { targets: ["me/path-direct"], wait: false }, undefined, undefined, {});
+		check("check resolves me/child", pathDirectCheck.content[0].text.includes("path-direct result"), pathDirectCheck.content[0].text);
+		check("check claims path-resolved direct child", registry.readRecords(checkAgentDir).find((r) => r.runId === "path-direct")?.resultsDelivered === true);
+		const pathDeepCheck = await checkTool.execute("check-path-deep", { targets: ["/path-direct/path-grand"], wait: false }, undefined, undefined, {});
+		check("check resolves absolute deep path read-only", pathDeepCheck.content[0].text.includes("path-grand result") && pathDeepCheck.content[0].text.includes("read-only descendant"), pathDeepCheck.content[0].text);
+		let pathDirectSendError;
+		try { await checkTools.get("send_to_subagent").execute("send-path-direct", { target: "me/path-direct", message: "hello" }); } catch (error) { pathDirectSendError = error; }
+		check("send resolves me/child before checking liveness", pathDirectSendError?.message.includes("retry with session context"), pathDirectSendError?.message);
+		let pathDeepSendError;
+		try {
+			await checkTools.get("send_to_subagent").execute("send-path-deep", { target: "/path-direct/path-grand", message: "hello" }, undefined, undefined, {});
+		} catch (error) { pathDeepSendError = error; }
+		check("terminal path send needs session context", pathDeepSendError?.message.includes("retry with session context"), pathDeepSendError?.message);
+		let pathUnknownError;
+		const pathUnknownStarted = Date.now();
+		try { await checkTool.execute("check-path-unknown", { targets: ["me/nope"], wait: true, timeoutMs: 5000 }, undefined, undefined, {}); } catch (error) { pathUnknownError = error; }
+		check("unknown path rejected before waiting", pathUnknownError?.message.includes("No subagent matches") && Date.now() - pathUnknownStarted < 1000, `${pathUnknownError?.message} (${Date.now() - pathUnknownStarted}ms)`);
+
+		// --- mesh transport: any node reaches any node (except self) ---
+		const meshAgentDir = path.join(sandbox, "mesh-agent");
+		fs.mkdirSync(meshAgentDir, { recursive: true });
+		const meshMk = (runId, parent, extra = {}) => mk(runId, parent, { rootRunId: "mesh-parent", ...extra });
+		registry.saveRecord(meshAgentDir, meshMk("mesh-child", "mesh-parent", { name: "child", status: "running" }));
+		registry.saveRecord(meshAgentDir, meshMk("mesh-grand", "mesh-child", { name: "grand", depth: 2, status: "running" }));
+		registry.saveRecord(meshAgentDir, meshMk("mesh-aunt", "mesh-child", { name: "aunt", depth: 2, status: "running" }));
+		registry.saveRecord(meshAgentDir, meshMk("mesh-rgrand", "mesh-child", { name: "rgrand", depth: 2, status: "completed", latestText: "old result" }));
+		registry.saveRecord(meshAgentDir, meshMk("mesh-queued", "mesh-parent", { name: "queued", status: "queued" }));
+		registry.saveRecord(meshAgentDir, meshMk("mesh-nephew", "mesh-child", { name: "nephew", depth: 2, status: "running" }));
+		const meshSends = { parent: [], child: [], grand: [], aunt: [], queued: [] };
+		const meshTools = {};
+		const meshHandlers = {};
+		const startMeshInstance = async (key, runId) => {
+			const handlers = new Map();
+			const tools = new Map();
+			process.env.PI_SUBAGENT_RUN_ID = runId;
+			process.env.PI_SUBAGENT_ROOT_ID = "mesh-parent";
+			process.env.PI_CODING_AGENT_DIR = meshAgentDir;
+			subagentsExtension({
+				...checkPi,
+				on: (event, handler) => handlers.set(event, handler),
+				registerTool: (tool) => tools.set(tool.name, tool),
+				sendMessage: async (message, options) => { meshSends[key].push({ message, options }); },
+			});
+			await handlers.get("session_start")({}, {
+				sessionManager: { getSessionId: () => runId },
+				cwd: sandbox,
+				isProjectTrusted: () => false,
+				mode: "rpc",
+				hasUI: false,
+			});
+			delete process.env.PI_SUBAGENT_RUN_ID;
+			delete process.env.PI_SUBAGENT_ROOT_ID;
+			// Leave PI_CODING_AGENT_DIR on the mesh dir: this block manages
+			// it explicitly and restores checkAgentDir at the end.
+			meshTools[key] = tools;
+			meshHandlers[key] = handlers;
+		};
+		await startMeshInstance("parent", "mesh-parent");
+		await startMeshInstance("grand", "mesh-grand");
+		await startMeshInstance("aunt", "mesh-aunt");
+		process.env.PI_CODING_AGENT_DIR = meshAgentDir;
+		const until = async (fn) => {
+			for (let i = 0; i < 80; i++) {
+				if (fn()) return true;
+				await new Promise((r) => setTimeout(r, 25));
+			}
+			return !!fn();
+		};
+		const meshSend = meshTools.parent.get("send_to_subagent");
+		const deepSteer = await meshSend.execute("mesh-steer", { target: "/mesh-child/mesh-grand", message: "deep hello" }, undefined, undefined, {});
+		check("deep steer sent", deepSteer.content[0].text.includes("grand"), deepSteer.content[0].text);
+		check("deep steer arrives at target runtime", await until(() => meshSends.grand.some((s) => String(s.message.content).includes("deep hello"))), JSON.stringify(meshSends.grand));
+		check("deep steer delivers as steer", meshSends.grand.some((s) => s.options && s.options.deliverAs === "steer"), JSON.stringify(meshSends.grand.map((s) => s.options)));
+		const deepFollow = await meshSend.execute("mesh-follow", { target: "mesh-grand", mode: "followUp", message: "queued hello" }, undefined, undefined, {});
+		check("deep follow-up sent", deepFollow.content[0].text.includes("follow-up"), deepFollow.content[0].text);
+		check("deep follow-up arrives as followUp", await until(() => meshSends.grand.some((s) => String(s.message.content).includes("queued hello") && s.options && s.options.deliverAs === "followUp")), JSON.stringify(meshSends.grand.map((s) => s.options)));
+		check("cross message audited in target log", await until(() => registry.readAgentMessages(meshAgentDir, "mesh-grand").some((m) => m.from === "mesh-parent" && m.text === "deep hello")), JSON.stringify(registry.readAgentMessages(meshAgentDir, "mesh-grand")));
+		// Sibling delivery from a non-root session.
+		const grandSend = meshTools.grand.get("send_to_subagent");
+		await grandSend.execute("mesh-sibling", { target: "../mesh-aunt", message: "sibling hello" }, undefined, undefined, {});
+		check("sibling message arrives", await until(() => meshSends.aunt.some((s) => String(s.message.content).includes("sibling hello"))), JSON.stringify(meshSends.aunt));
+		// Terminal resume keeps the original parent (no adoption).
+		const savedCommand = process.env.PI_SUBAGENT_COMMAND;
+		const savedDelay = process.env.FAKE_DELAY_MS;
+		process.env.PI_SUBAGENT_COMMAND = path.join(HERE, "fake-pi.cjs");
+		process.env.FAKE_DELAY_MS = "3000";
+		let resumedRecord;
+		try {
+			const resumeResult = await meshSend.execute("mesh-resume", { target: "/mesh-child/mesh-rgrand", message: "continue" }, undefined, undefined, { cwd: sandbox, scopedModels: [], ui: {} });
+			check("terminal deep resume reports resumed", resumeResult.content[0].text.includes("Resumed"), resumeResult.content[0].text);
+			resumedRecord = registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-rgrand");
+		} finally {
+			if (savedCommand === undefined) delete process.env.PI_SUBAGENT_COMMAND;
+			else process.env.PI_SUBAGENT_COMMAND = savedCommand;
+			if (savedDelay === undefined) delete process.env.FAKE_DELAY_MS;
+			else process.env.FAKE_DELAY_MS = savedDelay;
+		}
+		check("resume preserves the original parent", resumedRecord?.parentRunId === "mesh-child", resumedRecord?.parentRunId);
+		check("resume restarts the run", resumedRecord && !registry.isTerminalStatus(resumedRecord.status), resumedRecord?.status);
+		await meshTools.parent.get("cancel_subagent").execute("mesh-resume-cancel", { target: "/mesh-child/mesh-rgrand" }, undefined, undefined, {});
+		// Queued target: the message parks until the session starts.
+		const queuedResult = await meshSend.execute("mesh-queue", { target: "me/mesh-queued", message: "wake up" }, undefined, undefined, {});
+		check("queued target parks the message", queuedResult.content[0].text.includes("Queued"), queuedResult.content[0].text);
+		check("pending sidecar exists", (await registry.drainPendingMessages(meshAgentDir, "mesh-queued")).length === 1);
+		await registry.queuePendingMessage(meshAgentDir, "mesh-queued", { from: "mesh-parent", mode: "followUp", text: "wake up" });
+		await startMeshInstance("queued", "mesh-queued");
+		check("pending drains on session start", await until(() => meshSends.queued.some((s) => String(s.message.content).includes("wake up"))), JSON.stringify(meshSends.queued));
+		// A settle notification wakes the direct parent (result owner).
+		await startMeshInstance("child", "mesh-child");
+		meshSends.child.length = 0;
+		await until(() => fs.existsSync(path.join(meshAgentDir, "subagents", "sockets", "mesh-child.sock")));
+		// Let the child's own start-delivery fire first so only the notify can ping for grand.
+		await new Promise((r) => setTimeout(r, 1200));
+		meshSends.child.length = 0;
+		registry.saveRecord(meshAgentDir, meshMk("mesh-grand", "mesh-child", { name: "grand", depth: 2, status: "completed", latestText: "grand done" }));
+		await spawn.notifyParentSettled(meshAgentDir, registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-grand"));
+		for (let i = 0; i < 100 && !meshSends.child.some((s) => String(s.message.content).includes("mesh-gra")); i++) await new Promise((r) => setTimeout(r, 25));
+		check("settle notification pings the direct parent", meshSends.child.some((s) => String(s.message.content).includes("mesh-gra")), JSON.stringify(meshSends.child.map((s) => s.message.content)));
+		// Mesh instances stay alive for the Phase 5 block below; everything shuts
+		// down together at its end (no revive/rebind cycle in between).
+		process.env.PI_CODING_AGENT_DIR = checkAgentDir;
+
+		// --- Phase 5: tree-wide check/wait over the mesh ---
+		process.env.PI_CODING_AGENT_DIR = meshAgentDir;
+		// All servers bound long ago; the poll below is belt and braces.
+		await until(() => fs.existsSync(path.join(meshAgentDir, "subagents", "sockets", "mesh-child.sock")));
+		// Mesh-block shutdowns cancelled the running fixtures; a fresh turn clears that.
+		const completeMesh = async (runId, name, text) => {
+			await registry.clearRecordCancellation(meshAgentDir, runId);
+			registry.saveRecord(meshAgentDir, meshMk(runId, "mesh-child", { name, depth: 2, status: "completed", latestText: text }));
+		};
+		// 1. A mesh settle notice wakes a check wait faster than the registry poll (250ms) ever could.
+		const childCheck = meshTools.child.get("check_subagents");
+		const nephewWait = childCheck.execute("settle-wait", { targets: ["me/mesh-nephew"], wait: true, mode: "all", timeoutMs: 5000 }, undefined, undefined, {});
+		setTimeout(() => {
+			void (async () => {
+				await completeMesh("mesh-nephew", "nephew", "nephew done");
+				void spawn.notifyParentSettled(meshAgentDir, registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-nephew"));
+			})();
+		}, 10);
+		const nephewWaitStarted = Date.now();
+		const nephewResult = await nephewWait;
+		const nephewWaitElapsed = Date.now() - nephewWaitStarted;
+		check("mesh settle wakes check wait before the poll interval", nephewWaitElapsed < 200 && nephewResult.content[0].text.includes("nephew done"), `${nephewWaitElapsed}ms: ${nephewResult.content[0].text.slice(0, 120)}`);
+		// 2. Ancestor observation is read-only; the direct parent still claims exactly once.
+		const parentCheck = meshTools.parent.get("check_subagents");
+		const ancestorView = await parentCheck.execute("settle-ancestor", { targets: ["/mesh-child/mesh-grand"], wait: false }, undefined, undefined, {});
+		check("ancestor sees deep result read-only", ancestorView.content[0].text.includes("grand done") && ancestorView.content[0].text.includes("read-only"), ancestorView.content[0].text);
+		check("ancestor observation claims nothing", registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-grand")?.resultsDelivered !== true);
+		const ancestorRepeat = await parentCheck.execute("settle-ancestor-repeat", { targets: ["/mesh-child/mesh-grand"], wait: false }, undefined, undefined, {});
+		check("ancestor does not repeat an observed execution", !ancestorRepeat.content[0].text.includes("grand done"), ancestorRepeat.content[0].text);
+		const parentClaim = await childCheck.execute("settle-claim", { targets: ["me/mesh-grand"], wait: false }, undefined, undefined, {});
+		check("direct parent claims after ancestor observation", parentClaim.content[0].text.includes("grand done") && registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-grand")?.resultsDelivered === true, parentClaim.content[0].text);
+		const ancestorAfter = await parentCheck.execute("settle-ancestor-after", { targets: ["/mesh-child/mesh-grand"] }, undefined, undefined, {});
+		check("ancestor omits claimed result", !ancestorAfter.content[0].text.includes("grand done"), ancestorAfter.content[0].text);
+		// 3. Sibling check shows a non-descendant read-only without claiming.
+		await completeMesh("mesh-aunt", "aunt", "aunt done");
+		const grandCheck = meshTools.grand.get("check_subagents");
+		const siblingView = await grandCheck.execute("settle-sibling", { targets: ["../mesh-aunt"], wait: false }, undefined, undefined, {});
+		check("sibling check shows read-only non-descendant", siblingView.content[0].text.includes("aunt done") && siblingView.content[0].text.includes("read-only") && !siblingView.content[0].text.includes("read-only descendant"), siblingView.content[0].text);
+		check("sibling observation claims nothing", registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-aunt")?.resultsDelivered !== true);
+		// 4. any-wait resolves on an absolute path target.
+		const anyPath = await parentCheck.execute("settle-any", { targets: ["/mesh-child/mesh-rgrand"], wait: true, mode: "any", timeoutMs: 2000 }, undefined, undefined, {});
+		check("any wait resolves on absolute path target", anyPath.content[0].text.includes("rgrand"), anyPath.content[0].text);
+		for (const handlers of Object.values(meshHandlers)) await handlers.get("session_shutdown")?.({}, { mode: "rpc" });
+		process.env.PI_CODING_AGENT_DIR = checkAgentDir;
+
 		const childHandlers = new Map();
 		const childTools = new Map();
 		const childPi = {
@@ -1025,6 +1198,13 @@ function check(name, cond, extra) {
 		check("child claims grandchild result", registry.readRecords(checkAgentDir).find((r) => r.runId === "owner-grand")?.resultsDelivered === true);
 		const rootAfterParentClaim = await checkTool.execute("check-owner-root-again", { wait: false }, undefined, undefined, {});
 		check("root omits grandchild after parent claims it", !rootAfterParentClaim.content[0].text.includes("grandchild result"), rootAfterParentClaim.content[0].text);
+
+		// A sibling path resolves (legacy would report no match) but transport still refuses it.
+		let siblingSendError;
+		try {
+			await childTools.get("send_to_subagent").execute("send-sibling", { target: "../bystander", message: "hello" }, undefined, undefined, {});
+		} catch (error) { siblingSendError = error; }
+		check("terminal sibling send needs session context", siblingSendError?.message.includes("retry with session context"), siblingSendError?.message);
 
 		let automaticGrandchildMessages = 0;
 		childPi.sendMessage = async (message) => {

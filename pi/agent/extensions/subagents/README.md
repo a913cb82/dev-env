@@ -12,8 +12,9 @@ Based on [`williamcr01/pi-subagents`](https://github.com/williamcr01/pi-subagent
 - **Recursive delegation** — children can create grandchildren within the configured depth budget.
 - **Parallel work** — concurrency is configurable, including unlimited mode with `maxConcurrency: -1`.
 - **Status footer** — a passive footer lists outstanding subagents with model and live activity; a line disappears once its result is read.
-- **Targeted checks and quorum waits** — `check_subagents` checks all descendants or a named subset, and can block until any or all of them finish.
-- **Steering and follow-ups** — send a steering message to redirect a running child, or a follow-up to queue behind its work; messaging a finished or cancelled child restarts it from its transcript in a fresh process.
+- **Targeted checks and quorum waits** — `check_subagents` checks all descendants or a path-addressed subset anywhere in the tree, and can block until any or all of them finish.
+- **Tree-wide messaging** — every session (root or subagent) owns a socket, so any node messages any other node except itself: steer running sessions in place, follow up, resume finished ones from transcript, or park on queued ones until they start.
+- **Steering and follow-ups** — send a steering message to redirect running work, or a follow-up to queue behind it; messaging a finished or cancelled run restarts it from its transcript in a fresh process without changing its owner.
 - **Automatic delivery** — finishing sends an invisible steering ping (name + status); full results are pulled via `check_subagents`.
 - **Cancellation** — abort a child's current turn by run ID, session ID, or name; its process is stopped and a later message resumes it from its transcript.
 - **Reload recovery** — `/reload` interrupts live children and the fresh runtime restarts them from their transcripts; finished results are untouched and an explicit cancellation is never resurrected.
@@ -55,7 +56,7 @@ check_subagents({ wait: true, timeoutMs: 120000 })
 check_subagents({ targets: ["auth-reviewer", "test-runner"], wait: true, mode: "any" })
 ```
 
-Use `send_to_subagent` to steer a running child or continue a finished or cancelled one. Use `cancel_subagent` to abort a child's current turn. Both accept a full run ID, a unique run-ID prefix (including the eight characters shown in tool output), a session ID, or an exact name. Exact matches take precedence over prefixes; ambiguous targets are rejected with full run IDs for disambiguation.
+Use `send_to_subagent` to steer running work or continue a finished or cancelled run. Use `cancel_subagent` to abort a run's current turn. Targets are tree paths — `/team/worker` absolute from root, `me/child`, `../sibling`, `../../grandparent` — or a full run ID, a unique run-ID prefix (including the eight characters shown in tool output), a session ID, or an exact name. Exact matches take precedence over prefixes; ambiguous targets are rejected with full run IDs for disambiguation.
 
 ## Isolation model
 
@@ -94,29 +95,29 @@ Thinking level follows the same precedence and is clamped to the selected child 
 
 ### `check_subagents`
 
-Inspect descendants and collect newly finished results without repeating results already delivered. Each ancestor sees a descendant execution once, without claiming the direct parent's result. `targets` narrows the check to a named subset:
+Inspect descendants and collect newly finished results without repeating results already delivered. Each ancestor sees a descendant execution once, without claiming the direct parent's result. `targets` narrows the check to a path-addressed subset anywhere in the tree (siblings and ancestors render read-only); only direct children are claimed:
 
 ```text
 check_subagents({ wait: true, timeoutMs: 120000 })
-check_subagents({ targets: ["auth-reviewer", "test-runner"], wait: true, mode: "any" })
+check_subagents({ targets: ["/team/worker", "../sibling"], wait: true, mode: "any" })
 ```
 
-Each target is an exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected. `wait: true` blocks until the selected subagents finish: `mode: "all"` (default) waits for every one, `mode: "any"` returns on the first. `timeoutMs` defaults to 30 seconds, is capped at 300 seconds, and is only a maximum; omitted `targets` watches every descendant.
+Each target is a tree path, exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected before waiting. `wait: true` blocks until the selected runs finish: `mode: "all"` (default) waits for every one, `mode: "any"` returns on the first. `timeoutMs` defaults to 30 seconds, is capped at 300 seconds, and is only a maximum; omitted `targets` watches every descendant.
 
 ### `send_to_subagent`
 
-Send a steering message (default) or a follow-up message to a child by exact name, run ID, unique run-ID prefix, or session ID. `mode: "steer"` redirects the child's current work (delivered before its next LLM call); `mode: "followUp"` queues behind the current work until it finishes. Both use pi's native steering/follow-up queueing while the child streams, and start a new turn when it is idle:
+Send a steering message (default) or a follow-up message to any tree node except this session, by path, exact name, run ID, unique run-ID prefix, or session ID. `mode: "steer"` redirects the target's current work (delivered before its next LLM call); `mode: "followUp"` queues behind the current work until it finishes. Both use pi's native steering/follow-up queueing while the target streams, and start a new turn when it is idle:
 
 ```text
-send_to_subagent({ target: "auth-reviewer", message: "Focus on the token refresh path." })
-send_to_subagent({ target: "auth-reviewer", message: "When done, also audit the logout flow.", mode: "followUp" })
+send_to_subagent({ target: "/team/worker", message: "Focus on the token refresh path." })
+send_to_subagent({ target: "../sibling", message: "When done, also audit the logout flow.", mode: "followUp" })
 ```
 
-Works on running, finished, AND cancelled direct children — messaging a finished or cancelled child resumes it from its transcript in a fresh process as a new execution (which takes the creator's concurrency slot). Finished child processes are reaped on settle, so resume costs one process start. Messaging is parent → direct child only: a deeper descendant is reached through its own parent.
+Works on running, finished, cancelled, AND queued runs. Messaging a finished or cancelled run resumes it from its transcript in a fresh process as a new execution — the record keeps its parent (no ownership theft) and the resuming session only lends its concurrency slot. Messaging a queued or starting run parks the message until its session starts. Every cross message is appended to the target's audit log (`<run>.messages.json` beside its record).
 
 ### `cancel_subagent`
 
-Abort a child's current turn by exact name, run ID, or session ID:
+Abort any run's current turn by tree path, exact name, run ID, or session ID:
 
 ```text
 cancel_subagent({ target: "auth-reviewer" })
@@ -128,7 +129,7 @@ A `/reload` tears down the extension runtime, which stops live children — but 
 
 ## Result delivery
 
-Finishing sends an invisible steering ping (`name + status + run`, `display:false`, `deliverAs:steer`) that wakes the parent even mid-work; the parent decides whether to address it now or keep working. Full bodies stay in the registry until `check_subagents` pulls them (once per execution). Tool results carry only subtree cost deltas, never bodies.
+Settling sends a socket notice to the result owner plus an invisible steering ping (`name + status + run`, `display:false`, `deliverAs:steer`) that wakes the owner even mid-work; the owner decides whether to address it now or keep working. Cross-process waits wake instantly on the notice with the registry poll as fallback. Full bodies stay in the registry until `check_subagents` pulls them (once per execution). Tool results carry only subtree cost deltas, never bodies.
 
 If a child completes several follow-ups before the parent pulls, only the latest execution is delivered. Earlier output remains available in the child's session file.
 
@@ -154,7 +155,7 @@ All fields are optional. Defaults are `maxDepth: 2` and `maxConcurrency: 4`.
 - `defaultModel` — fallback model for spawns that omit `model`.
 - `defaultThinking` — fallback thinking level for spawns that omit `thinking`.
 - `maxDepth` — maximum recursive depth. The root is depth `0`; `maxDepth: 0` disables spawning. Descendants inherit the root limit and may only tighten it.
-- `maxConcurrency` — number of children allowed to run at once per creating session. Use `-1` for unlimited or a positive integer for a limit; extra children queue automatically. Resuming a finished child waits for the creator's slot; steering a running child does not require another slot.
+- `maxConcurrency` — number of children allowed to run at once per creating session. Use `-1` for unlimited or a positive integer for a limit; extra children queue automatically. Resuming a finished run waits for the resumer's slot; steering a running session does not require another slot.
 - `rpcMaxLineChars` — defensive limit per child stdout JSONL record, default `67108864` (64 Mi UTF-16 code units, including an optional trailing CR but excluding LF). Must be a positive safe integer; there is no unlimited mode.
 - `pruneDeliveredAfterDays` (default `14`) / `pruneDeliveredKeep` (default `50`) — rotation for delivered terminal runs: older than N days go, newest K are always kept.
 - `pruneUndeliveredAfterDays` (default `30`, `0` disables) / `pruneUndeliveredKeep` (default `500`, `0` disables) — rotation for terminal runs whose result was never collected. A terminal result older than the threshold has no live claimant left, so reaping it is safe. The count cap only takes runs older than 7 days, so a burst of fresh uncollected results is never trimmed.
@@ -190,9 +191,11 @@ Source files live in `extensions/subagents`, organized by responsibility:
 
 - `index.ts` — Pi registration, lifecycle hooks, tools, delivery, and UI wiring
 - `config.ts` — settings validation and precedence
-- `registry.ts` — atomic run records
-- `wait.ts` — event-driven wait for descendant completion (`check_subagents` wait:true)
-- `spawn-agent.ts` — RPC process control, concurrency, cancellation, and depth enforcement
+- `registry.ts` — atomic run records, tree-path resolution, pending-message and audit sidecars
+- `mesh.ts` — one Unix socket per live session: tree-wide steer/followUp delivery, settle notices, presence waits
+- `wait.ts` — event-driven wait over resolved runs (`check_subagents` wait:true)
+- `spawn-agent.ts` — RPC process control, concurrency, cancellation, depth enforcement, mesh sending
+- `mesh.test.cjs` / `paths.test.cjs` — socket and path-resolution suites (`node mesh.test.cjs`, `node paths.test.cjs`)
 - `events.ts` — child JSON event parsing and status updates
 - `widget.ts` — passive footer listing unread/unfinished descendants
 

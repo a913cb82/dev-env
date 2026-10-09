@@ -9,7 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { AgentRecord, AgentStatus } from "./types.ts";
+import type { AgentRecord, AgentStatus, SubagentMessageMode } from "./types.ts";
 
 const TERMINAL = new Set<AgentStatus>(["completed", "failed", "cancelled"]);
 const LOCK_STALE_MS = 30_000;
@@ -93,6 +93,7 @@ function resultStatePath(agentDir: string, record: AgentRecord, flag: ResultStat
 export function markRecordResultState(agentDir: string, record: AgentRecord, flag: ResultStateFlag): void {
 	mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
 	atomicWrite(resultStatePath(agentDir, record, flag), "true\n");
+	bumpGeneration(agentDir);
 }
 
 function applyMarkers(agentDir: string, record: AgentRecord): AgentRecord {
@@ -133,6 +134,7 @@ export function saveRecord(agentDir: string, record: AgentRecord): AgentRecord {
 	if (record.status === "cancelled") writeCancellationMarker(agentDir, record);
 	const saved = applyMarkers(agentDir, record);
 	atomicWrite(recordPath(agentDir, record.runId), `${JSON.stringify(saved)}\n`);
+	bumpGeneration(agentDir);
 	return saved;
 }
 
@@ -155,6 +157,7 @@ export function isRecordCancelled(agentDir: string, runId: string): boolean {
  * re-creates the marker and still wins. */
 export function clearRecordCancellation(agentDir: string, runId: string): void {
 	rmSync(markerPath(agentDir, runId, "cancelled"), { force: true });
+	bumpGeneration(agentDir);
 }
 
 /** Drop the closed marker so a resumed execution can record its new PID.
@@ -162,6 +165,7 @@ export function clearRecordCancellation(agentDir: string, runId: string): void {
  * close from the old process would re-create the marker and strip the new PID. */
 export function clearRecordClosedMarker(agentDir: string, runId: string): void {
 	rmSync(markerPath(agentDir, runId, "closed"), { force: true });
+	bumpGeneration(agentDir);
 }
 
 export interface ReloadInterruptMarker {
@@ -192,6 +196,7 @@ export function markReloadInterrupted(agentDir: string, record: AgentRecord): Re
 		reason: "reload",
 	};
 	atomicWrite(reloadInterruptPath(agentDir, record.runId), `${JSON.stringify(marker)}\n`);
+	bumpGeneration(agentDir);
 	return marker;
 }
 
@@ -256,6 +261,7 @@ export function listReloadInterrupted(agentDir: string): ReloadInterruptMarker[]
  * (explicit user cancellation). */
 export function clearReloadInterrupted(agentDir: string, runId: string): void {
 	rmSync(reloadInterruptPath(agentDir, runId), { force: true });
+	bumpGeneration(agentDir);
 }
 
 function sleepAsync(ms: number): Promise<void> {
@@ -382,44 +388,67 @@ export function readRecords(agentDir: string): AgentRecord[] {
 	return records;
 }
 
-/** Mtime-guarded shared record cache (perf).
+/** Generation-guarded shared record cache (perf).
  *
  * Pure-read hot paths (widget ticks, tool_result, wait polls, delivery) share
  * one scan per registry state instead of re-reading hundreds of files each.
- * Invalidation is exact, not timed: every registry mutation in this codebase
- * (saveRecord, markers, locks, prune deletes) goes through an atomic
- * rename/create/delete inside the runs dir, which bumps its mtime.
+ * Every record/marker mutation in this file bumps a generation token after
+ * the write, so readers in other processes or module instances (each with
+ * their own in-memory Map) observe the change. Directory mtime cannot serve
+ * here: rapid successive writes routinely share one mtime stamp.
+ * Same-process readers additionally invalidate explicitly (no I/O needed).
+ * Lock dirs deliberately do NOT bump the generation: taking a lock changes
+ * no record, so polls keep hitting the cache while contended.
  *
  * The returned array is shared: callers must treat it as frozen (filter/map
  * freely, never mutate in place). Write paths (spawn/cancel/resume/publish)
  * keep using readRecords directly.
  */
 interface RecordCacheEntry {
-	mtimeMs: number;
+	generation: string;
 	records: AgentRecord[];
 }
 const recordCache = new Map<string, RecordCacheEntry>();
 let recordCacheHits = 0;
 let recordCacheMisses = 0;
+let generationCounter = 0;
 
-function registryMtimeMs(agentDir: string): number {
+function generationPath(agentDir: string): string {
+	return join(registryDir(agentDir), ".cache-generation");
+}
+
+function readGeneration(agentDir: string): string {
 	try {
-		return statSync(registryDir(agentDir)).mtimeMs;
+		return readFileSync(generationPath(agentDir), "utf8");
 	} catch {
-		return -1;
+		return "";
 	}
 }
 
+/** Record a mutation for cross-process readers. Called after the write it
+ * describes, never before: a reader must not cache pre-write records under
+ * a post-write token. The token is unique per bump, so no read-modify-write
+ * race can lose an invalidation. */
+function bumpGeneration(agentDir: string): void {
+	mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
+	generationCounter++;
+	atomicWrite(
+		generationPath(agentDir),
+		`${process.pid}-${Date.now()}-${generationCounter}-${Math.random().toString(16).slice(2)}\n`,
+	);
+	invalidateRecordCache(agentDir);
+}
+
 export function getCachedRecords(agentDir: string): AgentRecord[] {
-	const mtimeMs = registryMtimeMs(agentDir);
+	const generation = readGeneration(agentDir);
 	const hit = recordCache.get(agentDir);
-	if (hit && hit.mtimeMs === mtimeMs) {
+	if (hit && hit.generation === generation) {
 		recordCacheHits++;
 		return refreshLiveness(hit.records);
 	}
 	recordCacheMisses++;
 	const records = readRecords(agentDir);
-	recordCache.set(agentDir, { mtimeMs, records });
+	recordCache.set(agentDir, { generation, records });
 	return refreshLiveness(records);
 }
 
@@ -436,7 +465,7 @@ export function recordCacheDebug(): { entries: number; hits: number; misses: num
 
 /**
  * Re-derive volatile liveness on every access. File state (records, markers)
- * is covered by the mtime guard, but process death is invisible to mtime:
+ * is covered by the generation guard, but process death is invisible to it:
  * a crashed child must read as failed on the very next access, not only
  * after some unrelated registry write. Kill-probes are ~microseconds and
  * only run for non-terminal records holding a pid (usually none or few).
@@ -492,8 +521,94 @@ function isPrunableSidecar(name: string): boolean {
 		name.endsWith(".closed") ||
 		name.endsWith(".reloadInterrupted") ||
 		name.endsWith(".resultsDelivered") ||
-		name.endsWith(".footerDismissed")
+		name.endsWith(".footerDismissed") ||
+		name.endsWith(".pending.json") ||
+		name.endsWith(".messages.json")
 	);
+}
+
+export interface PendingAgentMessage {
+	id: string;
+	from: string;
+	mode: SubagentMessageMode;
+	text: string;
+	createdAt: string;
+}
+
+function pendingPath(agentDir: string, runId: string): string {
+	return join(registryDir(agentDir), `${safeRunId(runId)}.pending.json`);
+}
+
+function isValidMessageLog(value: unknown): value is AgentMessageLog {
+	if (!value || typeof value !== "object") return false;
+	const message = value as Record<string, unknown>;
+	return (
+		typeof message.from === "string" &&
+		(message.mode === "steer" || message.mode === "followUp") &&
+		typeof message.text === "string" &&
+		typeof message.createdAt === "string"
+	);
+}
+
+function isValidPendingMessage(value: unknown): value is PendingAgentMessage {
+	if (!value || typeof value !== "object") return false;
+	const message = value as Record<string, unknown>;
+	return (
+		typeof message.id === "string" &&
+		typeof message.from === "string" &&
+		(message.mode === "steer" || message.mode === "followUp") &&
+		typeof message.text === "string" &&
+		typeof message.createdAt === "string"
+	);
+}
+
+/** Park a message for a queued/starting run; its session_start drains the queue. */
+export async function queuePendingMessage(
+	agentDir: string,
+	runId: string,
+	message: { from: string; mode: SubagentMessageMode; text: string },
+): Promise<PendingAgentMessage> {
+	const entry: PendingAgentMessage = {
+		...message,
+		mode: message.mode === "followUp" ? "followUp" : "steer",
+		id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+		createdAt: new Date().toISOString(),
+	};
+	await withRecordLock(agentDir, runId, () => {
+		mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
+		const target = pendingPath(agentDir, runId);
+		let queued: PendingAgentMessage[] = [];
+		try {
+			const existing = JSON.parse(readFileSync(target, "utf8"));
+			if (Array.isArray(existing)) queued = existing.filter(isValidPendingMessage);
+		} catch {
+			// Absent or corrupt: a corrupt queue is replaced, never merged.
+		}
+		queued.push(entry);
+		atomicWrite(target, `${JSON.stringify(queued)}\n`);
+	});
+	return entry;
+}
+
+/** Take and remove every parked message for a run, oldest first. */
+export async function drainPendingMessages(agentDir: string, runId: string): Promise<PendingAgentMessage[]> {
+	return withRecordLock(agentDir, runId, () => {
+		const target = pendingPath(agentDir, runId);
+		let queued: PendingAgentMessage[] = [];
+		try {
+			const existing = JSON.parse(readFileSync(target, "utf8"));
+			if (Array.isArray(existing)) queued = existing.filter(isValidPendingMessage);
+		} catch {
+		return [];
+		}
+		try {
+		rmSync(target, { force: true });
+		} catch {
+			// A concurrent drain won; the messages are already taken.
+		}
+		queued.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+		return queued;
+	});
 }
 
 function recordAgeStamp(record: AgentRecord): number {
@@ -550,6 +665,7 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 	}
 	const doomedAll = records.filter((record) => doomedIds.has(record.runId));
 	const dir = registryDir(agentDir);
+	let mutated = false;
 	let entries: string[];
 	try {
 		entries = readdirSync(dir);
@@ -564,6 +680,7 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 			const target = join(dir, name);
 		if (statSync(target).isDirectory()) return;
 		rmSync(target, { force: true });
+			mutated = true;
 		} catch {
 			// Concurrent writer (child settle, lock recovery) won the race.
 		}
@@ -580,12 +697,12 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 	// Orphan sweep: sidecars whose record JSON is absent (crash leftovers).
 	for (const name of entries) {
 		if (!isPrunableSidecar(name)) continue;
-		const owner = name.endsWith(".resultsDelivered")
+		const owner = name.endsWith(".resultsDelivered") || name.endsWith(".pending.json") || name.endsWith(".messages.json")
 			? name.split(".").slice(0, -2).join(".")
 			: name.split(".").slice(0, -1).join(".");
 		if (!liveJson.has(owner)) removeFile(name);
 	}
-	if (doomedAll.length > 0) invalidateRecordCache(agentDir);
+	if (doomedAll.length > 0 || mutated) bumpGeneration(agentDir);
 	const retained = candidates.length + undelivered.length - doomedAll.length;
 	return { pruned: doomedAll.map((record) => record.runId), kept: retained };
 }
@@ -621,6 +738,141 @@ export function resolveAgentRecord(records: readonly AgentRecord[], target: stri
 		throw new Error(`"${value}" is ambiguous; matches: ${matches.map((record) => `${record.name} (${record.runId})`).join(", ")}`);
 	}
 	return matches[0]!;
+}
+
+export function childrenOf(records: readonly AgentRecord[], parentRunId: string): AgentRecord[] {
+	const result = records.filter((record) => record.parentRunId === parentRunId);
+	result.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+	return result;
+}
+
+export interface AgentPathContext {
+	anchorRunId: string;
+	rootRunId: string;
+	target: string;
+}
+
+export interface ResolvedAgentTarget {
+	runId: string;
+	record?: AgentRecord;
+}
+
+function matchPathSegment(candidates: readonly AgentRecord[], segment: string, path: string): AgentRecord {
+	const exact = candidates.filter(
+		(record) => record.runId === segment || record.sessionId === segment || record.name === segment,
+	);
+	const matches = exact.length > 0 ? exact : candidates.filter((record) => record.runId.startsWith(segment));
+	if (matches.length === 0) throw new Error(`No subagent matches "${segment}" in path "${path}".`);
+	if (matches.length > 1) {
+		throw new Error(`"${segment}" is ambiguous in path "${path}"; matches: ${matches.map((record) => `${record.name} (${record.runId})`).join(", ")}`);
+	}
+	return matches[0]!;
+}
+
+/**
+ * Resolve a tree-wide target to a runId. Absolute paths start at the root
+ * session (`/a/b`); relative paths start at the anchor (`me/child`, `..`,
+ * `../../grandparent`, `./sibling`, `../sibling`). A bare name keeps the
+ * legacy subtree search and falls back to siblings (`sibling` shortens
+ * `../sibling`). The root session itself has no record, so paths that land
+ * on it resolve to a bare runId. Targeting the anchor always throws.
+ */
+export function resolveAgentPath(records: readonly AgentRecord[], context: AgentPathContext): ResolvedAgentTarget {
+	const value = context.target.trim();
+	if (!value) throw new Error("Empty subagent path.");
+	const byId = new Map(records.map((record) => [record.runId, record]));
+	const nodeOf = (runId: string): ResolvedAgentTarget =>
+		runId === context.rootRunId ? { runId } : { runId, record: byId.get(runId) };
+	const finish = (runId: string): ResolvedAgentTarget => {
+		if (runId === context.anchorRunId) throw new Error(`Cannot target this session itself ("${value}").`);
+		return nodeOf(runId);
+	};
+	const stepUp = (current: string): string => {
+		if (current === context.rootRunId) throw new Error(`Path "${value}" escapes above the root session.`);
+		const record = byId.get(current);
+		if (!record) throw new Error(`No subagent matches "${current}" in path "${value}".`);
+		return record.parentRunId;
+	};
+	if (!value.includes("/")) {
+		if (value === "me" || value === ".") return finish(context.anchorRunId);
+		if (value === "..") return finish(stepUp(context.anchorRunId));
+		try {
+			const record = resolveAgentRecord(descendantsOf(records, context.anchorRunId), value);
+			return finish(record.runId);
+		} catch (error) {
+			if (!/no subagent matches/i.test(String((error as Error)?.message ?? error))) throw error;
+		}
+		// Bare-name sibling sugar: `sibling` shortens `../sibling`.
+		const anchor = byId.get(context.anchorRunId);
+		if (!anchor) throw new Error(`No subagent matches "${value}".`);
+		return finish(matchPathSegment(childrenOf(records, anchor.parentRunId), value, value).runId);
+	}
+	if (value !== "/" && (value.endsWith("/") || value.includes("//"))) {
+		throw new Error(`Malformed subagent path "${value}".`);
+	}
+	if (value === "/") return finish(context.rootRunId);
+	const absolute = value.startsWith("/");
+	const segments = value.split("/").slice(absolute ? 1 : 0);
+	let current = absolute ? context.rootRunId : context.anchorRunId;
+	for (const segment of segments) {
+		if (segment === ".") continue;
+		if (segment === "me") current = context.anchorRunId;
+		else if (segment === "..") current = stepUp(current);
+		else current = matchPathSegment(childrenOf(records, current), segment, value).runId;
+	}
+	return finish(current);
+}
+
+export interface AgentMessageLog {
+	from: string;
+	mode: SubagentMessageMode;
+	text: string;
+	createdAt: string;
+}
+
+const MESSAGE_LOG_TEXT_CAP = 1000;
+
+function messagesPath(agentDir: string, runId: string): string {
+	return join(registryDir(agentDir), `${safeRunId(runId)}.messages.json`);
+}
+
+/** Append-only audit of cross messages received by a run. Never touches the
+ * record JSON (owned by the parent process), so logging cannot regress it. */
+export async function appendAgentMessage(
+	agentDir: string,
+	runId: string,
+	message: { from: string; mode: SubagentMessageMode; text: string },
+): Promise<void> {
+	const entry: AgentMessageLog = {
+		...message,
+		mode: message.mode === "followUp" ? "followUp" : "steer",
+		text: message.text.length <= MESSAGE_LOG_TEXT_CAP ? message.text : `${message.text.slice(0, MESSAGE_LOG_TEXT_CAP - 1)}…`,
+		createdAt: new Date().toISOString(),
+	};
+	await withRecordLock(agentDir, runId, () => {
+		mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
+		const target = messagesPath(agentDir, runId);
+		let logged: AgentMessageLog[] = [];
+		try {
+			const existing = JSON.parse(readFileSync(target, "utf8"));
+		if (Array.isArray(existing)) logged = existing.filter(isValidMessageLog);
+		} catch {
+		// Absent or corrupt: a corrupt log is replaced, never merged.
+		}
+		logged.push(entry);
+		atomicWrite(target, `${JSON.stringify(logged)}\n`);
+	});
+}
+
+/** Read a run's cross-message audit log (absent or corrupt reads as empty). */
+export function readAgentMessages(agentDir: string, runId: string): AgentMessageLog[] {
+	try {
+		const existing = JSON.parse(readFileSync(messagesPath(agentDir, runId), "utf8"));
+		if (Array.isArray(existing)) return existing.filter(isValidMessageLog);
+	} catch {
+		// Absent or corrupt.
+	}
+	return [];
 }
 
 export function relativeDepths(records: readonly AgentRecord[], parentRunId: string): Map<string, number> {

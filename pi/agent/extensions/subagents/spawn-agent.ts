@@ -5,6 +5,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SETTINGS, validateRpcMaxLineChars, validateThinkingLevel } from "./config.ts";
+import { meshSocketDir, sendMeshMessage, waitForMeshSocket } from "./mesh.ts";
 import { applyChildEvent, type ParsedChildState } from "./events.ts";
 import {
 	clearRecordCancellation,
@@ -108,12 +109,48 @@ const ownedChildren = new Map<string, OwnedChild>();
 const childRuns = new Map<string, Promise<void>>();
 const runAbortControllers = new Map<string, AbortController>();
 
-/** Send directly when this process owns the target child, or queue while it starts.
- * Mode selects pi-native delivery: `steer` (default) redirects the child's
- * current work, `followUp` queues behind it. Only running children are
- * messaged in place; terminal children always return false so the caller
- * resumes them via a fresh process from the saved transcript. */
-export async function sendSubagentMessage(record: AgentRecord, message: string, signal?: AbortSignal, mode: SubagentMessageMode = "steer"): Promise<boolean> {
+export interface MeshSender {
+	runId: string;
+	socketDir: string;
+	waitMs?: number;
+}
+
+export function meshSenderFor(agentDir: string, runId: string): MeshSender {
+	return { runId, socketDir: meshSocketDir(agentDir) };
+}
+
+/** Best-effort settle notice to the result owner (the record's parent). The
+ * registry remains the source of truth; a missing parent socket is ignored. */
+export async function notifyParentSettled(agentDir: string, record: AgentRecord): Promise<void> {
+	try {
+		await sendMeshMessage({
+			socketDir: meshSocketDir(agentDir),
+			toRunId: record.parentRunId,
+			fromRunId: record.runId,
+			type: "settled",
+			payload: { status: record.status },
+		});
+	} catch {
+		// Parent gone or not yet listening; delivery falls back to polling.
+	}
+}
+
+function fireSettled(context: SpawnContext, record: AgentRecord): void {
+	try {
+		context.onSettled?.(record);
+	} finally {
+		void notifyParentSettled(context.agentDir, record);
+	}
+}
+
+/** Send to any live session: owned children use the direct RPC channel,
+ * everything else goes over the socket mesh. Mode selects pi-native
+ * delivery: `steer` (default) redirects current work, `followUp` queues
+ * behind it. Terminal children always return false so the caller resumes
+ * them via a fresh process from the saved transcript; unreachable
+ * non-terminal children also return false after a bounded socket wait so
+ * the caller can park (queued/starting) or fail (running) explicitly. */
+export async function sendSubagentMessage(record: AgentRecord, message: string, signal?: AbortSignal, mode: SubagentMessageMode = "steer", sender?: MeshSender): Promise<boolean> {
 	if (signal?.aborted) throw new Error("Subagent message was aborted");
 	mode = normalizeMessageMode(mode);
 	if (isTerminalStatus(record.status)) return false;
@@ -123,9 +160,31 @@ export async function sendSubagentMessage(record: AgentRecord, message: string, 
 		return true;
 	}
 	const startup = startingChildren.get(record.runId);
-	if (!startup) return false;
-	startup.messages.push({ text: message, mode });
-	return true;
+	if (startup) {
+		startup.messages.push({ text: message, mode });
+		return true;
+	}
+	if (!sender) return false;
+	const send = () => sendMeshMessage({
+		socketDir: sender.socketDir,
+		toRunId: record.runId,
+		fromRunId: sender.runId,
+		type: mode,
+		payload: { text: message },
+	});
+	try {
+		await send();
+		return true;
+	} catch {
+		// The target may be starting: wait for its socket, then retry once.
+	}
+	try {
+		await waitForMeshSocket(sender.socketDir, record.runId, { timeoutMs: sender.waitMs ?? 5000, signal });
+		await send();
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export interface ScopedModelCapability {
@@ -572,7 +631,7 @@ export async function startSubagent(input: SpawnAgentInput, context: SpawnContex
 			record.updatedAt = record.finishedAt;
 			Object.assign(record, saveRecord(context.agentDir, record));
 			context.onRecord?.(record);
-			context.onSettled?.(record);
+			fireSettled(context, record);
 		})
 		.finally(() => {
 			if (runAbortControllers.get(record.runId) === runAbort) runAbortControllers.delete(record.runId);
@@ -665,7 +724,7 @@ export async function resumeSubagent(
 			record.updatedAt = record.finishedAt;
 			Object.assign(record, saveRecord(context.agentDir, record));
 			context.onRecord?.(record);
-			context.onSettled?.(record);
+			fireSettled(context, record);
 		})
 		.finally(() => {
 			if (runAbortControllers.get(record.runId) === runAbort) runAbortControllers.delete(record.runId);
@@ -720,7 +779,7 @@ async function runSubagentProcess(
 		record.finishedAt = new Date().toISOString();
 		record.updatedAt = record.finishedAt;
 		publish();
-		context.onSettled?.(record);
+		fireSettled(context, record);
 	};
 
 	try {
@@ -1057,7 +1116,7 @@ async function runSubagentProcess(
 			}
 			record.pid = undefined;
 			publishClosed();
-			if (newlySettled) context.onSettled?.(record);
+			if (newlySettled) fireSettled(context, record);
 			if (!initialSettled) {
 				initialSettled = true;
 				resolveInitial();

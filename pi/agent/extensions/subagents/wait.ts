@@ -15,7 +15,7 @@ export interface WaitUntilIdleOptions {
 	signal?: AbortSignal;
 	/** How often to re-read the registry while waiting. */
 	pollMs?: number;
-	/** Restrict the wait to these run ids; omit to watch every descendant. */
+	/** Restrict the wait to these run ids (anywhere in the tree); omit to watch every descendant. */
 	targets?: readonly string[];
 	/** Resolve when any (or all) of the selected subagents are terminal. Default "all". */
 	mode?: "any" | "all";
@@ -32,8 +32,20 @@ function dirKey(agentDir: string): string {
 	return resolve(agentDir);
 }
 
-function snapshotDescendants(agentDir: string, parentRunId: string): AgentRecord[] {
-	return descendantsOf(getCachedRecords(agentDir), parentRunId);
+function snapshotWatched(agentDir: string, parentRunId: string, targetIds?: Set<string>): AgentRecord[] {
+	const all = getCachedRecords(agentDir);
+	// Targeted waits address resolved runs anywhere in the tree (absolute and
+	// sibling paths); untargeted waits keep the classic subtree scope.
+	if (!targetIds || targetIds.size === 0) return descendantsOf(all, parentRunId);
+	const byId = new Map(all.map((record) => [record.runId, record]));
+	const rows: AgentRecord[] = [];
+	for (const id of targetIds) {
+		const record = byId.get(id);
+		if (record) rows.push(record);
+	}
+	// No target matched anything: fall back to the subtree snapshot instead
+	// of an empty watch set (which would resolve instantly with no rows).
+	return rows.length > 0 ? rows : descendantsOf(all, parentRunId);
 }
 
 /** Build the predicate over a (optionally targeted) selection of descendants. */
@@ -63,11 +75,12 @@ export function waitDebugState(): { waiters: number } {
 }
 
 /**
- * Block until the selected descendants of `parentRunId` are terminal, `timeoutMs`
- * elapses, or `signal` aborts. Without `targets` every descendant is watched and
+ * Block until the selected runs are terminal, `timeoutMs` elapses, or `signal`
+ * aborts. Without `targets` every descendant of `parentRunId` is watched and
  * `mode: "all"` waits for all of them; `mode: "any"` resolves on the first
- * finish. Completion is noticed by in-process notifications (spawn/settle/cancel)
- * or by re-reading the registry every `pollMs`; the timeout is a ceiling.
+ * finish. Completion is noticed by in-process notifications (spawn/settle/cancel),
+ * mesh settle notices from other processes, or by re-reading the registry
+ * every `pollMs`; the timeout is a ceiling.
  */
 export async function waitUntilSubagentsIdle(
 	agentDir: string,
@@ -77,7 +90,8 @@ export async function waitUntilSubagentsIdle(
 	const timeoutMs = options.timeoutMs;
 	const pollMs = Math.max(1, options.pollMs ?? DEFAULT_POLL_MS);
 	const isDone = selectionPredicate(options);
-	const snapshot = () => snapshotDescendants(agentDir, parentRunId);
+	const targetIds = options.targets ? new Set(options.targets) : undefined;
+	const snapshot = () => snapshotWatched(agentDir, parentRunId, targetIds);
 	let rows = snapshot();
 	if (isDone(rows) || timeoutMs <= 0) return rows;
 	if (options.signal?.aborted) throw new Error("check_subagents was aborted");
@@ -104,7 +118,7 @@ export async function waitUntilSubagentsIdle(
 				}
 			}
 		};
-		const waiter: Waiter = {
+	const waiter: Waiter = {
 			agentDir: key,
 			wake() {
 				try {

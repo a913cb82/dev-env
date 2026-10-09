@@ -9,18 +9,20 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
-import { getCachedRecords, isProcessAlive, isTerminalStatus, markRecordResultState, pruneRecords, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
+import { appendAgentMessage, drainPendingMessages, getCachedRecords, isProcessAlive, isTerminalStatus, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
+import { startMeshServer, meshSocketDir, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
 	cancelSubagent,
 	killPidTree,
+	meshSenderFor,
 	resumeSubagent,
 	sendSubagentMessage,
 	startSubagent,
 	terminateOwnedSubagents,
 } from "./spawn-agent.ts";
-import { descendantsOf, resolveAgentRecord } from "./registry.ts";
+import { descendantsOf, resolveAgentPath } from "./registry.ts";
 import type { AgentRecord, SubagentMessageMode, SubagentSettings, UsageSummary } from "./types.ts";
 import { normalizeMessageMode } from "./types.ts";
 
@@ -45,7 +47,7 @@ const SpawnAgentSchema = Type.Object({
 
 const CheckSchema = Type.Object({
 	targets: Type.Optional(Type.Array(Type.String(), {
-		description: "Subagents to check (run id/prefix, session id, or name); omit for all",
+		description: "Tree paths (/a/b absolute, me/child, ../sibling) or run id/prefix, session id, or name; omit for all",
 	})),
 	wait: Type.Optional(Type.Boolean({ description: "Block until they finish (returns early)" })),
 	mode: Type.Optional(Type.String({
@@ -56,11 +58,11 @@ const CheckSchema = Type.Object({
 });
 
 const CancelSchema = Type.Object({
-	target: Type.String({ description: "Subagent run id (or unique prefix), session id, or exact name" }),
+	target: Type.String({ description: "Tree path (/a/b, me/child, ../sibling) or run id/prefix, session id, or name" }),
 });
 
 const SendSchema = Type.Object({
-	target: Type.String({ description: "Subagent run id (or unique prefix), session id, or exact name" }),
+	target: Type.String({ description: "Tree path (/a/b absolute, me/child, ../sibling) or run id/prefix, session id, or name" }),
 	message: Type.String({ description: "Message for the subagent" }),
 	mode: Type.Optional(Type.String({
 		description: "steer (default) redirects current work; followUp queues behind it",
@@ -96,6 +98,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	let delivering = false;
 	let deliveryPaused = false;
 	let activeSignal: AbortSignal | undefined;
+	let meshServer: MeshServer | undefined;
 	const deliveredResults = new Set<string>();
 	const notifiedResults = new Set<string>();
 	const seenDescendantResults = new Set<string>();
@@ -120,6 +123,40 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	/** Re-read a record so send/cancel decisions use the latest on-disk state. */
 	const latestRecord = (record: AgentRecord): AgentRecord =>
 		getCachedRecords(getAgentDir()).find((item) => item.runId === record.runId) ?? record;
+	const senderName = (runId: string): string => {
+		if (runId === runtime?.rootRunId) return "root";
+		return getCachedRecords(getAgentDir()).find((record) => record.runId === runId)?.name ?? runId;
+	};
+	/** Inject mesh text into this session as a native steer/followUp message. */
+	const injectMeshText = async (from: string, mode: SubagentMessageMode, text: string) => {
+		if (!runtime || shuttingDown) return;
+		// Audit first: the append-only log never touches the record JSON
+		// (owned by the parent process), so logging cannot regress it.
+		try {
+			await appendAgentMessage(getAgentDir(), runtime.runId, { from, mode, text });
+		} catch {
+			// Audit never blocks delivery.
+		}
+		try {
+			await pi.sendMessage(
+				{ content: `[${senderName(from)}] ${text}` },
+				{ triggerTurn: true, deliverAs: mode },
+			);
+		} catch {
+			// Session ending or host rejection: the message is dropped.
+		}
+	};
+	const handleMeshMessage = (envelope: MeshEnvelope) => {
+		if (!runtime || shuttingDown) return;
+		if (envelope.type === "settled") {
+			notifyWaiters(getAgentDir());
+			scheduleDelivery(0);
+			return;
+		}
+		const text = (envelope.payload as { text?: unknown }).text;
+		if (typeof text !== "string" || !text) return;
+		void injectMeshText(envelope.from, envelope.type, text);
+	};
 	const formatPing = (record: AgentRecord): string =>
 		`Subagent ${record.name} finished (${record.status}, run ${shortId(record.runId)}). Use check_subagents to read its result.`;
 	const rememberNotified = (records: AgentRecord[]) => {
@@ -326,6 +363,50 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 		scheduleDelivery();
 
+		// Socket mesh: this session is addressable tree-wide by its run id.
+		// Binding never breaks startup; without it only owned children are reachable.
+		// Capture the directory synchronously: async continuations below may
+		// run after the host has moved on (tests multiplex several sessions).
+		const meshAgentDir = getAgentDir();
+		void (async () => {
+		try {
+			if (meshServer) {
+			try { await meshServer.close(); } catch { /* replaced */ }
+			meshServer = undefined;
+		}
+			meshServer = await startMeshServer({
+				socketDir: meshSocketDir(meshAgentDir),
+				runId: runtime!.runId,
+				maxLineChars: runtime!.settings.rpcMaxLineChars,
+				isKnownRunId: (id) =>
+					id === runtime!.rootRunId ||
+					getCachedRecords(meshAgentDir).some((record) => record.runId === id && record.rootRunId === runtime!.rootRunId),
+				onMessage: handleMeshMessage,
+			});
+		} catch {
+			meshServer = undefined;
+		}
+		// Parked messages (queued while this run had no session) drain in order.
+		try {
+			const pending = await drainPendingMessages(meshAgentDir, runtime!.runId);
+			for (const message of pending) {
+				try {
+					await pi.sendMessage(
+						{ content: `[${senderName(message.from)}] ${message.text}` },
+						{ triggerTurn: true, deliverAs: message.mode },
+					);
+				} catch {
+					// Session ending: remaining parked messages are dropped.
+					break;
+				}
+			}
+		} catch {
+			// No pending queue, no problem.
+		}
+		})().catch(() => {
+			// Mesh setup is best effort and never breaks session startup.
+		});
+
 		sessionAbort = new AbortController();
 
 		// A /reload tears down live children with the old runtime; restart the
@@ -370,8 +451,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
 	const resolveRecord = (target: string): AgentRecord => {
 		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
-		const rows = descendantsOf(getCachedRecords(getAgentDir()), runtime.runId);
-		return resolveAgentRecord(rows, target);
+		const resolved = resolveAgentPath(getCachedRecords(getAgentDir()), { anchorRunId: runtime.runId, rootRunId: runtime.rootRunId, target });
+		if (!resolved.record) throw new Error(`"${target.trim()}" is the root session, not a subagent.`);
+		return resolved.record;
 	};
 
 	const makeUiHandler = (ui: any) => async (child: AgentRecord, request: any) => {
@@ -398,31 +480,39 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 		mode: SubagentMessageMode = "steer",
 		ctx?: { cwd: string; scopedModels: Array<{ model: { provider: string; id: string }; thinkingLevel?: string }>; ui: any },
-	): Promise<{ resumed: boolean }> => {
+	): Promise<{ resumed: boolean; queued?: boolean }> => {
 		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
 		mode = normalizeMessageMode(mode);
 		signal = signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal;
-		const latest = latestRecord(record);
-		// Messaging is parent -> direct child only. A deeper descendant is reached
-		// through its own parent (which owns its RPC channel and concurrency slot).
-		if (latest.parentRunId !== runtime.runId) {
-			throw new Error(`${latest.name} is a descendant, not a direct child — message its parent instead`);
+		const agentDir = getAgentDir();
+		const sender = meshSenderFor(agentDir, runtime.runId);
+		let current = latestRecord(record);
+		// Any tree node except this session is addressable: owned children
+		// use the direct RPC channel, everything else the socket mesh.
+		if (!isTerminalStatus(current.status)) {
+			if (await sendSubagentMessage(current, text, signal, mode, sender)) return { resumed: false };
+			current = latestRecord(record);
+			if (!isTerminalStatus(current.status)) {
+				if (current.status === "queued" || current.status === "starting") {
+					await queuePendingMessage(agentDir, current.runId, { from: runtime.runId, mode, text });
+					return { resumed: false, queued: true };
+				}
+				throw new Error(`${current.name} is no longer reachable`);
+			}
 		}
-		if (await sendSubagentMessage(latest, text, signal, mode)) return { resumed: false };
-		if (!isTerminalStatus(latest.status)) {
-			throw new Error(`${latest.name} is no longer running`);
-		}
-		// Terminal child: restart from its transcript in a fresh process. The
+		// Terminal run: restart from its transcript in a fresh process. The
 			// previous process was already reaped on settle; resumeSubagent
 			// awaits any straggler before the new writer opens the session.
-		if (!ctx) throw new Error(`${latest.name} finished (${latest.status}); retry with session context to resume it`);
+		// Resume preserves the record's parent: the result owner keeps its
+		// claim and the resuming session only lends its concurrency slot.
+		if (!ctx?.scopedModels || !ctx?.cwd) throw new Error(`${current.name} finished (${current.status}); retry with session context to resume it`);
 		await resumeSubagent(
-			latest,
+			current,
 			text,
 			{
-				agentDir: getAgentDir(),
-				parentRunId: runtime.runId,
-				rootRunId: runtime.rootRunId,
+				agentDir,
+				parentRunId: current.parentRunId,
+				rootRunId: current.rootRunId,
 				currentDepth: runtime.depth,
 				settings: runtime.settings,
 				parentTools: pi.getActiveTools(),
@@ -542,6 +632,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			keepAlive = undefined;
 		}
 		sessionAbort.abort();
+		try { await meshServer?.close(); } catch { /* best effort */ }
+		meshServer = undefined;
 		// This pi process is going away: stop every live descendant. Terminal
 		// children were already reaped on settle; this is a safety net for
 		// stragglers plus the await for still-running turns.
@@ -659,15 +751,35 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (!runtime) throw new Error("Subagent extension settings failed to initialize");
 			const agentDir = getAgentDir();
-			// Resolve the optional target list once; every target must be a descendant
-			// of this session (unknown or ambiguous targets fail before waiting).
+			// Resolve the optional target list once; targets address any tree node
+			// (unknown or ambiguous targets fail before waiting).
 			const requested = params.targets && params.targets.length > 0 ? params.targets : undefined;
 			const targetIds = requested
-				? new Set(requested.map((target) => resolveAgentRecord(descendantsOf(getCachedRecords(agentDir), runtime!.runId), target).runId))
+				? new Set(requested.map((target) => {
+				const resolved = resolveAgentPath(getCachedRecords(agentDir), { anchorRunId: runtime!.runId, rootRunId: runtime!.rootRunId, target });
+				if (!resolved.record) throw new Error(`"${target.trim()}" is the root session, not a subagent.`);
+				return resolved.record.runId;
+			}))
 				: undefined;
 			const snapshot = () => {
-				const rows = descendantsOf(getCachedRecords(agentDir), runtime!.runId);
-				return targetIds ? rows.filter((record) => targetIds.has(record.runId)) : rows;
+				const all = getCachedRecords(agentDir);
+				const rows = descendantsOf(all, runtime!.runId);
+				if (!targetIds) return rows;
+				const selected = rows.filter((record) => targetIds.has(record.runId));
+				// Targets outside the subtree (siblings, ancestors) stay visible
+				// read-only; claiming remains the direct parent's job.
+				const seen = new Set(selected.map((record) => record.runId));
+				const byId = new Map(all.map((record) => [record.runId, record]));
+				for (const id of targetIds) {
+					if (!seen.has(id)) {
+						const record = byId.get(id);
+						if (record) {
+							selected.push(record);
+							seen.add(id);
+						}
+					}
+				}
+				return selected;
 			};
 			if (params.wait) {
 				const timeoutMs = Math.min(Math.max(params.timeoutMs ?? 30000, 0), 300000);
@@ -688,6 +800,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			if (rows.length === 0) {
 				return { content: [{ type: "text", text: "No subagents have been spawned by this session." }], details: { records: [] } };
 			}
+			const descendantIds = new Set(descendantsOf(getCachedRecords(agentDir), runtime!.runId).map((record) => record.runId));
 			const running = rows.filter((record) => !isTerminalStatus(record.status));
 			const newlyFinishedIds = new Set(newlyFinished.map((record) => record.runId));
 			const observedDescendants: string[] = [];
@@ -704,7 +817,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 						seenDescendantResults.add(key);
 						observedDescendants.push(key);
 					}
-					const readOnly = record.parentRunId !== runtime!.runId ? " · read-only descendant" : "";
+					const readOnly = record.parentRunId !== runtime!.runId
+						? descendantIds.has(record.runId) ? " · read-only descendant" : " · read-only"
+						: "";
 					const meta = `${record.model} · depth ${record.depth}/${record.maxDepth} · ${record.cwd}${record.runId ? ` · run ${shortId(record.runId)}` : ""}${readOnly}`;
 					return formatResult(record, meta);
 				});
@@ -723,15 +838,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "send_to_subagent",
 		label: "Send to Subagent",
-		description: "Message one of this session's direct subagents. Running children are steered in place; messaging a finished or cancelled child resumes it from its transcript in a fresh process as a new execution; deeper descendants are reached through their own parent.",
-		promptSnippet: "Message a direct subagent (running, finished, or cancelled)",
+		description: "Message any subagent in the tree except this session: /a/b absolute from root, me/child, ../sibling, or a name/run id/session id. Running sessions receive it in place (steer redirects, followUp queues); finished ones resume from transcript without changing owner; queued ones park until start.",
+		promptSnippet: "Message any subagent by tree path (running, finished, queued, or cancelled)",
 		parameters: SendSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const mode = normalizeMessageMode(params.mode);
 			const record = resolveRecord(params.target);
-			const { resumed } = await sendToRecord(record, params.message, signal, mode, ctx);
+			const { resumed, queued } = await sendToRecord(record, params.message, signal, mode, ctx);
 			return {
-				content: [{ type: "text", text: resumed ? `Resumed ${record.name} from its transcript with a new execution.` : `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to ${record.name}.` }],
+				content: [{ type: "text", text: resumed ? `Resumed ${record.name} from its transcript with a new execution.` : queued ? `Queued message for ${record.name} (not running yet; delivers when its session starts).` : `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to ${record.name}.` }],
 				details: { record },
 			};
 		},
