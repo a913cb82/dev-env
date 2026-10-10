@@ -733,12 +733,20 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			// Marking must never block teardown of the old runtime.
 			}
 		}
+		// A finished session being reaped (harness teardown after settle) leaves
+		// its live subtree alone: grandchildren outlive their parents and
+		// self-report, so cancelling here would murder work the wake chain
+		// was built to save. Reload marks + restarts everything below; any
+		// other teardown of a live (or root) session still cancels the tree.
+		const ownId = process.env.PI_SUBAGENT_RUN_ID;
+		const own = ownId ? readRecords(agentDir).find((candidate) => candidate.runId === runtime.runId) : undefined;
+		const spareLiveTree = (event as { reason?: string } | undefined)?.reason !== "reload" && !!own && isTerminalStatus(own.status);
 		const records = descendantsOf(getCachedRecords(agentDir), runtime.runId);
 		for (const record of records.slice().reverse()) {
 			try {
 				if (isTerminalStatus(record.status)) {
 					if (record.pid && isProcessAlive(record.pid)) killPidTree(record.pid, record.pidStartTime);
-				} else {
+				} else if (!spareLiveTree) {
 					await cancelSubagent(agentDir, record);
 				}
 			} catch {
@@ -897,7 +905,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					const readOnly = record.parentRunId !== runtime!.runId
 						? descendantIds.has(record.runId) ? " · read-only descendant" : " · read-only"
 						: "";
-					const meta = `${record.model} · depth ${record.depth}/${record.maxDepth} · ${record.cwd}${record.runId ? ` · run ${shortId(record.runId)}` : ""}${readOnly}${record.adoptedFrom ? ` · adopted from ${senderName(record.adoptedFrom)}` : ""}`;
+					const meta = `${record.model} · depth ${record.depth}/${record.maxDepth} · ${record.cwd}${record.runId ? ` · run ${shortId(record.runId)}` : ""}${readOnly}${record.parentRunId !== runtime!.runId ? ` · via ${senderName(record.parentRunId)}` : ""}${record.adoptedFrom ? ` · adopted from ${senderName(record.adoptedFrom)}` : ""}`;
 					return formatResult(record, meta);
 				});
 			const summary =

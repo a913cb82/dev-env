@@ -1206,6 +1206,12 @@ function check(name, cond, extra) {
 		} catch (error) { siblingSendError = error; }
 		check("terminal sibling send needs session context", siblingSendError?.message.includes("retry with session context"), siblingSendError?.message);
 
+		// Read-only descendants render with lineage, never as promoted children.
+		registry.saveRecord(checkAgentDir, mk("via-mid", "check-parent", { rootRunId: "check-parent", name: "via-mid", status: "completed", latestText: "mid done" }));
+		registry.saveRecord(checkAgentDir, mk("via-leaf", "via-mid", { rootRunId: "check-parent", name: "via-leaf", status: "running" }));
+		const viaCheck = await checkTool.execute("check-via", { targets: ["via-leaf"] }, undefined, undefined, {});
+		check("check shows a descendant's lineage", viaCheck.content[0].text.includes("via-leaf") && viaCheck.content[0].text.includes("via via-mid"), viaCheck.content[0].text);
+
 		let automaticGrandchildMessages = 0;
 		childPi.sendMessage = async (message) => {
 			if (message.content.includes("automatic-grand")) automaticGrandchildMessages++;
@@ -1470,6 +1476,14 @@ function check(name, cond, extra) {
 	widget = new SubagentStatusWidget(tui, theme, agentDir3, "root");
 	const nested = widget.render(100);
 	check("widget nests grandchildren", nested.some((l) => l.includes("a1")) && nested.some((l) => l.includes("b")), nested.join(" | "));
+	widget.dispose();
+
+	// An orphaned run renders with lineage, never as a promoted child.
+	registry.saveRecord(agentDir3, mk("dead-parent", "root", { name: "dead-parent", status: "completed" }));
+	registry.saveRecord(agentDir3, mk("orphan-leaf", "dead-parent", { name: "orphan-leaf", status: "running_tool", currentTool: "bash sleep" }));
+	widget = new SubagentStatusWidget(tui, theme, agentDir3, "root");
+	const orphaned = widget.render(100);
+	check("widget shows an orphan's lineage", orphaned.some((l) => l.includes("orphan-leaf") && l.includes("via dead-parent")), orphaned.join(" | "));
 	widget.dispose();
 
 	// Widget refresh must not rescan the registry when nothing changed (perf:
@@ -2362,6 +2376,29 @@ function check(name, cond, extra) {
 			} catch (error) { refuseError = String((error && error.message) || error); }
 			check("resume refused when parent settled", /cannot resume .* already /i.test(refuseError), refuseError);
 			await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
+		// Teardown of a settled session spares its live subtree: the harness
+		// reaps finished sessions, and grandchildren self-report and wake
+		// their parent. Teardown of a live session still cancels everything.
+		for (const [name, session, ownStatus, wantGrand] of [
+			["settled", "teardown-child", "completed", "running"],
+			["live", "teardown-live-child", "running", "cancelled"],
+		]) {
+			const agentDir = rlUse(`teardown-${name}`);
+			registry.saveRecord(agentDir, mk(session, "root", { rootRunId: "root", status: ownStatus }));
+			registry.saveRecord(agentDir, mk(`teardown-grand-${name}`, session, { rootRunId: "root", status: "running", depth: 2 }));
+			const prevRunId = process.env.PI_SUBAGENT_RUN_ID;
+			process.env.PI_SUBAGENT_RUN_ID = session;
+			const ext = rlBoot();
+			try {
+				await ext.handlers.get("session_start")({}, rlStartCtx(session));
+				await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+			} finally {
+				if (prevRunId === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+				else process.env.PI_SUBAGENT_RUN_ID = prevRunId;
+			}
+			const grand = registry.readRecords(agentDir).find((r) => r.runId === `teardown-grand-${name}`);
+			check(`teardown of a ${name} session leaves the grandchild ${wantGrand}`, grand?.status === wantGrand, grand?.status);
 		}
 		// An orphan (settled parent, live grandchild) is adopted and resumed.
 		{

@@ -71,12 +71,16 @@ export class SubagentStatusWidget implements Component {
 		const rows = this.outstanding();
 		if (rows.length === 0) return [];
 		const depths = relativeDepths(rows, this.currentRunId);
+		const byId = new Map(getCachedRecords(this.agentDir).map((record) => [record.runId, record]));
 		return rows.map((record) => {
 			const indent = "  ".repeat(depths.get(record.runId) ?? 0);
 			const icon = this.theme.fg(statusColor(record), statusIcon(record));
 			const activity = record.currentTool || record.activity || record.status;
 			const adopted = record.adoptedFrom ? ` · adopted` : "";
-			return `${indent}${icon} ${record.name} ${this.theme.fg("dim", `· ${record.model} · ${activity}${adopted}`)}`;
+			// Non-direct rows name their parent so an orphaned run never
+			// looks like a promoted child once its parent is collected.
+			const via = record.parentRunId !== this.currentRunId ? ` · via ${byId.get(record.parentRunId)?.name ?? record.parentRunId}` : "";
+			return `${indent}${icon} ${record.name} ${this.theme.fg("dim", `· ${record.model} · ${activity}${adopted}${via}`)}`;
 		});
 	}
 

@@ -124,7 +124,7 @@ Abort any run's current turn by tree path, exact name, run ID, or session ID:
 cancel_subagent({ target: "auth-reviewer" })
 ```
 
-Cancellation stops the child process (and its live subtree), so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. Natural settling never cancels: grandchildren keep running after their parent settles, finalize their own record at settle (no live monitor can do it for them), and wake their parent with the result — the parent resumes, collects as the direct owner, and re-settles, climbing until a live session owns the turn. Ownership and claiming never move. Session shutdown still terminates everything still running.
+Cancellation stops the child process (and its live subtree), so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. Tearing down a finished session (process reaped after settle) spares its live subtree; only reload, quit, or a live session teardown cancels. Natural settling never cancels: grandchildren keep running after their parent settles, finalize their own record at settle (no live monitor can do it for them), and wake their parent with the result — the parent resumes, collects as the direct owner, and re-settles, climbing until a live session owns the turn. Ownership and claiming never move. Session shutdown still terminates everything still running.
 
 A `/reload` tears down the extension runtime, which stops live children — but it leaves a resume marker on each one it interrupts, and the fresh runtime restarts them from their transcripts (never-started runs restart with their original task; orphans whose direct parent already settled are adopted, tagged `adopted from <parent>`, and renamed past sibling clashes). Finished children are never marked, so their results stay exactly as they were. Quits and session switches keep the plain cancel-and-stop behavior. An explicit `cancel_subagent` clears the marker, so a child stopped on purpose is never resurrected by a later start.
 
@@ -173,7 +173,7 @@ While subagents are outstanding, a passive footer lists them, indented by depth:
 ● test-runner · openai-codex/gpt-5.5 · running npm test
 ```
 
-A child disappears the moment its result is read by its direct parent via `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
+A child disappears the moment its result is read by its direct parent via `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. Non-direct rows always name their parent (`· via <name>`) so an orphaned run never looks like a promoted child once its parent is collected. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
 
 ## Registry maintenance
 
