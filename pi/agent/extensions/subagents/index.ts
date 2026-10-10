@@ -10,11 +10,12 @@ import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
 import { appendAgentMessage, drainPendingMessages, getCachedRecords, isProcessAlive, isTerminalStatus, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
-import { startMeshServer, meshSocketDir, type MeshEnvelope, type MeshServer } from "./mesh.ts";
+import { startMeshServer, meshSocketDir, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
 	cancelSubagent,
+	gate,
 	killPidTree,
 	meshSenderFor,
 	resumeSubagent,
@@ -23,6 +24,7 @@ import {
 	terminateOwnedSubagents,
 } from "./spawn-agent.ts";
 import { descendantsOf, resolveAgentPath, uniqueSiblingName } from "./registry.ts";
+import { finalizeOwnRun, maybeWakeParent, summarizeSettleEvent, type SettleEventLike } from "./self-report.ts";
 import type { AgentRecord, SubagentMessageMode, SubagentSettings, UsageSummary } from "./types.ts";
 import { normalizeMessageMode } from "./types.ts";
 
@@ -36,7 +38,7 @@ interface RuntimeState {
 
 const SpawnAgentSchema = Type.Object({
 	task: Type.String({ description: "Task to delegate" }),
-	name: Type.Optional(Type.String({ description: "Subagent name (unique among siblings; task-derived names auto-suffix)" })),
+	name: Type.String({ description: "Subagent name (required, unique among siblings)" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory (relative unless absolute)" })),
 	model: Type.Optional(Type.String({ description: "Exact model selector. Overrides configured and inherited defaults." })),
 	thinking: Type.Optional(
@@ -448,6 +450,66 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		notifyWaiters(getAgentDir());
 		if (isTerminalStatus(record.status)) scheduleDelivery();
 	};
+	// Self-reported completion: when our parent already settled, no live
+	// monitor will record this turn, so the session finalizes its own record
+	// at settle and wakes its parent with the result (see self-report.ts).
+	// Live parents monitor us; the root session is never a subagent run.
+	const handleOwnSettle = async (event: SettleEventLike): Promise<void> => {
+		try {
+			if (!runtime) return;
+			const runId = process.env.PI_SUBAGENT_RUN_ID;
+			if (!runId || runId !== runtime.runId) return;
+			if (event?.continue === true) return;
+			const pending = (event?.context as { pendingMessages?: unknown } | undefined)?.pendingMessages;
+			if (Array.isArray(pending) && pending.length > 0) return;
+			const agentDir = getAgentDir();
+			const rows = getCachedRecords(agentDir);
+			const own = rows.find((record) => record.runId === runId);
+			if (!own) return;
+			const parent = rows.find((record) => record.runId === own.parentRunId);
+			if (parent && !isTerminalStatus(parent.status)) return;
+			const summary = summarizeSettleEvent(event);
+			if (finalizeOwnRun(agentDir, runId, summary) !== "written") return;
+			// Instant waiter wake at the root (best effort; polls cover the rest).
+			if (runtime.rootRunId !== runId) {
+				try {
+					await sendMeshMessage({ socketDir: meshSocketDir(agentDir), toRunId: runtime.rootRunId, fromRunId: runId, type: "settled", payload: { status: summary.status } });
+				} catch {
+					// An offline root falls back to polling.
+				}
+			}
+			if (!parent) return;
+			const ownDepth = runtime.depth;
+			const ownSettings = runtime.settings;
+			const ownTrusted = runtime.projectTrusted;
+			await maybeWakeParent({
+				agentDir,
+				ownRunId: runId,
+				canLaunch: () => !gate.isFull(ownSettings.maxConcurrency),
+				buildContext: (wakee) => ({
+					agentDir,
+					parentRunId: wakee.parentRunId,
+					rootRunId: wakee.rootRunId,
+					currentDepth: ownDepth,
+					settings: ownSettings,
+					parentTools: typeof (pi as { getActiveTools?: unknown }).getActiveTools === "function"
+						? (pi as unknown as { getActiveTools: () => string[] }).getActiveTools()
+						: [],
+					scopedModels: [],
+					parentCwd: own.cwd,
+					projectTrusted: ownTrusted,
+					signal: new AbortController().signal,
+					onRecord: trackChild,
+					onSettled: trackChild,
+				}),
+			});
+		} catch {
+			// Best effort: self-report must never break settling.
+		}
+	};
+	pi.on("agent_before_settle", (event) => {
+		void handleOwnSettle(event as SettleEventLike).catch(() => {});
+	});
 
 	const resolveRecord = (target: string): AgentRecord => {
 		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
@@ -738,7 +800,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			};
 		},
 		renderCall(args, theme) {
-			const name = args.name?.trim() || args.task.replace(/\s+/g, " ").slice(0, 50);
+			const name = args.name;
 			const model = args.model ? ` · ${args.model}` : "";
 			return new Text(`${theme.fg("toolTitle", theme.bold("spawn_agent"))} ${theme.fg("accent", name)}${theme.fg("dim", model)}`, 0, 0);
 		},

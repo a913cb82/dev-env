@@ -16,6 +16,7 @@ Based on [`williamcr01/pi-subagents`](https://github.com/williamcr01/pi-subagent
 - **Tree-wide messaging** — every session (root or subagent) owns a socket, so any node messages any other node except itself: steer running sessions in place, follow up, resume finished ones from transcript, or park on queued ones until they start.
 - **Steering and follow-ups** — send a steering message to redirect running work, or a follow-up to queue behind it; messaging a finished or cancelled run restarts it from its transcript in a fresh process without changing its owner.
 - **Automatic delivery** — finishing sends an invisible steering ping (name + status); full results are pulled via `check_subagents`.
+- **Surviving grandchildren** — a settled parent never cancels its subtree: grandchildren keep running, finalize their own record at settle, and wake their parent with the result, climbing until a live session owns the turn.
 - **Cancellation** — abort a child's current turn by run ID, session ID, or name; its process is stopped and a later message resumes it from its transcript.
 - **Reload recovery** — `/reload` interrupts live children and the fresh runtime restarts them from their transcripts; finished results are untouched and an explicit cancellation is never resurrected.
 - **No added dependencies** — uses Pi's extension and TUI APIs plus Node.js built-ins.
@@ -81,7 +82,7 @@ spawn_agent({
 })
 ```
 
-Optional fields are `name`, `cwd`, `model`, `thinking`, and an exact `tools` allowlist. Model selection is resolved as:
+`name` is required and must be unique among siblings. Optional fields are `cwd`, `model`, `thinking`, and an exact `tools` allowlist. Model selection is resolved as:
 
 1. Per-spawn `model`
 2. `defaultModel` in configuration
@@ -113,7 +114,7 @@ send_to_subagent({ target: "/team/worker", message: "Focus on the token refresh 
 send_to_subagent({ target: "../sibling", message: "When done, also audit the logout flow.", mode: "followUp" })
 ```
 
-Works on running, finished, cancelled, AND queued runs. Messaging a finished or cancelled run resumes it from its transcript in a fresh process as a new execution — the record keeps its parent (no ownership theft) and the resuming session only lends its concurrency slot. Resume is refused when the record's parent already settled (nobody could collect the result — spawn fresh instead). Sibling names stay unique so paths never go ambiguous: an explicit duplicate is rejected, task-derived names auto-suffix (`name-2`, …). Messaging a queued or starting run parks the message until its session starts. Every cross message is appended to the target's audit log (`<run>.messages.json` beside its record).
+Works on running, finished, cancelled, AND queued runs. Messaging a finished or cancelled run resumes it from its transcript in a fresh process as a new execution — the record keeps its parent (no ownership theft) and the resuming session only lends its concurrency slot. Resume is refused when the record's parent already settled (nobody could collect the result — spawn fresh instead). Names are required and unique among siblings so paths never go ambiguous; reload adoption suffixes past clashes automatically. Messaging a queued or starting run parks the message until its session starts. Every cross message is appended to the target's audit log (`<run>.messages.json` beside its record).
 
 ### `cancel_subagent`
 
@@ -123,13 +124,13 @@ Abort any run's current turn by tree path, exact name, run ID, or session ID:
 cancel_subagent({ target: "auth-reviewer" })
 ```
 
-Cancellation stops the child process, so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. Settling cancels the run's live subtree outright: the reaped owner's monitors die with its process, so lingering would rot abandoned runs into fake failures. Settle-cancelled orphans are pre-marked delivered (nobody can claim them) and never nag the footer; re-delegate work that still matters. Session shutdown still terminates everything still running.
+Cancellation stops the child process (and its live subtree), so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. Natural settling never cancels: grandchildren keep running after their parent settles, finalize their own record at settle (no live monitor can do it for them), and wake their parent with the result — the parent resumes, collects as the direct owner, and re-settles, climbing until a live session owns the turn. Ownership and claiming never move. Session shutdown still terminates everything still running.
 
 A `/reload` tears down the extension runtime, which stops live children — but it leaves a resume marker on each one it interrupts, and the fresh runtime restarts them from their transcripts (never-started runs restart with their original task; orphans whose direct parent already settled are adopted, tagged `adopted from <parent>`, and renamed past sibling clashes). Finished children are never marked, so their results stay exactly as they were. Quits and session switches keep the plain cancel-and-stop behavior. An explicit `cancel_subagent` clears the marker, so a child stopped on purpose is never resurrected by a later start.
 
 ## Result delivery
 
-Settling sends a socket notice to the result owner plus an invisible steering ping (`name + status + run`, `display:false`, `deliverAs:steer`) that wakes the owner even mid-work; the owner decides whether to address it now or keep working. Cross-process waits wake instantly on the notice with the registry poll as fallback. Full bodies stay in the registry until `check_subagents` pulls them (once per execution). Tool results carry only subtree cost deltas, never bodies.
+Settling sends a socket notice to the result owner plus an invisible steering ping (`name + status + run`, `display:false`, `deliverAs:steer`) that wakes the owner even mid-work; the owner decides whether to address it now or keep working. When the owner already settled, the session finalizes its own record instead (no live monitor can do it) and resurrects the parent with the result notification; waiters at the root wake instantly on the notice with the registry poll as fallback. Full bodies stay in the registry until `check_subagents` pulls them (once per execution). Tool results carry only subtree cost deltas, never bodies.
 
 If a child completes several follow-ups before the parent pulls, only the latest execution is delivered. Earlier output remains available in the child's session file.
 
@@ -195,7 +196,8 @@ Source files live in `extensions/subagents`, organized by responsibility:
 - `mesh.ts` — one Unix socket per live session: tree-wide steer/followUp delivery, settle notices, presence waits
 - `wait.ts` — event-driven wait over resolved runs (`check_subagents` wait:true)
 - `spawn-agent.ts` — RPC process control, concurrency, cancellation, depth enforcement, mesh sending
-- `mesh.test.cjs` / `paths.test.cjs` — socket and path-resolution suites (`node mesh.test.cjs`, `node paths.test.cjs`)
+- `self-report.ts` — orphan completion: finalize own record at settle, wake the settled parent
+- `mesh.test.cjs` / `paths.test.cjs` / `self-report.test.cjs` — socket, path-resolution, and self-report suites
 - `events.ts` — child JSON event parsing and status updates
 - `widget.ts` — passive footer listing unread/unfinished descendants
 

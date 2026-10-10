@@ -663,6 +663,16 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 			if (now - recordAgeStamp(record) > capGraceMs) doomedIds.add(record.runId);
 		}
 	}
+	// A terminal parent with live descendants keeps its record: grandchildren
+	// outlive their parents now, and pruning the parent would strand them
+	// with no wake target when they finish.
+	const liveParents = new Set<string>();
+	for (const record of records) {
+		if (!isTerminalStatus(record.status)) liveParents.add(record.parentRunId);
+	}
+	for (const runId of [...doomedIds]) {
+		if (liveParents.has(runId)) doomedIds.delete(runId);
+	}
 	const doomedAll = records.filter((record) => doomedIds.has(record.runId));
 	const dir = registryDir(agentDir);
 	let mutated = false;
@@ -753,8 +763,16 @@ export function siblingNameTaken(records: readonly AgentRecord[], parentRunId: s
 	return records.some((record) => record.parentRunId === parentRunId && record.name === name);
 }
 
+/** Owner-side guard: skip recording when another writer saved since our last
+ * publish. Our own settle already wrote this execution's terminal status, so
+ * only a foreign updatedAt means a self-report or a newer execution owns the
+ * record now — a stale monitor must not clobber it nor clear its pid. */
+export function shouldSkipOwnerWrite(disk: AgentRecord, memory: AgentRecord): boolean {
+	return disk.updatedAt !== memory.updatedAt;
+}
+
 /** First free sibling name: the desired name, else `name-2`, `name-3`, ...
- * Used for task-derived and adoption names where failing is not an option. */
+ * Used for adoption names where failing is not an option. */
 export function uniqueSiblingName(records: readonly AgentRecord[], parentRunId: string, desired: string): string {
 	if (!siblingNameTaken(records, parentRunId, desired)) return desired;
 	let counter = 2;

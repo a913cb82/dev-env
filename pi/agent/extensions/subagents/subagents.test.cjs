@@ -531,7 +531,7 @@ function check(name, cond, extra) {
 				projectTrusted: false,
 			};
 			process.env.PI_CODING_AGENT_DIR = costSpawnAgentDir;
-			const e2eRec = await spawn.startSubagent({ task: "cost e2e" }, e2eCtx);
+			const e2eRec = await spawn.startSubagent({ task: "cost e2e", name: "cost-e2e" }, e2eCtx);
 			let e2eFinal;
 			for (let i = 0; i < 100; i++) {
 				e2eFinal = registry.readRecords(costSpawnAgentDir).find((r) => r.runId === e2eRec.runId);
@@ -545,7 +545,7 @@ function check(name, cond, extra) {
 			check("fake-child spend flushes exactly once", e2eFlush && e2eFlush.usage && e2eFlush.usage.input === 10 && e2eFlush.usage.output === 5 && Math.abs(e2eFlush.usage.cost.total - 0.001) < 1e-12, JSON.stringify(e2eFlush && e2eFlush.usage));
 			check("fake-child spend never replays", costHandlers.get("tool_result")(hookEvent, {}) === undefined);
 			process.env.FAKE_EXIT = "1";
-			const failRec = await spawn.startSubagent({ task: "cost fail" }, e2eCtx);
+			const failRec = await spawn.startSubagent({ task: "cost fail", name: "cost-fail" }, e2eCtx);
 			let failFinal;
 			for (let i = 0; i < 100; i++) {
 				failFinal = registry.readRecords(costSpawnAgentDir).find((r) => r.runId === failRec.runId);
@@ -1119,7 +1119,7 @@ function check(name, cond, extra) {
 		meshSends.child.length = 0;
 		await until(() => fs.existsSync(path.join(meshAgentDir, "subagents", "sockets", "mesh-child.sock")));
 		// Let the child's own start-delivery fire first so only the notify can ping for grand.
-		await new Promise((r) => setTimeout(r, 1200));
+		await until(() => meshSends.child.length > 0);
 		meshSends.child.length = 0;
 		registry.saveRecord(meshAgentDir, meshMk("mesh-grand", "mesh-child", { name: "grand", depth: 2, status: "completed", latestText: "grand done" }));
 		await spawn.notifyParentSettled(meshAgentDir, registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-grand"));
@@ -1261,7 +1261,7 @@ function check(name, cond, extra) {
 		checkHandlers.get("agent_start")({}, {});
 		registry.saveRecord(checkAgentDir, checkRecord("busy-check", "thinking"));
 		await checkTools.get("cancel_subagent").execute("cancel-busy", { target: "busy-check" }, undefined, undefined, {});
-		await new Promise((r) => setTimeout(r, 1100));
+		for (let i = 0; i < 80 && queuedReports.length === 0; i++) await new Promise((r) => setTimeout(r, 25));
 		check("busy parent still queues steering ping", queuedReports.length === 1, String(queuedReports.length));
 		check("busy ping is invisible steering that wakes", queuedReports[0]?.message.display === false && queuedReports[0]?.options.deliverAs === "steer" && queuedReports[0]?.options.triggerTurn === true, JSON.stringify(queuedReports[0]?.options));
 		check("busy ping carries name not full body", queuedReports[0]?.message.content.includes("busy-check") && !queuedReports[0]?.message.content.includes("### busy-check"), queuedReports[0]?.message.content);
@@ -1526,11 +1526,11 @@ function check(name, cond, extra) {
 	fs.mkdirSync(externalDir);
 	fs.symlinkSync(externalDir, externalLink, process.platform === "win32" ? "junction" : "dir");
 	const internalRec = await spawn.startSubagent(
-		{ task: "trusted internal", cwd: internalDir },
+		{ task: "trusted internal", name: "trusted-internal", cwd: internalDir },
 		{ ...baseCtx(), projectTrusted: true, persistAfterSettled: false },
 	);
 	const externalRec = await spawn.startSubagent(
-		{ task: "untrusted symlink", cwd: externalLink },
+		{ task: "untrusted symlink", name: "untrusted-symlink", cwd: externalLink },
 		{ ...baseCtx(), projectTrusted: true, persistAfterSettled: false },
 	);
 	for (let i = 0; i < 100; i++) {
@@ -1546,7 +1546,7 @@ function check(name, cond, extra) {
 
 	let requestedModelThrew = false;
 	try {
-		await spawn.startSubagent({ task: "x", model: "fake/outside" }, { ...baseCtx(), scopedModels: [{ provider: "fake", id: "allowed" }] });
+		await spawn.startSubagent({ task: "x", name: "outside-model", model: "fake/outside" }, { ...baseCtx(), scopedModels: [{ provider: "fake", id: "allowed" }] });
 	} catch (error) {
 		requestedModelThrew = String(error).includes("outside");
 	}
@@ -1555,19 +1555,19 @@ function check(name, cond, extra) {
 	check("inherited out-of-scope model kept as-is", spawn.resolveInheritedModel("fake/outside", [{ provider: "fake", id: "allowed" }]) === "fake/outside");
 	check("inherited model with empty scope kept", spawn.resolveInheritedModel("anything", []) === "anything");
 	const inheritedRec = await spawn.startSubagent(
-		{ task: "x" },
+		{ task: "x", name: "inherited-model" },
 		{ ...baseCtx(), scopedModels: [{ provider: "fake", id: "allowed" }], persistAfterSettled: false },
 	);
 	check("omitting model inherits without the scope check", inheritedRec.model === "fake/parent", inheritedRec.model);
 	const defaultRec = await spawn.startSubagent(
-		{ task: "x" },
+		{ task: "x", name: "default-model" },
 		{ ...baseCtx(), settings: { ...baseCtx().settings, defaultModel: "fake/outside" }, scopedModels: [{ provider: "fake", id: "allowed" }], persistAfterSettled: false },
 	);
 	check("configured default inherits without the scope check", defaultRec.model === "fake/outside", defaultRec.model);
 	let pinThrew = false;
 	try {
 		await spawn.startSubagent(
-			{ task: "x", model: "allowed", thinking: "off" },
+			{ task: "x", name: "scoped-model", model: "allowed", thinking: "off" },
 			{ ...baseCtx(), scopedModels: [{ provider: "fake", id: "allowed", thinkingLevel: "high" }] },
 		);
 	} catch (error) {
@@ -1593,12 +1593,12 @@ function check(name, cond, extra) {
 	const inheritedArgs = JSON.parse(fs.readFileSync(path.join(fakeArgsDir, `${rec1.runId}.json`), "utf8"));
 	check("omitted tools become a child CLI allowlist", inheritedArgs[inheritedArgs.indexOf("--tools") + 1] === "read,spawn_agent", JSON.stringify(inheritedArgs));
 	check("empty model scope emits no --models flag", !inheritedArgs.includes("--models"), JSON.stringify(inheritedArgs));
-	await new Promise((r) => setTimeout(r, 250));
+	for (let i = 0; i < 80 && !settled.includes("completed"); i++) await new Promise((r) => setTimeout(r, 25));
 	check("onSettled fired", settled.includes("completed"), JSON.stringify(settled));
 
 	// Claim/dismiss at settlement while the owning process still has stale flags.
 	// A real child close must not resurrect either UI state.
-	const closeRec = await spawn.startSubagent({ task: "close after result" }, {
+	const closeRec = await spawn.startSubagent({ task: "close after result", name: "close-child" }, {
 		...baseCtx(), persistAfterSettled: false,
 		onSettled: (record) => {
 			registry.markRecordResultState(spawnAgentDir, { ...record }, "resultsDelivered");
@@ -1639,7 +1639,7 @@ function check(name, cond, extra) {
 	check("unflagged spawn exports no flag override", unflaggedSpawnEnv.PI_SUBAGENT_DEPTH_FLAG_OVERRIDE === "0");
 	let propagatedSettings = configuredRoot;
 	for (const generation of ["child", "grandchild"]) {
-		const depthRec = await spawn.startSubagent({ task: "depth propagation" }, {
+		const depthRec = await spawn.startSubagent({ task: "depth propagation", name: `depth-${generation}` }, {
 			...baseCtx(), settings: propagatedSettings, persistAfterSettled: false,
 		});
 		const envPath = path.join(fakeArgsDir, `${depthRec.runId}.env.json`);
@@ -1651,7 +1651,7 @@ function check(name, cond, extra) {
 		check(`${generation} reload retains flag cap over file limits`, propagatedSettings.maxDepth === 4, propagatedSettings.maxDepth);
 	}
 
-	const noToolsRec = await spawn.startSubagent({ task: "none", tools: [] }, baseCtx());
+	const noToolsRec = await spawn.startSubagent({ task: "none", name: "none-child", tools: [] }, baseCtx());
 	for (let i = 0; i < 100; i++) {
 		const row = registry.readRecords(spawnAgentDir).find((r) => r.runId === noToolsRec.runId);
 		if (row && ["completed", "failed"].includes(row.status)) break;
@@ -1660,7 +1660,7 @@ function check(name, cond, extra) {
 	const noToolsArgs = JSON.parse(fs.readFileSync(path.join(fakeArgsDir, `${noToolsRec.runId}.json`), "utf8"));
 	check("explicit empty tools emits --no-tools", noToolsArgs.includes("--no-tools") && !noToolsArgs.includes("--tools"), JSON.stringify(noToolsArgs));
 
-	const narrowedRec = await spawn.startSubagent({ task: "narrow", tools: ["read"] }, baseCtx());
+	const narrowedRec = await spawn.startSubagent({ task: "narrow", name: "narrow-child", tools: ["read"] }, baseCtx());
 	for (let i = 0; i < 100; i++) {
 		const row = registry.readRecords(spawnAgentDir).find((r) => r.runId === narrowedRec.runId);
 		if (row && ["completed", "failed"].includes(row.status)) break;
@@ -1670,7 +1670,7 @@ function check(name, cond, extra) {
 	check("explicit tools remove recursive spawn when excluded", narrowedArgs[narrowedArgs.indexOf("--tools") + 1] === "read", JSON.stringify(narrowedArgs));
 
 	const scopedRec = await spawn.startSubagent(
-		{ task: "scoped", model: "allowed" },
+		{ task: "scoped", name: "scoped-other", model: "allowed" },
 		{ ...baseCtx(), scopedModels: [{ provider: "fake", id: "allowed", thinkingLevel: "high" }, { provider: "fake", id: "other" }] },
 	);
 	for (let i = 0; i < 100; i++) {
@@ -1804,11 +1804,11 @@ function check(name, cond, extra) {
 		if (boundedLive && ["thinking", "running_tool"].includes(boundedLive.status)) break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
+	// Pre-aborted: deterministic instant rejection instead of a 50ms race.
 	const abortController = new AbortController();
-	const abortTimer = setTimeout(() => abortController.abort(), 50);
+	abortController.abort();
 	let abortError;
 	try { await spawn.sendSubagentMessage(boundedLive, "hang", abortController.signal); } catch (error) { abortError = String(error); }
-	clearTimeout(abortTimer);
 	check("aborted RPC request rejects promptly", abortError?.includes("aborted"), abortError);
 	let requestError;
 	try {
@@ -1885,7 +1885,7 @@ function check(name, cond, extra) {
 	// depth and thinking validation still throw synchronously
 	let thinkingThrew = false;
 	try {
-		await spawn.startSubagent({ task: "x", thinking: "ultra" }, baseCtx());
+		await spawn.startSubagent({ task: "x", name: "ultra-thinking", thinking: "ultra" }, baseCtx());
 	} catch (error) {
 		thinkingThrew = String(error).includes("thinking level");
 	}
@@ -1893,7 +1893,7 @@ function check(name, cond, extra) {
 
 	let depthThrew = false;
 	try {
-		await spawn.startSubagent({ task: "x" }, { ...baseCtx(), currentDepth: 2 });
+		await spawn.startSubagent({ task: "x", name: "deep-limit" }, { ...baseCtx(), currentDepth: 2 });
 	} catch (error) {
 		depthThrew = String(error).includes("depth limit");
 	}
@@ -2073,7 +2073,11 @@ function check(name, cond, extra) {
 	// --- cancel race: a cancelled child must stay cancelled, not flip to failed ---
 	process.env.FAKE_DELAY_MS = "4000";
 	const raceRec = await spawn.startSubagent({ task: "race", name: "racer" }, baseCtx());
-	await new Promise((r) => setTimeout(r, 300));
+	for (let i = 0; i < 80; i++) {
+		const launched = registry.readRecords(spawnAgentDir).find((r) => r.runId === raceRec.runId);
+		if (launched?.pid !== undefined) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
 	await spawn.cancelSubagent(spawnAgentDir, raceRec);
 	let raceFinal;
 	for (let i = 0; i < 80; i++) {
@@ -2084,8 +2088,8 @@ function check(name, cond, extra) {
 	check("cancelled child stays cancelled", raceFinal && raceFinal.status === "cancelled", raceFinal && raceFinal.status);
 	delete process.env.FAKE_DELAY_MS;
 
-	// Settle cancels live descendants instead of orphaning them: the reaped owner's
-	// monitors would die with its process, rotting abandoned runs into fake failures.
+	// Settle leaves live descendants running: they self-report on completion and
+	// wake their parent with the result (see self-report.ts).
 	process.env.FAKE_DELAY_MS = "200";
 	const lingerParent = await spawn.startSubagent({ task: "linger parent", name: "linger-parent" }, baseCtx());
 	registry.saveRecord(spawnAgentDir, {
@@ -2101,15 +2105,9 @@ function check(name, cond, extra) {
 		if (lingerSettled?.status === "completed") break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
-	let lingerOrphan;
-	for (let i = 0; i < 100; i++) {
-		lingerOrphan = registry.readRecords(spawnAgentDir).find((r) => r.runId === "linger-grand");
-		if (lingerOrphan?.status === "cancelled") break;
-		await new Promise((r) => setTimeout(r, 25));
-	}
-	check("settled parent cancels its live grandchild", lingerSettled?.status === "completed" && lingerOrphan?.status === "cancelled" && /settled/i.test(lingerOrphan?.error ?? ""),
-		JSON.stringify({ parent: lingerSettled?.status, grand: lingerOrphan?.status, error: lingerOrphan?.error }));
-	check("settle-cancelled grandchild never nags", lingerOrphan?.resultsDelivered === true, JSON.stringify(lingerOrphan?.resultsDelivered));
+	const lingerSurvivor = registry.readRecords(spawnAgentDir).find((r) => r.runId === "linger-grand");
+	check("settled parent leaves its live grandchild running", lingerSettled?.status === "completed" && lingerSurvivor?.status === "thinking" && lingerSurvivor?.resultsDelivered !== true,
+		JSON.stringify({ parent: lingerSettled?.status, grand: lingerSurvivor?.status, delivered: lingerSurvivor?.resultsDelivered }));
 	// Resuming a settled parent starts fresh from the transcript instead of throwing.
 	await spawn.resumeSubagent(lingerSettled, "resume lingered", baseCtx());
 	const lingerExecBefore = lingerSettled.executionId;
@@ -2161,23 +2159,25 @@ function check(name, cond, extra) {
 			const innerOk = await spawn.startSubagent({ task: "inner task", name: "inner" }, p6Ctx("p6-root"));
 			check("parent and child may share a name", innerOk.name === "inner", innerOk.name);
 		// Task-derived names suffix instead of colliding.
-		const u1 = await spawn.startSubagent({ task: "same task here" }, p6Ctx("p6-root"));
-		const u2 = await spawn.startSubagent({ task: "same task here" }, p6Ctx("p6-root"));
-		check("task-derived siblings auto-suffixed", u1.name !== u2.name && u2.name === `${u1.name}-2`, `${u1.name} vs ${u2.name}`);
+		let namelessError = "";
+		try { await spawn.startSubagent({ task: "nameless task" }, p6Ctx("p6-root")); }
+		catch (error) { namelessError = String((error && error.message) || error); }
+		check("spawn without a name is rejected", /name is required/i.test(namelessError), namelessError);
 		// Settle cancels live descendants instead of orphaning them (worker2 regression:
 		// the reaped owner's monitor died and the orphan rotted into a fake failure).
-		const settleParent = await spawn.startSubagent({ task: "settle parent" }, p6Ctx("p6-root"));
+		const settleParent = await spawn.startSubagent({ task: "settle parent", name: "settle-parent" }, p6Ctx("p6-root"));
 		registry.saveRecord(phase6Dir, mk("p6-child", settleParent.runId, { rootRunId: "p6-root", status: "running", depth: 1 }));
 		registry.saveRecord(phase6Dir, mk("p6-grand", "p6-child", { rootRunId: "p6-root", status: "running", depth: 2 }));
 		const settled = await waitFor6(settleParent.runId, (row) => registry.isTerminalStatus(row.status));
 		check("settle parent completes", settled?.status === "completed", settled?.status);
-		const orphanChild = await waitFor6("p6-child", (row) => row.status === "cancelled");
-		const orphanGrand = registry.readRecords(phase6Dir).find((row) => row.runId === "p6-grand");
-		check("settle cancels the live child", orphanChild?.status === "cancelled" && /settled/i.test(orphanChild?.error ?? ""),
-			JSON.stringify({ status: orphanChild?.status, error: orphanChild?.error }));
-		check("settle cancels the live grandchild", orphanGrand?.status === "cancelled", orphanGrand?.status);
-		check("settle-cancelled orphans never nag", orphanChild?.resultsDelivered === true && orphanGrand?.resultsDelivered === true,
-			JSON.stringify({ child: orphanChild?.resultsDelivered, grand: orphanGrand?.resultsDelivered }));
+		// The live subtree survives the settle: grandchildren keep running
+		// and self-report when they finish (no cancellation, no pre-delivery).
+		const survivorChild = registry.readRecords(phase6Dir).find((row) => row.runId === "p6-child");
+		const survivorGrand = registry.readRecords(phase6Dir).find((row) => row.runId === "p6-grand");
+		check("live child survives the parent settle", survivorChild?.status === "running" && survivorChild?.resultsDelivered !== true,
+			JSON.stringify({ status: survivorChild?.status, delivered: survivorChild?.resultsDelivered }));
+		check("live grandchild survives the parent settle", survivorGrand?.status === "running" && !/settled/i.test(survivorGrand?.error ?? ""),
+			JSON.stringify({ status: survivorGrand?.status, error: survivorGrand?.error }));
 	} finally {
 		if (savedDelay6 === undefined) delete process.env.FAKE_DELAY_MS;
 		else process.env.FAKE_DELAY_MS = savedDelay6;
@@ -2281,9 +2281,14 @@ function check(name, cond, extra) {
 			check("quit leaves no resume marker", registry.listReloadInterrupted(agentDir).length === 0);
 			const extB = rlBoot();
 			await extB.handlers.get("session_start")({ reason: "startup" }, rlStartCtx(parent));
-			await waitSleep(1500);
+			// A buggy resurrection would start within milliseconds (marker-driven).
+			let quitSteady = true;
+			for (let i = 0; i < 12; i++) {
+				if (registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status !== "cancelled") { quitSteady = false; break; }
+				await waitSleep(25);
+			}
 			check("quit-cancelled child is not resurrected on next start",
-				registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status === "cancelled");
+				quitSteady && registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status === "cancelled");
 			await extB.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
 		}
 		// Finished children are never marked; their results survive the reload.
@@ -2299,7 +2304,7 @@ function check(name, cond, extra) {
 			check("finished child is not marked on reload", registry.readReloadInterrupted(agentDir, rec.runId) === undefined);
 			const extB = rlBoot();
 			await extB.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
-			await waitSleep(1500);
+			for (let i = 0; i < 12; i++) await waitSleep(25);
 			const later = registry.readRecords(agentDir).find((r) => r.runId === rec.runId);
 			check("finished child keeps its result, no new execution",
 				later?.status === "completed" && later.executionId === done?.executionId && later.latestText === "fake done",
@@ -2322,7 +2327,7 @@ function check(name, cond, extra) {
 			await extB.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
 			await extB.tools.get("cancel_subagent").execute("cancel-1", { target: rec.runId }, undefined, undefined, {});
 			check("explicit cancel drops the resume marker", registry.readReloadInterrupted(agentDir, rec.runId) === undefined);
-			await waitSleep(2000);
+			for (let i = 0; i < 12; i++) await waitSleep(25);
 			check("explicitly cancelled child stays cancelled",
 				registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status === "cancelled",
 				registry.readRecords(agentDir).find((r) => r.runId === rec.runId)?.status);
@@ -2336,7 +2341,7 @@ function check(name, cond, extra) {
 			registry.markReloadInterrupted(agentDir, { runId: "stale-run", parentRunId: parent, executionId: "exec-old" });
 			const ext = rlBoot();
 			await ext.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
-			await waitSleep(1500);
+			for (let i = 0; i < 12; i++) await waitSleep(25);
 			const later = registry.readRecords(agentDir).find((r) => r.runId === "stale-run");
 			check("stale marker does not resurrect", later?.status === "cancelled" && later.executionId === "exec-new", later && `${later.status} ${later.executionId}`);
 			check("stale marker is dropped", registry.readReloadInterrupted(agentDir, "stale-run") === undefined);
