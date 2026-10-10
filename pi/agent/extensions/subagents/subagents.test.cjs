@@ -1212,6 +1212,14 @@ function check(name, cond, extra) {
 		const viaCheck = await checkTool.execute("check-via", { targets: ["via-leaf"] }, undefined, undefined, {});
 		check("check shows a descendant's lineage", viaCheck.content[0].text.includes("via-leaf") && viaCheck.content[0].text.includes("via via-mid"), viaCheck.content[0].text);
 
+		// Control: a live parent keeps the result collectable (viewing
+		// read-only never claims).
+		registry.saveRecord(checkAgentDir, mk("live-mid", "check-parent", { rootRunId: "check-parent", name: "live-mid", status: "running" }));
+		registry.saveRecord(checkAgentDir, mk("live-leaf", "live-mid", { rootRunId: "check-parent", name: "live-leaf", status: "completed", latestText: "live result" }));
+		const liveFirst = await checkTool.execute("check-live", { targets: ["live-leaf"] }, undefined, undefined, {});
+		check("collectable result shows", liveFirst.content[0].text.includes("live result"), liveFirst.content[0].text);
+		check("live-parent result stays undelivered", registry.readRecords(checkAgentDir).find((r) => r.runId === "live-leaf")?.resultsDelivered !== true);
+
 		let automaticGrandchildMessages = 0;
 		childPi.sendMessage = async (message) => {
 			if (message.content.includes("automatic-grand")) automaticGrandchildMessages++;
