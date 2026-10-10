@@ -971,12 +971,12 @@ function check(name, cond, extra) {
 		check("root observation keeps direct parent ownership", registry.readRecords(checkAgentDir).find((r) => r.runId === "owner-grand")?.resultsDelivered !== true);
 		check("check persists observed descendant keys", rootOwnershipCheck.details.seenDescendantResults.length === 1);
 
-		// Messaging is parent -> direct child only; a grandchild is rejected clearly.
+		// A finished grandchild whose parent already settled cannot resume: no live claimant.
 		let descendantSendError;
 		try {
 			await checkTools.get("send_to_subagent").execute("send-descendant", { target: "owner-grand", message: "hello" }, undefined, undefined, {});
 		} catch (error) { descendantSendError = error; }
-		check("terminal descendant send needs session context", descendantSendError?.message.includes("retry with session context"), descendantSendError?.message);
+		check("terminal descendant send refused when parent settled", /cannot resume .* already /i.test(descendantSendError?.message ?? ""), descendantSendError?.message);
 
 		// Targeted checks: an explicit target list, and any/all waiting.
 		registry.saveRecord(checkAgentDir, checkRecord("bystander", "completed", { latestText: "bystander result" }));
@@ -1019,7 +1019,7 @@ function check(name, cond, extra) {
 		try {
 			await checkTools.get("send_to_subagent").execute("send-path-deep", { target: "/path-direct/path-grand", message: "hello" }, undefined, undefined, {});
 		} catch (error) { pathDeepSendError = error; }
-		check("terminal path send needs session context", pathDeepSendError?.message.includes("retry with session context"), pathDeepSendError?.message);
+		check("terminal path send refused when parent settled", /cannot resume .* already /i.test(pathDeepSendError?.message ?? ""), pathDeepSendError?.message);
 		let pathUnknownError;
 		const pathUnknownStarted = Date.now();
 		try { await checkTool.execute("check-path-unknown", { targets: ["me/nope"], wait: true, timeoutMs: 5000 }, undefined, undefined, {}); } catch (error) { pathUnknownError = error; }
@@ -1838,7 +1838,7 @@ function check(name, cond, extra) {
 		for (const limit of [undefined, 1024 * 1024]) {
 			process.env.FAKE_MODE = mode;
 			const rec = await spawn.startSubagent(
-				{ task: "image payload", name: mode },
+				{ task: "image payload", name: `${mode}-${limit ?? "default"}` },
 				{ ...baseCtx(), persistAfterSettled: false, settings: { ...baseCtx().settings, rpcMaxLineChars: limit } },
 			);
 			delete process.env.FAKE_MODE;
@@ -1900,11 +1900,13 @@ function check(name, cond, extra) {
 	check("depth limit throws at spawn", depthThrew);
 
 	// Cancel stops the child process; resume restarts it from the transcript.
+	process.env.FAKE_DELAY_MS = "5000";
 	const slowRec = await spawn.startSubagent({ task: "slow", name: "slowpoke" }, { ...baseCtx() });
+	delete process.env.FAKE_DELAY_MS;
 	let slowRow;
 	for (let i = 0; i < 100; i++) {
 		slowRow = registry.readRecords(spawnAgentDir).find((r) => r.runId === slowRec.runId);
-		if (slowRow && ["thinking", "running_tool", "idle", "completed"].includes(slowRow.status)) break;
+		if (slowRow && ["thinking", "running_tool", "idle"].includes(slowRow.status)) break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
 	const cancelled = await spawn.cancelSubagent(spawnAgentDir, slowRec);
@@ -2082,7 +2084,8 @@ function check(name, cond, extra) {
 	check("cancelled child stays cancelled", raceFinal && raceFinal.status === "cancelled", raceFinal && raceFinal.status);
 	delete process.env.FAKE_DELAY_MS;
 
-	// Linger: a settled child with live descendants keeps its process until the subtree settles.
+	// Settle cancels live descendants instead of orphaning them: the reaped owner's
+	// monitors would die with its process, rotting abandoned runs into fake failures.
 	process.env.FAKE_DELAY_MS = "200";
 	const lingerParent = await spawn.startSubagent({ task: "linger parent", name: "linger-parent" }, baseCtx());
 	registry.saveRecord(spawnAgentDir, {
@@ -2098,8 +2101,16 @@ function check(name, cond, extra) {
 		if (lingerSettled?.status === "completed") break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
-	check("settled parent lingers while grandchild runs", lingerSettled?.status === "completed" && lingerSettled.pid !== undefined, JSON.stringify(lingerSettled));
-	// Resuming a lingered parent reaps the idle process and starts fresh instead of throwing.
+	let lingerOrphan;
+	for (let i = 0; i < 100; i++) {
+		lingerOrphan = registry.readRecords(spawnAgentDir).find((r) => r.runId === "linger-grand");
+		if (lingerOrphan?.status === "cancelled") break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("settled parent cancels its live grandchild", lingerSettled?.status === "completed" && lingerOrphan?.status === "cancelled" && /settled/i.test(lingerOrphan?.error ?? ""),
+		JSON.stringify({ parent: lingerSettled?.status, grand: lingerOrphan?.status, error: lingerOrphan?.error }));
+	check("settle-cancelled grandchild never nags", lingerOrphan?.resultsDelivered === true, JSON.stringify(lingerOrphan?.resultsDelivered));
+	// Resuming a settled parent starts fresh from the transcript instead of throwing.
 	await spawn.resumeSubagent(lingerSettled, "resume lingered", baseCtx());
 	const lingerExecBefore = lingerSettled.executionId;
 	let lingerResumed;
@@ -2108,7 +2119,7 @@ function check(name, cond, extra) {
 		if (lingerResumed?.status === "completed" && lingerResumed.executionId !== lingerExecBefore) break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
-	check("lingered parent resumes from transcript", lingerResumed?.status === "completed" && lingerResumed.executionId !== lingerExecBefore, lingerResumed && `${lingerResumed.status} ${lingerResumed.executionId === lingerExecBefore}`);
+	check("settled parent resumes from transcript", lingerResumed?.status === "completed" && lingerResumed.executionId !== lingerExecBefore, lingerResumed && `${lingerResumed.status} ${lingerResumed.executionId === lingerExecBefore}`);
 	await spawn.terminateOwnedSubagents([lingerParent.runId]);
 	registry.saveRecord(spawnAgentDir, { ...registry.readRecords(spawnAgentDir).find((r) => r.runId === "linger-grand"), status: "completed", finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
 	delete process.env.FAKE_DELAY_MS;
@@ -2122,6 +2133,56 @@ function check(name, cond, extra) {
 		await new Promise((r) => setTimeout(r, 25));
 	}
 	check("settled parent without descendants is reaped", loneSettled?.status === "completed" && loneSettled.pid === undefined, JSON.stringify(loneSettled));
+
+	// --- Phase 6: settle cancels live descendants, sibling names unique ---
+	{
+		const phase6Dir = path.join(sandbox, "phase6");
+		fs.mkdirSync(phase6Dir, { recursive: true });
+		const p6Ctx = (parent) => ({ ...baseCtx(), agentDir: phase6Dir, parentRunId: parent, rootRunId: "p6-root" });
+		const savedDelay6 = process.env.FAKE_DELAY_MS;
+		process.env.FAKE_DELAY_MS = "300";
+		const waitFor6 = async (runId, pred) => {
+			for (let i = 0; i < 200; i++) {
+				const found = registry.readRecords(phase6Dir).find((row) => row.runId === runId);
+				if (found && pred(found)) return found;
+				await new Promise((res) => setTimeout(res, 25));
+			}
+			return registry.readRecords(phase6Dir).find((row) => row.runId === runId);
+		};
+		try {
+			// Sibling names stay unique so every tree path resolves to one run.
+			const dupe1 = await spawn.startSubagent({ task: "dupe task one", name: "dupe" }, p6Ctx("p6-root"));
+			let dupeError = "";
+			try { await spawn.startSubagent({ task: "dupe task two", name: "dupe" }, p6Ctx("p6-root")); }
+			catch (error) { dupeError = String((error && error.message) || error); }
+			check("duplicate explicit sibling name rejected", /already exists/i.test(dupeError), dupeError);
+			// Parent and child may still share a name: different paths.
+			registry.saveRecord(phase6Dir, mk("inner-grand", dupe1.runId, { name: "inner", rootRunId: "p6-root", status: "completed" }));
+			const innerOk = await spawn.startSubagent({ task: "inner task", name: "inner" }, p6Ctx("p6-root"));
+			check("parent and child may share a name", innerOk.name === "inner", innerOk.name);
+		// Task-derived names suffix instead of colliding.
+		const u1 = await spawn.startSubagent({ task: "same task here" }, p6Ctx("p6-root"));
+		const u2 = await spawn.startSubagent({ task: "same task here" }, p6Ctx("p6-root"));
+		check("task-derived siblings auto-suffixed", u1.name !== u2.name && u2.name === `${u1.name}-2`, `${u1.name} vs ${u2.name}`);
+		// Settle cancels live descendants instead of orphaning them (worker2 regression:
+		// the reaped owner's monitor died and the orphan rotted into a fake failure).
+		const settleParent = await spawn.startSubagent({ task: "settle parent" }, p6Ctx("p6-root"));
+		registry.saveRecord(phase6Dir, mk("p6-child", settleParent.runId, { rootRunId: "p6-root", status: "running", depth: 1 }));
+		registry.saveRecord(phase6Dir, mk("p6-grand", "p6-child", { rootRunId: "p6-root", status: "running", depth: 2 }));
+		const settled = await waitFor6(settleParent.runId, (row) => registry.isTerminalStatus(row.status));
+		check("settle parent completes", settled?.status === "completed", settled?.status);
+		const orphanChild = await waitFor6("p6-child", (row) => row.status === "cancelled");
+		const orphanGrand = registry.readRecords(phase6Dir).find((row) => row.runId === "p6-grand");
+		check("settle cancels the live child", orphanChild?.status === "cancelled" && /settled/i.test(orphanChild?.error ?? ""),
+			JSON.stringify({ status: orphanChild?.status, error: orphanChild?.error }));
+		check("settle cancels the live grandchild", orphanGrand?.status === "cancelled", orphanGrand?.status);
+		check("settle-cancelled orphans never nag", orphanChild?.resultsDelivered === true && orphanGrand?.resultsDelivered === true,
+			JSON.stringify({ child: orphanChild?.resultsDelivered, grand: orphanGrand?.resultsDelivered }));
+	} finally {
+		if (savedDelay6 === undefined) delete process.env.FAKE_DELAY_MS;
+		else process.env.FAKE_DELAY_MS = savedDelay6;
+	}
+	}
 
 	// --- reload auto-resume: /reload interrupts live children, the fresh runtime restarts them from their transcripts ---
 	const rlAgentBase = path.join(sandbox, "reload");
@@ -2281,6 +2342,22 @@ function check(name, cond, extra) {
 			check("stale marker is dropped", registry.readReloadInterrupted(agentDir, "stale-run") === undefined);
 			await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
 		}
+		// Resume is refused when the record's parent already settled: the result
+		// would have no live claimant, so continuing wastes a turn.
+		{
+			const agentDir = rlUse("refuse");
+			const session = "refuse-session";
+			registry.saveRecord(agentDir, mk("ref-parent", session, { rootRunId: session, status: "completed", latestText: "parent done" }));
+			registry.saveRecord(agentDir, mk("ref-child", "ref-parent", { rootRunId: session, status: "completed", latestText: "child done" }));
+			const ext = rlBoot();
+			await ext.handlers.get("session_start")({}, rlStartCtx(session));
+			let refuseError = "";
+			try {
+				await ext.tools.get("send_to_subagent").execute("refuse-send", { target: "ref-child", message: "again" }, undefined, undefined, { cwd: sandbox, scopedModels: [], ui: {} });
+			} catch (error) { refuseError = String((error && error.message) || error); }
+			check("resume refused when parent settled", /cannot resume .* already /i.test(refuseError), refuseError);
+			await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+		}
 		// An orphan (settled parent, live grandchild) is adopted and resumed.
 		{
 			const agentDir = rlUse("orphan");
@@ -2292,8 +2369,8 @@ function check(name, cond, extra) {
 			await ext.handlers.get("session_start")({ reason: "reload" }, rlStartCtx(parent));
 			const resumed = await rlWaitFor(agentDir, "orphan-grand", (r) => r.status === "completed");
 			check("orphaned grandchild is adopted and resumed",
-				resumed?.status === "completed" && resumed.parentRunId === parent,
-				resumed && `${resumed.status} parent=${resumed.parentRunId} text=${resumed.latestText}`);
+				resumed?.status === "completed" && resumed.parentRunId === parent && resumed.adoptedFrom === "settled-child",
+				resumed && `${resumed.status} parent=${resumed.parentRunId} adoptedFrom=${resumed.adoptedFrom} text=${resumed.latestText}`);
 			await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
 		}
 		// Marker helpers: roundtrip, corrupt tolerance, prune cleanup.

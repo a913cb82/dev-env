@@ -21,6 +21,8 @@ export interface AgentRecord {
 	version: 1;
 	runId: string;
 	parentRunId: string;
+	/** Previous parent when a reload adoption re-parented an orphan. */
+	adoptedFrom?: string;
 	rootRunId: string;
 	sessionId: string;
 	sessionFile?: string;

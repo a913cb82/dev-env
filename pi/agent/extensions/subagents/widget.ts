@@ -75,7 +75,8 @@ export class SubagentStatusWidget implements Component {
 			const indent = "  ".repeat(depths.get(record.runId) ?? 0);
 			const icon = this.theme.fg(statusColor(record), statusIcon(record));
 			const activity = record.currentTool || record.activity || record.status;
-			return `${indent}${icon} ${record.name} ${this.theme.fg("dim", `· ${record.model} · ${activity}`)}`;
+			const adopted = record.adoptedFrom ? ` · adopted` : "";
+			return `${indent}${icon} ${record.name} ${this.theme.fg("dim", `· ${record.model} · ${activity}${adopted}`)}`;
 		});
 	}
 

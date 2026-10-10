@@ -117,6 +117,20 @@ function makeRecord(overrides) {
 	check("escape above root rejected", /root/i.test(throws("a1a", "../../..")), throws("a1a", "../../.."));
 	check("same-level duplicates ambiguous", /ambiguous/i.test(throws("root", "/a/dup")), throws("root", "/a/dup"));
 	check("legacy cross-level duplicates ambiguous", /ambiguous/i.test(throws("root", "alpha")), throws("root", "alpha"));
+	// --- sibling name uniqueness (uniqueSiblingName) ---
+	const siblings = [
+		makeRecord({ runId: "sib-1", name: "reviewer", parentRunId: "p1", status: "completed" }),
+		makeRecord({ runId: "sib-2", name: "writer", parentRunId: "p1", status: "running" }),
+		makeRecord({ runId: "other-1", name: "reviewer", parentRunId: "p2", status: "running" }),
+	];
+	check("free sibling name passes through", registry.uniqueSiblingName(siblings, "p1", "tester") === "tester");
+	check("taken sibling name detected even when terminal", registry.siblingNameTaken(siblings, "p1", "reviewer") === true);
+	check("running sibling name detected", registry.siblingNameTaken(siblings, "p1", "writer") === true);
+	check("same name under another parent is not a clash", registry.siblingNameTaken(siblings, "p1", "other") === false);
+	check("derived name suffixes past taken siblings", registry.uniqueSiblingName(siblings, "p1", "reviewer") === "reviewer-2");
+	check("suffix increments past several taken", registry.uniqueSiblingName([...siblings, makeRecord({ runId: "sib-3", name: "reviewer-2", parentRunId: "p1" })], "p1", "reviewer") === "reviewer-3");
+	check("name match is exact", registry.siblingNameTaken(siblings, "p1", "Reviewer") === false);
+
 	check("empty target rejected", throws("root", "").length > 0 && throws("root", "   ").length > 0);
 	check("double slash rejected", throws("root", "/a//alpha").length > 0);
 	check("unknown bare name", /no subagent matches/i.test(throws("root", "nope")), throws("root", "nope"));

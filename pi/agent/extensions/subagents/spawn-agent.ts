@@ -16,9 +16,12 @@ import {
 	isProcessAlive,
 	isRecordCancelled,
 	isTerminalStatus,
+	markRecordResultState,
 	readRecords,
 	readReloadInterrupted,
 	saveRecord,
+	siblingNameTaken,
+	uniqueSiblingName,
 	withRecordLock,
 } from "./registry.ts";
 import { EMPTY_USAGE, normalizeMessageMode, type AgentRecord, type SpawnAgentInput, type SubagentMessageMode, type SubagentSettings } from "./types.ts";
@@ -481,44 +484,73 @@ function ownChild(runId: string, child: ChildProcessWithoutNullStreams): OwnedCh
 	return owned;
 }
 
+/** Cancel one run: registry flip plus every stop handle this process holds
+ * (live channel, owned process, raw pid tree for runs owned by other
+ * processes). Already-terminal runs keep their status. Pre-delivered runs
+ * skip the footer: nobody will collect an abandoned result, so it must not
+ * nag forever. Lock failures propagate to the caller. */
+async function cancelOne(agentDir: string, item: AgentRecord, detail: string, preDeliver: boolean): Promise<AgentRecord> {
+	let updated!: AgentRecord;
+	let live: LiveChild | undefined;
+	let owned: OwnedChild | undefined;
+	let pid: number | undefined;
+	let pidStartTime: string | undefined;
+	await withRecordLock(agentDir, item.runId, () => {
+		const latest = readRecords(agentDir).find((candidate) => candidate.runId === item.runId) ?? item;
+		if (isTerminalStatus(latest.status)) {
+			updated = latest;
+			return;
+		}
+		const now = new Date().toISOString();
+		updated = saveRecord(agentDir, {
+			...latest,
+			status: "cancelled",
+			activity: "cancelled",
+			currentTool: undefined,
+			error: latest.error ?? detail,
+			finishedAt: latest.finishedAt ?? now,
+			updatedAt: now,
+		});
+		live = liveChildren.get(item.runId);
+		owned = ownedChildren.get(item.runId);
+		pid = updated.pid;
+		pidStartTime = updated.pidStartTime;
+		runAbortControllers.get(item.runId)?.abort();
+	});
+	if (live) live.abort();
+	if (owned) void owned.terminate();
+	else if (pid && isProcessAlive(pid)) killPidTree(pid, pidStartTime);
+	if (preDeliver && isTerminalStatus(updated.status)) {
+		try {
+			markRecordResultState(agentDir, updated, "resultsDelivered");
+		} catch {
+			// Best effort: the cancel stands without the marker.
+		}
+	}
+	return updated;
+}
+
+/** Cancel every non-terminal descendant, deepest first (a descendant owned by
+ * another process is reached via its pid tree). Settle uses a parent-settled
+ * detail plus pre-delivery; explicit cancellation keeps results collectable. */
+export async function cancelDescendants(agentDir: string, runId: string, detail = "Cancelled", preDeliver = false): Promise<void> {
+	for (const child of descendantsOf(readRecords(agentDir), runId).reverse()) {
+		if (isTerminalStatus(child.status)) continue;
+		try {
+			await cancelOne(agentDir, child, detail, preDeliver);
+		} catch {
+			// One stuck descendant must not break settle or shutdown.
+		}
+	}
+}
+
 /** Abort a running or queued child's current turn, plus all of its descendants.
  * The child process is always stopped so no idle pi process lingers; a later
  * message resumes the session via a fresh process from the saved transcript.
  * Session shutdown still reaps everything via terminateOwnedSubagents. */
 export async function cancelSubagent(agentDir: string, record: AgentRecord): Promise<AgentRecord> {
-	const cancelOne = async (item: AgentRecord): Promise<AgentRecord> => {
-		let updated!: AgentRecord;
-		let live: LiveChild | undefined;
-		let owned: OwnedChild | undefined;
-		let pid: number | undefined;
-		let pidStartTime: string | undefined;
-		await withRecordLock(agentDir, item.runId, () => {
-			const latest = readRecords(agentDir).find((candidate) => candidate.runId === item.runId) ?? item;
-			const now = new Date().toISOString();
-			updated = saveRecord(agentDir, {
-				...latest,
-				status: "cancelled",
-				activity: "cancelled",
-				currentTool: undefined,
-				error: latest.error ?? "Cancelled",
-				finishedAt: latest.finishedAt ?? now,
-				updatedAt: now,
-			});
-			live = liveChildren.get(item.runId);
-			owned = ownedChildren.get(item.runId);
-			pid = updated.pid;
-			pidStartTime = updated.pidStartTime;
-			runAbortControllers.get(item.runId)?.abort();
-		});
-		if (live) live.abort();
-		if (owned) void owned.terminate();
-		else if (pid && isProcessAlive(pid)) killPidTree(pid, pidStartTime);
-		return updated;
-	};
-	for (const child of descendantsOf(readRecords(agentDir), record.runId).reverse()) {
-		if (!isTerminalStatus(child.status)) await cancelOne(child);
-	}
-	return cancelOne(record);
+	await cancelDescendants(agentDir, record.runId);
+	return cancelOne(agentDir, record, "Cancelled", false);
 }
 
 /** Stop and await children owned by this process. Queued run loops also drain. */
@@ -572,6 +604,15 @@ export async function startSubagent(input: SpawnAgentInput, context: SpawnContex
 		: resolveInheritedModel(selectedModel, context.scopedModels);
 	const tools = resolveChildTools(input.tools, context.parentTools);
 	scopedModelArgs(context.scopedModels);
+	// Sibling names stay unique so every tree path resolves to one run.
+	// An explicit duplicate is rejected; a task-derived one suffixes.
+	const explicitName = input.name?.trim();
+	const desiredName = compactName(input);
+	const siblings = readRecords(context.agentDir);
+	if (explicitName && siblingNameTaken(siblings, context.parentRunId, desiredName)) {
+		throw new Error(`A subagent named "${desiredName}" already exists under this session; choose a different name.`);
+	}
+	const name = explicitName ? desiredName : uniqueSiblingName(siblings, context.parentRunId, desiredName);
 	const thinking = validateThinkingLevel(
 		resolveChildThinking(
 			input.thinking,
@@ -588,7 +629,7 @@ export async function startSubagent(input: SpawnAgentInput, context: SpawnContex
 		parentRunId: context.parentRunId,
 		rootRunId: context.rootRunId,
 		sessionId: runId,
-		name: compactName(input),
+		name,
 		task: input.task,
 		cwd,
 		model,
@@ -668,9 +709,9 @@ export async function resumeSubagent(
 	if (childRuns.has(record.runId) || startingChildren.has(record.runId)) {
 		throw new Error(`${latest.name} is still running`);
 	}
-	// Reap any lingering idle process (kept for live descendants) before a new
-	// writer opens the same session. Terminal + liveChildren means lingered idle,
-	// not running: the record already settled, so terminate and continue.
+	// Reap any straggler process before a new writer opens the same session.
+	// Terminal + liveChildren means leftover, not running: the record already
+	// settled, so terminate and continue.
 	liveChildren.delete(record.runId);
 	await terminateOwnedSubagents([record.runId]);
 	let reset!: AgentRecord;
@@ -780,6 +821,24 @@ async function runSubagentProcess(
 		record.updatedAt = record.finishedAt;
 		publish();
 		fireSettled(context, record);
+		// Settling with a live subtree orphans it: this owner's monitors die
+		// with its reaped process, so abandoned runs rot into fake failures
+		// and nag the footer forever. Cancel them explicitly instead of
+		// lingering. Nobody can claim an abandoned result, so orphans are
+		// pre-delivered; re-delegate the work when it still matters.
+		try {
+			const live = descendantsOf(readRecords(context.agentDir), record.runId).some((candidate) => !isTerminalStatus(candidate.status));
+			if (live) {
+				void cancelDescendants(
+					context.agentDir,
+					record.runId,
+					`Parent "${record.name}" settled while this run was still active.`,
+					true,
+				).catch(() => {});
+			}
+		} catch {
+			// Best effort: the settle stands without the cleanup.
+		}
 	};
 
 	try {
@@ -1032,20 +1091,10 @@ async function runSubagentProcess(
 					initialSettled = true;
 					resolveInitial();
 				}
-				// Linger when this child still owns live descendants: the settled
-				// turn is done but the idle process must stay to collect
-				// grandchild finishes (its own steering pings wake it). Reap once
-				// the subtree is terminal; explicit follow-ups still resume via a
-				// fresh process from the transcript (see resumeSubagent).
-				let hasLiveDescendants = false;
-				try {
-					hasLiveDescendants = descendantsOf(readRecords(context.agentDir), record.runId).some(
-						(candidate) => !isTerminalStatus(candidate.status),
-					);
-				} catch {
-					hasLiveDescendants = false;
-				}
-				if (hasLiveDescendants) return;
+				// Settle always reaps: settle() above already cancelled any live
+				// descendants, so no idle process lingers and nothing orphans.
+				// Explicit follow-ups still resume via a fresh process from the
+				// transcript (see resumeSubagent).
 				liveChildren.delete(record.runId);
 				try {
 					launchedChild.stdin.end();

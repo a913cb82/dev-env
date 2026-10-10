@@ -22,7 +22,7 @@ import {
 	startSubagent,
 	terminateOwnedSubagents,
 } from "./spawn-agent.ts";
-import { descendantsOf, resolveAgentPath } from "./registry.ts";
+import { descendantsOf, resolveAgentPath, uniqueSiblingName } from "./registry.ts";
 import type { AgentRecord, SubagentMessageMode, SubagentSettings, UsageSummary } from "./types.ts";
 import { normalizeMessageMode } from "./types.ts";
 
@@ -36,7 +36,7 @@ interface RuntimeState {
 
 const SpawnAgentSchema = Type.Object({
 	task: Type.String({ description: "Task to delegate" }),
-	name: Type.Optional(Type.String({ description: "Subagent name" })),
+	name: Type.Optional(Type.String({ description: "Subagent name (unique among siblings; task-derived names auto-suffix)" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory (relative unless absolute)" })),
 	model: Type.Optional(Type.String({ description: "Exact model selector. Overrides configured and inherited defaults." })),
 	thinking: Type.Optional(
@@ -505,6 +505,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			// awaits any straggler before the new writer opens the session.
 		// Resume preserves the record's parent: the result owner keeps its
 		// claim and the resuming session only lends its concurrency slot.
+		// A settled parent means no live claimant: continuing would waste a turn
+		// on a result nobody can collect, so refuse and re-delegate instead.
+		const resumerParent = getCachedRecords(agentDir).find((candidate) => candidate.runId === current.parentRunId);
+		if (resumerParent && isTerminalStatus(resumerParent.status)) {
+			throw new Error(`Cannot resume ${current.name}: its parent ${resumerParent.name} already ${resumerParent.status}. Spawn a fresh subagent instead.`);
+		}
 		if (!ctx?.scopedModels || !ctx?.cwd) throw new Error(`${current.name} finished (${current.status}); retry with session context to resume it`);
 		await resumeSubagent(
 			current,
@@ -569,10 +575,19 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					continue;
 				}
 				if (latest.parentRunId !== runtime.runId) {
+					// Adoption stays visible: tag the previous parent and keep the
+					// sibling name unique so the adopted run never looks promoted
+					// and its path never goes ambiguous.
+					const previousParent = latest.parentRunId;
 					await withRecordLock(agentDir, latest.runId, () => {
 						const current = readRecords(agentDir).find((item) => item.runId === latest.runId) ?? latest;
 						if (current.parentRunId !== runtime!.runId) {
-							saveRecord(agentDir, { ...current, parentRunId: runtime!.runId });
+							saveRecord(agentDir, {
+								...current,
+								parentRunId: runtime!.runId,
+								adoptedFrom: current.adoptedFrom ?? previousParent,
+								name: uniqueSiblingName(readRecords(agentDir), runtime!.runId, current.name),
+							});
 						}
 					});
 				}
@@ -820,7 +835,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					const readOnly = record.parentRunId !== runtime!.runId
 						? descendantIds.has(record.runId) ? " · read-only descendant" : " · read-only"
 						: "";
-					const meta = `${record.model} · depth ${record.depth}/${record.maxDepth} · ${record.cwd}${record.runId ? ` · run ${shortId(record.runId)}` : ""}${readOnly}`;
+					const meta = `${record.model} · depth ${record.depth}/${record.maxDepth} · ${record.cwd}${record.runId ? ` · run ${shortId(record.runId)}` : ""}${readOnly}${record.adoptedFrom ? ` · adopted from ${senderName(record.adoptedFrom)}` : ""}`;
 					return formatResult(record, meta);
 				});
 			const summary =

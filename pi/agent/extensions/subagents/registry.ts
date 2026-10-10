@@ -746,6 +746,22 @@ export function childrenOf(records: readonly AgentRecord[], parentRunId: string)
 	return result;
 }
 
+/** Whether a sibling already carries this exact name. Terminal records count:
+ * they still resolve by path, so a duplicate would turn every same-name
+ * target ambiguous. Parent/child duplicates are fine (different paths). */
+export function siblingNameTaken(records: readonly AgentRecord[], parentRunId: string, name: string): boolean {
+	return records.some((record) => record.parentRunId === parentRunId && record.name === name);
+}
+
+/** First free sibling name: the desired name, else `name-2`, `name-3`, ...
+ * Used for task-derived and adoption names where failing is not an option. */
+export function uniqueSiblingName(records: readonly AgentRecord[], parentRunId: string, desired: string): string {
+	if (!siblingNameTaken(records, parentRunId, desired)) return desired;
+	let counter = 2;
+	while (siblingNameTaken(records, parentRunId, `${desired}-${counter}`)) counter++;
+	return `${desired}-${counter}`;
+}
+
 export interface AgentPathContext {
 	anchorRunId: string;
 	rootRunId: string;

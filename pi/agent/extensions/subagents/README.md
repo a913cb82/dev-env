@@ -113,7 +113,7 @@ send_to_subagent({ target: "/team/worker", message: "Focus on the token refresh 
 send_to_subagent({ target: "../sibling", message: "When done, also audit the logout flow.", mode: "followUp" })
 ```
 
-Works on running, finished, cancelled, AND queued runs. Messaging a finished or cancelled run resumes it from its transcript in a fresh process as a new execution — the record keeps its parent (no ownership theft) and the resuming session only lends its concurrency slot. Messaging a queued or starting run parks the message until its session starts. Every cross message is appended to the target's audit log (`<run>.messages.json` beside its record).
+Works on running, finished, cancelled, AND queued runs. Messaging a finished or cancelled run resumes it from its transcript in a fresh process as a new execution — the record keeps its parent (no ownership theft) and the resuming session only lends its concurrency slot. Resume is refused when the record's parent already settled (nobody could collect the result — spawn fresh instead). Sibling names stay unique so paths never go ambiguous: an explicit duplicate is rejected, task-derived names auto-suffix (`name-2`, …). Messaging a queued or starting run parks the message until its session starts. Every cross message is appended to the target's audit log (`<run>.messages.json` beside its record).
 
 ### `cancel_subagent`
 
@@ -123,9 +123,9 @@ Abort any run's current turn by tree path, exact name, run ID, or session ID:
 cancel_subagent({ target: "auth-reviewer" })
 ```
 
-Cancellation stops the child process, so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. A settled child with live descendants lingers idle (no turn) until its subtree settles, so grandchild finishes wake their direct parent. Session shutdown still terminates everything still running.
+Cancellation stops the child process, so `send_to_subagent` resumes a cancelled child from its transcript exactly like a finished one. Settling cancels the run's live subtree outright: the reaped owner's monitors die with its process, so lingering would rot abandoned runs into fake failures. Settle-cancelled orphans are pre-marked delivered (nobody can claim them) and never nag the footer; re-delegate work that still matters. Session shutdown still terminates everything still running.
 
-A `/reload` tears down the extension runtime, which stops live children — but it leaves a resume marker on each one it interrupts, and the fresh runtime restarts them from their transcripts (never-started runs restart with their original task; orphans whose direct parent already settled are adopted). Finished children are never marked, so their results stay exactly as they were. Quits and session switches keep the plain cancel-and-stop behavior. An explicit `cancel_subagent` clears the marker, so a child stopped on purpose is never resurrected by a later start.
+A `/reload` tears down the extension runtime, which stops live children — but it leaves a resume marker on each one it interrupts, and the fresh runtime restarts them from their transcripts (never-started runs restart with their original task; orphans whose direct parent already settled are adopted, tagged `adopted from <parent>`, and renamed past sibling clashes). Finished children are never marked, so their results stay exactly as they were. Quits and session switches keep the plain cancel-and-stop behavior. An explicit `cancel_subagent` clears the marker, so a child stopped on purpose is never resurrected by a later start.
 
 ## Result delivery
 
