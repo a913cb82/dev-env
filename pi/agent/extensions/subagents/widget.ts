@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
-import { descendantsOf, getCachedRecords, isTerminalStatus, relativeDepths } from "./registry.ts";
+import { statSync } from "node:fs";
+import { descendantsOf, executionResultKey, getCachedRecords, isTerminalStatus, listFooterDismissed, registryDir, relativeDepths } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
 /** How often the live activity line is refreshed. 2s: the line is passive
@@ -61,9 +62,32 @@ export class SubagentStatusWidget implements Component {
 	}
 
 	/** Outstanding descendants: not yet read by their direct parent. */
+	private dismissedCache: { mtimeMs: number; keys: Set<string> } = { mtimeMs: -1, keys: new Set() };
+
+	/** Runs I dismissed, memoized on the runs-dir mtime so idle refreshes scan nothing. */
+	private dismissedByMe(): Set<string> {
+		let mtimeMs = this.dismissedCache.mtimeMs;
+		try {
+			mtimeMs = statSync(registryDir(this.agentDir)).mtimeMs;
+		} catch {
+			return this.dismissedCache.keys;
+		}
+		if (mtimeMs !== this.dismissedCache.mtimeMs) {
+			try {
+				this.dismissedCache = { mtimeMs, keys: new Set(listFooterDismissed(this.agentDir, this.currentRunId)) };
+			} catch {
+				// Keep the stale set; the next tick retries.
+			}
+		}
+		return this.dismissedCache.keys;
+	}
+
 	private outstanding(): AgentRecord[] {
+		// Runs I dismissed (viewed read-only) stay hidden across reloads, like
+		// delivered ones; a new execution resurfaces under a new key.
+		const dismissed = this.dismissedByMe();
 		return descendantsOf(getCachedRecords(this.agentDir), this.currentRunId).filter(
-			(record) => !(isTerminalStatus(record.status) && record.resultsDelivered),
+			(record) => !(isTerminalStatus(record.status) && (record.resultsDelivered || dismissed.has(executionResultKey(record)))),
 		);
 	}
 

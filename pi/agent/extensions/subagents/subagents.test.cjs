@@ -89,6 +89,12 @@ function check(name, cond, extra) {
 
 	// Model the effective limit exported by each spawn, without forwarding flags.
 	const depthOptions = { agentDir, cwd: sandbox, projectTrusted: false };
+	// Test RPC headroom: the box freezes for tens of seconds under spawn load
+	// (traced: child booted, then no CPU for 51s on either side). Dead children
+	// still fail fast via the close handler; only freezes ride the timeout.
+	// Mechanism tests pin their own explicit small values; these defaults
+	// cover every other spawn. Production defaults are untouched.
+	const testRpcTimeouts = { rpcRequestTimeoutMs: 300_000, rpcStartupTimeoutMs: 300_000 };
 	const inheritDepth = (settings) => ({
 		PI_SUBAGENT_MAX_DEPTH: String(settings.maxDepth),
 		PI_SUBAGENT_DEPTH_FLAG_OVERRIDE: settings.maxDepthFlagOverride ? "1" : "0",
@@ -283,6 +289,12 @@ function check(name, cond, extra) {
 		check("prune keeps recent, undelivered and running", JSON.stringify(remaining) === JSON.stringify(["recent", "running", "undelivered"]), remaining.join(","));
 		const after = runsFiles();
 		check("prune removes sidecars of pruned runs", !after.some((f) => f.startsWith("old-")), after.join(","));
+		registry.markFooterDismissed(pruneDir, { runId: "recent" }, "viewer-9", "key-9");
+		fs.writeFileSync(path.join(registry.registryDir(pruneDir), "ghost-run.legacy.footerDismissed.viewer-9"), "key-x\n");
+		registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 10, undeliveredAfterMs: 90 * 24 * 3600 * 1000, undeliveredKeep: 500, now: Date.now() });
+		const afterDismiss = runsFiles();
+		check("prune sweeps orphan dismissal sidecars", !afterDismiss.some((f) => f.startsWith("ghost-run")), afterDismiss.join(","));
+		check("prune keeps dismissal sidecars of live runs", afterDismiss.some((f) => f.startsWith("recent.") && f.includes(".footerDismissed.")), afterDismiss.join(","));
 		check("prune with empty options keeps everything young", registry.pruneRecords(pruneDir, { olderThanMs: 14 * 24 * 3600 * 1000, keepMinimum: 10, undeliveredAfterMs: 90 * 24 * 3600 * 1000, undeliveredKeep: 500, now: Date.now() }).pruned.length === 0);
 		// keepMinimum protects even ancient records when nothing is young.
 		// kept counts both delivered and undelivered retained (recent + undelivered).
@@ -522,7 +534,7 @@ function check(name, cond, extra) {
 				parentRunId: "cost-e2e",
 				rootRunId: "cost-e2e",
 				currentDepth: 0,
-				settings: { maxDepth: 2, maxConcurrency: -1 },
+				settings: { maxDepth: 2, maxConcurrency: -1, ...testRpcTimeouts },
 				parentModel: "fake/parent",
 				parentThinking: "off",
 				parentTools: ["read"],
@@ -863,10 +875,13 @@ function check(name, cond, extra) {
 	{
 		const dir = waitCase("timeout");
 		waitRecord(dir, "parent", "slow", "thinking");
-		const started = Date.now();
+		// Monotonic clock: wall clocks jump backwards under VMs and freezes
+		// only inflate the reading, so the lower bound is exact either way.
+		const started = performance.now();
 		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 300, pollMs: 10000 });
-		const elapsed = Date.now() - started;
-		check("positive timeout returns the running snapshot", elapsed >= 250 && elapsed < 1500 && rows.some((r) => r.runId === "slow" && r.status === "thinking"), String(elapsed));
+		const elapsed = performance.now() - started;
+		check("positive timeout waits instead of returning instantly", elapsed >= 250, String(elapsed));
+		check("positive timeout returns the running snapshot", rows.some((r) => r.runId === "slow" && r.status === "thinking"), String(elapsed));
 		check("timeout releases the waiter", wait.waitDebugState().waiters === 0, JSON.stringify(wait.waitDebugState()));
 	}
 
@@ -991,10 +1006,11 @@ function check(name, cond, extra) {
 		const allResult = await checkTool.execute("check-all", { targets: ["target-a"], wait: true, mode: "all", timeoutMs: 2000 }, undefined, undefined, {});
 		check("targeted all wait resolves on the selected target", allResult.content[0].text.includes("target-a done"), allResult.content[0].text);
 		registry.saveRecord(checkAgentDir, checkRecord("timeout-target", "thinking"));
-		const timeoutStarted = Date.now();
+		const timeoutStarted = performance.now();
 		const timeoutResult = await checkTool.execute("check-timeout", { targets: ["timeout-target"], wait: true, mode: "all", timeoutMs: 300 }, undefined, undefined, {});
-		const timeoutElapsed = Date.now() - timeoutStarted;
-		check("targeted wait times out with the running snapshot", timeoutElapsed >= 250 && timeoutElapsed < 1500 && timeoutResult.content[0].text.includes("still running"), String(timeoutElapsed));
+		const timeoutElapsed = performance.now() - timeoutStarted;
+		check("targeted wait waits instead of returning instantly", timeoutElapsed >= 250, String(timeoutElapsed));
+		check("targeted wait times out with the running snapshot", timeoutResult.content[0].text.includes("still running"), String(timeoutElapsed));
 		registry.saveRecord(checkAgentDir, checkRecord("timeout-target", "completed", { latestText: "timed-out target done" }));
 		await checkTool.execute("check-timeout-cleanup", {}, undefined, undefined, {});
 		let unknownTargetError;
@@ -1220,6 +1236,21 @@ function check(name, cond, extra) {
 		check("collectable result shows", liveFirst.content[0].text.includes("live result"), liveFirst.content[0].text);
 		check("live-parent result stays undelivered", registry.readRecords(checkAgentDir).find((r) => r.runId === "live-leaf")?.resultsDelivered !== true);
 
+		// Durable observation: viewing dismisses across receipt loss, per execution.
+		registry.saveRecord(checkAgentDir, mk("noted-mid", "check-parent", { rootRunId: "check-parent", name: "noted-mid", status: "completed", latestText: "mid done" }));
+		registry.saveRecord(checkAgentDir, mk("noted-leaf", "noted-mid", { rootRunId: "check-parent", name: "noted-leaf", status: "completed", latestText: "noted result" }));
+		const notedFirst = await checkTool.execute("check-noted", { targets: ["noted-leaf"] }, undefined, undefined, {});
+		check("noted result shows its body once", notedFirst.content[0].text.includes("noted result"), notedFirst.content[0].text);
+		const notedRec = registry.readRecords(checkAgentDir).find((r) => r.runId === "noted-leaf");
+		check("viewing writes a durable dismissal", registry.listFooterDismissed(checkAgentDir, "check-parent").includes(registry.executionResultKey(notedRec)), JSON.stringify(registry.listFooterDismissed(checkAgentDir, "check-parent")));
+		checkHandlers.get("session_tree")({}, { sessionManager: { getBranch: () => [] } });
+		const notedAfterLoss = await checkTool.execute("check-noted-loss", { targets: ["noted-leaf"] }, undefined, undefined, {});
+		check("dismissal survives receipt loss", !notedAfterLoss.content[0].text.includes("noted result"), notedAfterLoss.content[0].text);
+		check("dismissal never claims", registry.readRecords(checkAgentDir).find((r) => r.runId === "noted-leaf")?.resultsDelivered !== true);
+		registry.saveRecord(checkAgentDir, mk("noted-leaf", "noted-mid", { rootRunId: "check-parent", name: "noted-leaf", status: "completed", latestText: "noted result v2", executionId: "second" }));
+		const notedV2 = await checkTool.execute("check-noted-v2", { targets: ["noted-leaf"] }, undefined, undefined, {});
+		check("new execution resurfaces after dismissal", notedV2.content[0].text.includes("noted result v2"), notedV2.content[0].text);
+
 		let automaticGrandchildMessages = 0;
 		childPi.sendMessage = async (message) => {
 			if (message.content.includes("automatic-grand")) automaticGrandchildMessages++;
@@ -1324,7 +1355,9 @@ function check(name, cond, extra) {
 		check("root sees a new descendant execution", newDescendant.content[0].text.includes("new grandchild execution"));
 		checkHandlers.get("session_tree")({}, { sessionManager: { getBranch: () => [] } });
 		const beforeReceipt = await checkTool.execute("before-receipt", {}, undefined, undefined, {});
-		check("tree before receipt makes descendant visible again", beforeReceipt.content[0].text.includes("new grandchild execution"));
+		// Receipt loss no longer resurfaces a dismissed descendant: the durable
+		// dismissal outlives the transcript (compaction, forks, branch subsets).
+		check("dismissal survives receipt loss", !beforeReceipt.content[0].text.includes("new grandchild execution"), beforeReceipt.content[0].text);
 		checkHandlers.get("session_tree")({}, { sessionManager: { getBranch: () => [
 			{ type: "message", message: { role: "toolResult", toolName: "check_subagents", details: newDescendant.details } },
 		] } });
@@ -1494,6 +1527,16 @@ function check(name, cond, extra) {
 	check("widget shows an orphan's lineage", orphaned.some((l) => l.includes("orphan-leaf") && l.includes("via dead-parent")), orphaned.join(" | "));
 	widget.dispose();
 
+	// The footer hides terminal runs dismissed by me, durable across reloads,
+	// while live work stays visible.
+	const deadRec = registry.readRecords(agentDir3).find((r) => r.runId === "dead-parent");
+	registry.markFooterDismissed(agentDir3, deadRec, "root", registry.executionResultKey(deadRec));
+	widget = new SubagentStatusWidget(tui, theme, agentDir3, "root");
+	const dismissedView = widget.render(100);
+	check("widget hides runs I dismissed", !dismissedView.some((l) => /[●✓✗◌◐] dead-parent ·/.test(l)), dismissedView.join(" | "));
+	check("widget keeps live work after a dismissal", dismissedView.some((l) => l.includes("orphan-leaf")), dismissedView.join(" | "));
+	widget.dispose();
+
 	// Widget refresh must not rescan the registry when nothing changed (perf:
 	// the 500ms... now 2000ms tick runs on the TUI thread during select/copy).
 	check("widget poll interval is 2000ms", POLL_MS === 2000, String(POLL_MS));
@@ -1528,7 +1571,7 @@ function check(name, cond, extra) {
 		parentRunId: "parent",
 		rootRunId: "parent",
 		currentDepth: 0,
-		settings: { maxDepth: 2, maxConcurrency: -1 },
+		settings: { maxDepth: 2, maxConcurrency: -1, ...testRpcTimeouts },
 		parentModel: "fake/parent",
 		parentThinking: "off",
 		parentTools: ["read", "spawn_agent"],
@@ -1609,9 +1652,9 @@ function check(name, cond, extra) {
 		if (polled && ["completed", "failed"].includes(polled.status)) break;
 		await new Promise((r) => setTimeout(r, 100));
 	}
-	check("background child completes", polled && polled.status === "completed", polled && polled.status);
-	check("fake output captured", polled && polled.latestText === "fake done", polled && polled.latestText);
-	check("usage captured", polled && polled.usage.input === 10, polled && JSON.stringify(polled.usage));
+	check("background child completes", polled && polled.status === "completed", polled && `${polled.status} :: ${polled.error}`);
+	check("fake output captured", polled && polled.latestText === "fake done", polled && `${polled.latestText} :: ${polled.error}`);
+	check("usage captured", polled && polled.usage.input === 10, polled && `${JSON.stringify(polled.usage)} :: ${polled.error}`);
 	const inheritedArgs = JSON.parse(fs.readFileSync(path.join(fakeArgsDir, `${rec1.runId}.json`), "utf8"));
 	check("omitted tools become a child CLI allowlist", inheritedArgs[inheritedArgs.indexOf("--tools") + 1] === "read,spawn_agent", JSON.stringify(inheritedArgs));
 	check("empty model scope emits no --models flag", !inheritedArgs.includes("--models"), JSON.stringify(inheritedArgs));
@@ -1958,7 +2001,7 @@ function check(name, cond, extra) {
 	check("child close persists PID clearing", closedSlow?.pid === undefined, String(closedSlow?.pid));
 
 	// Resume slot semantics: a resumed turn holds the gate while running, frees after.
-	const slotCtx = { ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 } };
+	const slotCtx = { ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1, ...testRpcTimeouts } };
 	const kept = await spawn.startSubagent({ task: "keep-slot", name: "keep-slot" }, slotCtx);
 	for (let i = 0; i < 100; i++) {
 		if (registry.readRecords(spawnAgentDir).find((r) => r.runId === kept.runId)?.status === "completed") break;
@@ -2191,7 +2234,7 @@ function check(name, cond, extra) {
 		registry.saveRecord(phase6Dir, mk("p6-child", settleParent.runId, { rootRunId: "p6-root", status: "running", depth: 1 }));
 		registry.saveRecord(phase6Dir, mk("p6-grand", "p6-child", { rootRunId: "p6-root", status: "running", depth: 2 }));
 		const settled = await waitFor6(settleParent.runId, (row) => registry.isTerminalStatus(row.status));
-		check("settle parent completes", settled?.status === "completed", settled?.status);
+		check("settle parent completes", settled?.status === "completed", `${settled?.status} :: ${settled?.error}`);
 		// The live subtree survives the settle: grandchildren keep running
 		// and self-report when they finish (no cancellation, no pre-delivery).
 		const survivorChild = registry.readRecords(phase6Dir).find((row) => row.runId === "p6-child");
@@ -2240,7 +2283,7 @@ function check(name, cond, extra) {
 		parentRunId: parent,
 		rootRunId: parent,
 		currentDepth: 0,
-		settings: { maxDepth: 2, maxConcurrency: -1 },
+		settings: { maxDepth: 2, maxConcurrency: -1, ...testRpcTimeouts },
 		parentModel: "fake/parent",
 		parentThinking: "off",
 		parentTools: ["read"],

@@ -81,6 +81,48 @@ function readCancellationMarker(agentDir: string, runId: string): CancellationMa
 
 type ResultStateFlag = "resultsDelivered";
 
+/** Stable per-execution identity shared by observation and delivery keys. */
+export function executionResultKey(record: Pick<AgentRecord, "runId" | "executionId" | "finishedAt" | "updatedAt">): string {
+	return JSON.stringify([record.runId, record.executionId ?? record.finishedAt ?? record.updatedAt]);
+}
+
+/** Durable per-viewer observation: viewing a result dismisses it for that
+ * viewer only, across reloads and transcript loss. The file stores the exact
+ * observation key (immune to later record rewrites); a new execution gets a
+ * new file and resurfaces. Never a claim: delivery state is untouched. */
+export function markFooterDismissed(agentDir: string, record: Pick<AgentRecord, "runId" | "executionId">, viewerRunId: string, key: string): void {
+	mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
+	atomicWrite(
+		join(registryDir(agentDir), `${safeRunId(record.runId)}.${safeRunId(record.executionId ?? "legacy")}.footerDismissed.${safeRunId(viewerRunId)}`),
+		`${key}\n`,
+	);
+	bumpGeneration(agentDir);
+}
+
+/** Stored observation keys dismissed by this viewer. */
+export function listFooterDismissed(agentDir: string, viewerRunId: string): string[] {
+	const dir = registryDir(agentDir);
+	const suffix = `.footerDismissed.${safeRunId(viewerRunId)}`;
+	let entries: string[];
+	try {
+		entries = readdirSync(dir);
+	} catch {
+		return [];
+	}
+	const keys: string[] = [];
+	for (const name of entries) {
+		if (!name.endsWith(suffix)) continue;
+		try {
+			if (statSync(join(dir, name)).isDirectory()) continue;
+			const key = readFileSync(join(dir, name), "utf8").trim();
+			if (key) keys.push(key);
+		} catch {
+			// Vanished or unreadable mid-scan; the next restore retries.
+		}
+	}
+	return keys;
+}
+
 function resultStatePath(agentDir: string, record: AgentRecord, flag: ResultStateFlag): string {
 	return join(registryDir(agentDir), `${safeRunId(record.runId)}.${safeRunId(record.executionId ?? "legacy")}.${flag}`);
 }
@@ -521,7 +563,7 @@ function isPrunableSidecar(name: string): boolean {
 		name.endsWith(".closed") ||
 		name.endsWith(".reloadInterrupted") ||
 		name.endsWith(".resultsDelivered") ||
-		name.endsWith(".footerDismissed") ||
+		name.includes(".footerDismissed.") ||
 		name.endsWith(".pending.json") ||
 		name.endsWith(".messages.json")
 	);
@@ -709,7 +751,9 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 		if (!isPrunableSidecar(name)) continue;
 		const owner = name.endsWith(".resultsDelivered") || name.endsWith(".pending.json") || name.endsWith(".messages.json")
 			? name.split(".").slice(0, -2).join(".")
-			: name.split(".").slice(0, -1).join(".");
+			: name.includes(".footerDismissed.")
+				? name.slice(0, name.lastIndexOf(".footerDismissed.")).split(".").slice(0, -1).join(".")
+				: name.split(".").slice(0, -1).join(".");
 		if (!liveJson.has(owner)) removeFile(name);
 	}
 	if (doomedAll.length > 0 || mutated) bumpGeneration(agentDir);

@@ -957,7 +957,7 @@ async function runSubagentProcess(
 				options.deadline === undefined ? requestTimeoutMs : Math.max(0, options.deadline - Date.now()),
 			);
 			if (options.signal?.aborted) return Promise.reject(new Error(`${commandName} was aborted`));
-			if (timeoutMs <= 0) return Promise.reject(new Error(`Subagent RPC startup timed out after ${context.rpcStartupTimeoutMs ?? RPC_STARTUP_TIMEOUT_MS}ms`));
+			if (timeoutMs <= 0) return Promise.reject(new Error(`Subagent RPC startup timed out: deadline already exceeded before the ${commandName} send ran`));
 			return new Promise((resolveCommand, rejectCommand) => {
 				const finish = (error?: Error, value?: any) => {
 					const request = pending.get(id);
@@ -1160,13 +1160,21 @@ async function runSubagentProcess(
 			} else {
 				record.sessionFile = await findSessionFile(record.cwd, record.runId);
 			}
-			await send({ type: "prompt", message: input.task }, { signal: runSignal, deadline: startupDeadline });
+			// Queue parked startup messages synchronously with the prompt send, not
+			// after its response: a fast child can complete in the gap between
+			// response processing and a later drain (same-chunk coalescing), and
+			// the terminal check would then swallow the retained messages.
+		// Queued here they ride messageQueue behind the prompt, ahead of any
+			// possible completion round trip. Wire order stays prompt-first:
+			// send() writes the prompt line synchronously before returning.
+			const promptPromise = send({ type: "prompt", message: input.task }, { signal: runSignal, deadline: startupDeadline });
 			const startup = startingChildren.get(record.runId);
 			liveChildren.set(record.runId, liveChild);
 			startingChildren.delete(record.runId);
 			for (const { text, mode } of startup?.messages ?? []) {
 				void liveChild.sendMessage(text, undefined, mode).catch(() => {});
 			}
+			await promptPromise;
 			await initialDone;
 		} catch (error) {
 			launchedChild.stdin.end();

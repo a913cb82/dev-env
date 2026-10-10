@@ -9,7 +9,7 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
-import { appendAgentMessage, drainPendingMessages, getCachedRecords, isProcessAlive, isTerminalStatus, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
+import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
 import { startMeshServer, meshSocketDir, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
@@ -106,9 +106,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	const seenDescendantResults = new Set<string>();
 	/** Per-child reported subtree-cost totals. Rebuilt from session entries on start/tree; advanced by flushes. */
 	const costFloor: CostFloor = new Map();
-	const resultKey = (record: AgentRecord) => JSON.stringify([
-		record.runId, record.executionId ?? record.finishedAt ?? record.updatedAt,
-	]);
+	const resultKey = (record: AgentRecord) => executionResultKey(record);
 	/** Terminal records whose report this session has not consumed yet. */
 	const undelivered = (records: readonly AgentRecord[]) =>
 		records.filter((record) => isTerminalStatus(record.status) && !record.resultsDelivered && !deliveredResults.has(resultKey(record)));
@@ -190,6 +188,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			}
 			for (const key of Array.isArray(details?.seenDescendantResults) ? details.seenDescendantResults : []) {
 				if (typeof key === "string") seenDescendantResults.add(key);
+			}
+		}
+		// Second durability leg for observation: transcript receipts are lost to
+		// compaction, forks, and branch subsets, but the dismissal sidecars
+		// survive. Claims need no help here; their markers already persist.
+		if (runtime) {
+			try {
+				for (const key of listFooterDismissed(getAgentDir(), runtime.runId)) seenDescendantResults.add(key);
+			} catch {
+				// Observation is best effort; the transcript leg still applies.
 			}
 		}
 	};
@@ -903,6 +911,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 						const key = resultKey(record);
 						seenDescendantResults.add(key);
 						observedDescendants.push(key);
+						try {
+							markFooterDismissed(agentDir, record, runtime!.runId, key);
+						} catch {
+							// Dismissal is best effort; memory still hides it this session.
+						}
 					}
 					const readOnly = record.parentRunId !== runtime!.runId
 						? descendantIds.has(record.runId) ? " · read-only descendant" : " · read-only"
