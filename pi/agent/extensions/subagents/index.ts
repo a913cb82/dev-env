@@ -753,7 +753,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				// Cross-process cleanup is best effort. Owned children are awaited below.
 			}
 		}
-		await terminateOwnedSubagents(records.map((record) => record.runId));
+		// Spared runs keep their processes: their monitors die with this process
+		// anyway, but the detached session must survive to self-report.
+		await terminateOwnedSubagents(records.filter((record) => !spareLiveTree || isTerminalStatus(record.status)).map((record) => record.runId));
 	});
 
 	pi.registerTool({

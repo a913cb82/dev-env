@@ -2400,6 +2400,34 @@ function check(name, cond, extra) {
 			const grand = registry.readRecords(agentDir).find((r) => r.runId === `teardown-grand-${name}`);
 			check(`teardown of a ${name} session leaves the grandchild ${wantGrand}`, grand?.status === wantGrand, grand?.status);
 		}
+		// Teardown of a settled session spares the live PROCESS, not just the
+		// record: the detached session must survive to self-report.
+		{
+			const agentDir = rlUse("teardown-live-proc");
+			const session = "teardown-proc-child";
+			const savedDelay = process.env.FAKE_DELAY_MS;
+			process.env.FAKE_DELAY_MS = "30000";
+			const liveRec = await spawn.startSubagent({ task: "live grand", name: "live-grand-proc" }, rlSpawnCtx(agentDir, session));
+			if (savedDelay === undefined) delete process.env.FAKE_DELAY_MS;
+			else process.env.FAKE_DELAY_MS = savedDelay;
+			let launched;
+			for (let i = 0; i < 100 && !(launched = registry.readRecords(agentDir).find((r) => r.runId === liveRec.runId))?.pid; i++) await waitSleep(25);
+			registry.saveRecord(agentDir, mk(session, "root", { rootRunId: "root", status: "completed", latestText: "done" }));
+			const prevRunId = process.env.PI_SUBAGENT_RUN_ID;
+			process.env.PI_SUBAGENT_RUN_ID = session;
+			const ext = rlBoot();
+			try {
+				await ext.handlers.get("session_start")({}, rlStartCtx(session));
+				await ext.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { mode: "rpc" });
+			} finally {
+				if (prevRunId === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+				else process.env.PI_SUBAGENT_RUN_ID = prevRunId;
+			}
+			const after = registry.readRecords(agentDir).find((r) => r.runId === liveRec.runId);
+			check("teardown spares the live grandchild process", after?.status !== "cancelled" && after?.pid !== undefined && registry.isProcessAlive(after?.pid),
+				JSON.stringify({ status: after?.status, pid: after?.pid }));
+			await spawn.cancelSubagent(agentDir, after ?? liveRec);
+		}
 		// An orphan (settled parent, live grandchild) is adopted and resumed.
 		{
 			const agentDir = rlUse("orphan");

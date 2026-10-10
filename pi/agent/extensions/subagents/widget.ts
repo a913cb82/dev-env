@@ -80,7 +80,7 @@ export class SubagentStatusWidget implements Component {
 			// Non-direct rows name their parent so an orphaned run never
 			// looks like a promoted child once its parent is collected.
 			const via = record.parentRunId !== this.currentRunId ? ` · via ${byId.get(record.parentRunId)?.name ?? record.parentRunId}` : "";
-			return `${indent}${icon} ${record.name} ${this.theme.fg("dim", `· ${record.model} · ${activity}${adopted}${via}`)}`;
+			return `${indent}${icon} ${record.name} ${this.theme.fg("dim", `${via} · ${record.model} · ${activity}${adopted}`)}`;
 		});
 	}
 
