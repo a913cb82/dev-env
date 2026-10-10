@@ -27,6 +27,10 @@ function check(name, cond, extra) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Deterministic macrotask flush + freeze-immune polling: iterations resume
+// after any stall, so only content (never clocks) decides.
+const tick = () => new Promise((resolveTick) => setImmediate(resolveTick));
+const until = async (seen) => { for (let i = 0; i < 200 && !seen(); i++) await sleep(25); };
 
 (async () => {
 	const mesh = await jiti.import(path.join(HERE, "mesh.ts"));
@@ -79,7 +83,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 		});
 		sock.on("error", reject);
 	});
-	await sleep(200);
+	await until(() => receivedB.length === 1);
 	check("byte-at-a-time frame reassembles", receivedB.length === 1 && receivedB[0].payload.text === "partial", JSON.stringify(receivedB));
 
 	// --- unknown sender dropped ---
@@ -118,19 +122,23 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 	}
 	check("oversize send rejected client-side", oversizeRejected);
 	await mesh.sendMeshMessage({ socketDir, toRunId: "run-small", fromRunId: "run-aaa", type: "steer", payload: { text: "small ok" } });
-	await sleep(100);
+	await until(() => receivedA.some((msg) => msg.payload && msg.payload.text === "small ok"));
 	check("server survives oversize and serves next message", receivedA.some((msg) => msg.payload && msg.payload.text === "small ok"));
 	await small.close();
 
 	// --- waitForMeshSocket: resolves when the server appears ---
 	const waitPath = mesh.meshSocketPath(socketDir, "run-wait");
 	check("socket absent before bind", !fs.existsSync(waitPath));
-	setTimeout(() => {
-		mesh.startMeshServer({ socketDir, runId: "run-wait", onMessage: () => {} }).then((server) => waitServers.push(server));
-	}, 100);
-	const waitStarted = Date.now();
-	await mesh.waitForMeshSocket(socketDir, "run-wait", { timeoutMs: 5000 });
-	check("wait resolves once the server appears", Date.now() - waitStarted >= 50 && fs.existsSync(waitPath), `${Date.now() - waitStarted}ms`);
+	// Pending-flag proof of waiting: unresolvable until the bind lands, with
+	// no clock involved. The bind itself is synchronous test code, not a timer.
+	let waitResolved = false;
+	const waitPending = mesh.waitForMeshSocket(socketDir, "run-wait", { timeoutMs: 5000 }).then(() => { waitResolved = true; });
+	await tick();
+	await tick();
+	check("wait stays pending while socket absent", waitResolved === false);
+	waitServers.push(await mesh.startMeshServer({ socketDir, runId: "run-wait", onMessage: () => {} }));
+	await waitPending;
+	check("wait resolves once the server appears", waitResolved === true && fs.existsSync(waitPath));
 	let waitTimedOut = false;
 	try {
 		await mesh.waitForMeshSocket(socketDir, "run-never", { timeoutMs: 150, intervalMs: 25 });
@@ -169,16 +177,20 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 		hanging.on("connect", () => resolve());
 		hanging.on("close", () => {});
 	});
-	const hangingCloseStarted = Date.now();
-	await serverA.close();
-	check("close resolves with an idle connection open", Date.now() - hangingCloseStarted < 2000, `${Date.now() - hangingCloseStarted}ms`);
+	// Close destroys stuck sockets rather than awaiting them: resolution within
+	// a wall-free flush proves it (a regressed close would hang the await).
+	let closeResolved = false;
+	const closePending = serverA.close().then(() => { closeResolved = true; });
+	for (let i = 0; i < 50 && !closeResolved; i++) await tick();
+	check("close resolves with an idle connection open", closeResolved === true);
+	await closePending;
 	// --- rebind after close serves fresh traffic exactly once ---
 	const reReceived = [];
 	const reServer1 = await mesh.startMeshServer({ socketDir, runId: "run-re", onMessage: (msg) => reReceived.push(msg) });
 	await reServer1.close();
 	const reServer2 = await mesh.startMeshServer({ socketDir, runId: "run-re", onMessage: (msg) => reReceived.push(msg) });
 	await mesh.sendMeshMessage({ socketDir, toRunId: "run-re", fromRunId: "run-aaa", type: "steer", payload: { text: "rebound" } });
-	await sleep(100);
+	await until(() => reReceived.length === 1);
 	check("rebound server receives exactly once", reReceived.length === 1 && reReceived[0].payload.text === "rebound", JSON.stringify(reReceived));
 	await reServer2.close();
 	for (const server of waitServers) await server.close();

@@ -73,6 +73,9 @@ function check(name, cond, extra) {
 
 	// --- config ---
 	const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-test-"));
+	// Deterministic macrotask flush (file scope): observes microtask-only
+	// resolution without any clock. Freeze-safe, unlike elapsed-time bounds.
+	const tick = () => new Promise((resolveTick) => setImmediate(resolveTick));
 	const agentDir = path.join(sandbox, "agent");
 	fs.mkdirSync(agentDir, { recursive: true });
 	let s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} });
@@ -94,7 +97,6 @@ function check(name, cond, extra) {
 	// still fail fast via the close handler; only freezes ride the timeout.
 	// Mechanism tests pin their own explicit small values; these defaults
 	// cover every other spawn. Production defaults are untouched.
-	const testRpcTimeouts = { rpcRequestTimeoutMs: 300_000, rpcStartupTimeoutMs: 300_000 };
 	const inheritDepth = (settings) => ({
 		PI_SUBAGENT_MAX_DEPTH: String(settings.maxDepth),
 		PI_SUBAGENT_DEPTH_FLAG_OVERRIDE: settings.maxDepthFlagOverride ? "1" : "0",
@@ -341,8 +343,8 @@ function check(name, cond, extra) {
 	{
 		const lockDir = path.join(sandbox, "lock-async");
 		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-		const holder = registry.withRecordLock(lockDir, "run-1", async () => { await sleep(300); return "held"; });
-		await sleep(20); // let the holder take the lock
+		const holder = registry.withRecordLock(lockDir, "run-1", async () => { await sleep(1000); return "held"; });
+		await tick(); // let the holder take the lock (mkdir is synchronous in the call prefix)
 		let beats = 0;
 		const heart = setInterval(() => { beats++; }, 10);
 		const waiter = await registry.withRecordLock(lockDir, "run-1", () => "waiter");
@@ -351,11 +353,21 @@ function check(name, cond, extra) {
 		check("lock wait does not freeze the event loop", beats >= 3, `beats=${beats}`);
 		check("contended lock still hands off", waiter === "waiter" && held === "held", `${waiter}/${held}`);
 		check("sync operations still work", (await registry.withRecordLock(lockDir, "run-1", () => 42)) === 42);
+		// Mutual exclusion via controllable gates, not sleeps: A holds the lock
+		// until the test releases it, so B entering early is a deterministic
+		// failure, not a timing race. (Residual: a multi-second freeze landing
+		// in the millisecond handoff window could trip B's 5s lock deadline.)
 		const order = [];
-		await Promise.all([
-			registry.withRecordLock(lockDir, "run-2", async () => { order.push("a-start"); await sleep(50); order.push("a-end"); }),
-			registry.withRecordLock(lockDir, "run-2", async () => { order.push("b-start"); await sleep(10); order.push("b-end"); }),
-		]);
+		let releaseA;
+		const gateA = new Promise((resolveGate) => { releaseA = resolveGate; });
+		const contendedA = registry.withRecordLock(lockDir, "run-2", async () => { order.push("a-start"); await gateA; order.push("a-end"); });
+		const contendedB = registry.withRecordLock(lockDir, "run-2", async () => { order.push("b-start"); order.push("b-end"); });
+		await tick();
+		await tick();
+		await tick();
+		check("contended lock parks the waiter", JSON.stringify(order) === JSON.stringify(["a-start"]), order.join(","));
+		releaseA();
+		await Promise.all([contendedA, contendedB]);
 		check("async lock serializes critical sections", JSON.stringify(order) === JSON.stringify(["a-start", "a-end", "b-start", "b-end"]), order.join(","));
 	}
 
@@ -534,12 +546,14 @@ function check(name, cond, extra) {
 				parentRunId: "cost-e2e",
 				rootRunId: "cost-e2e",
 				currentDepth: 0,
-				settings: { maxDepth: 2, maxConcurrency: -1, ...testRpcTimeouts },
+				settings: { maxDepth: 2, maxConcurrency: -1 },
 				parentModel: "fake/parent",
 				parentThinking: "off",
 				parentTools: ["read"],
 				scopedModels: [],
 				parentCwd: costSpawnDir,
+				rpcRequestTimeoutMs: 300_000,
+			rpcStartupTimeoutMs: 300_000,
 				projectTrusted: false,
 			};
 			process.env.PI_CODING_AGENT_DIR = costSpawnAgentDir;
@@ -716,17 +730,21 @@ function check(name, cond, extra) {
 
 	{
 		const dir = waitCase("idle");
-		const started = Date.now();
-		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000 });
-		check("wait returns immediately when no children", rows.length === 0 && Date.now() - started < 200, String(Date.now() - started));
+		let idleRows;
+		const idlePending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000 }).then((rows) => { idleRows = rows; });
+		await tick();
+		check("wait returns immediately when no children", idleRows !== undefined && idleRows.length === 0, String(idleRows && idleRows.length));
+		await idlePending;
 	}
 
 	{
 		const dir = waitCase("already");
 		waitRecord(dir, "parent", "done", "completed");
-		const started = Date.now();
-		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000 });
-		check("wait returns immediately when all terminal", rows.length === 1 && Date.now() - started < 200, String(Date.now() - started));
+		let alreadyRows;
+		const alreadyPending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000 }).then((rows) => { alreadyRows = rows; });
+		await tick();
+		check("wait returns immediately when all terminal", alreadyRows !== undefined && alreadyRows.length === 1, String(alreadyRows && alreadyRows.length));
+		await alreadyPending;
 	}
 
 	// --- wait default poll interval (perf: polls must stay cheap, not rare) ---
@@ -755,15 +773,15 @@ function check(name, cond, extra) {
 	{
 		const dir = waitCase("notify");
 		waitRecord(dir, "parent", "live", "thinking");
-		const started = Date.now();
-		const pending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000, pollMs: 10000 });
-		setTimeout(() => {
-			waitRecord(dir, "parent", "live", "completed", { latestText: "notified" });
-			wait.notifyWaiters(dir);
-		}, 40);
-		const rows = await pending;
-		check("in-process notify wakes wait immediately", Date.now() - started < 500, String(Date.now() - started));
-		check("notify wait sees completed child", rows.some((r) => r.runId === "live" && r.status === "completed"));
+		let notifiedRows;
+		const pending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000, pollMs: 10000 }).then((rows) => { notifiedRows = rows; });
+		await tick();
+		waitRecord(dir, "parent", "live", "completed", { latestText: "notified" });
+		wait.notifyWaiters(dir);
+		await tick();
+		check("in-process notify wakes wait without polling", notifiedRows !== undefined && notifiedRows.some((r) => r.runId === "live" && r.status === "completed"), String(notifiedRows && notifiedRows.length));
+		await pending;
+		check("notify wait sees completed child", notifiedRows.some((r) => r.runId === "live" && r.status === "completed"));
 		check("notify wait releases resources", wait.waitDebugState().waiters === 0, JSON.stringify(wait.waitDebugState()));
 	}
 
@@ -772,20 +790,20 @@ function check(name, cond, extra) {
 		waitRecord(dir, "parent", "a", "thinking");
 		waitRecord(dir, "parent", "b", "thinking");
 		let resolved = false;
-		const started = Date.now();
 		const pending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000, pollMs: 10000 }).then((rows) => {
 			resolved = true;
 			return rows;
 		});
-		await waitSleep(30);
+		await tick();
 		waitRecord(dir, "parent", "a", "completed");
 		wait.notifyWaiters(dir);
-		await waitSleep(50);
+		await tick();
+		await tick();
 		check("wait-for-all stays pending after first child", resolved === false);
 		waitRecord(dir, "parent", "b", "completed");
 		wait.notifyWaiters(dir);
 		await pending;
-		check("wait-for-all returns after last child", resolved && Date.now() - started < 500, String(Date.now() - started));
+		check("wait-for-all returns after last child", resolved === true);
 	}
 
 	{
@@ -830,22 +848,23 @@ function check(name, cond, extra) {
 	{
 		const dir = waitCase("targets-empty");
 		waitRecord(dir, "parent", "live", "thinking");
-		const started = Date.now();
-		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000, targets: ["missing"] });
-		check("targeted wait with no matching rows returns immediately", Date.now() - started < 200, String(Date.now() - started));
-		check("targeted wait still returns the snapshot", rows.some((r) => r.runId === "live"));
+		let emptyRows;
+		const emptyPending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000, targets: ["missing"] }).then((rows) => { emptyRows = rows; });
+		await tick();
+		check("targeted wait with no matching rows returns immediately", emptyRows !== undefined, String(emptyRows && emptyRows.length));
+		check("targeted wait still returns the snapshot", emptyRows.some((r) => r.runId === "live"));
+		await emptyPending;
 	}
 
 	{
 		const dir = waitCase("poll");
 		waitRecord(dir, "parent", "polled", "thinking");
-		const started = Date.now();
 		const pending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 3000, pollMs: 50 });
 		setTimeout(() => {
 			waitRecord(dir, "parent", "polled", "completed");
 		}, 40);
 		const rows = await pending;
-		check("poll notices a foreign record change", Date.now() - started < 1500 && rows.some((r) => r.runId === "polled" && r.status === "completed"), String(Date.now() - started));
+		check("poll notices a foreign record change", rows.some((r) => r.runId === "polled" && r.status === "completed"));
 	}
 
 	{
@@ -867,9 +886,11 @@ function check(name, cond, extra) {
 	{
 		const dir = waitCase("zero");
 		waitRecord(dir, "parent", "still-running", "thinking");
-		const started = Date.now();
-		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 0 });
-		check("timeout 0 does not wait", rows.some((r) => r.status === "thinking") && Date.now() - started < 200, String(Date.now() - started));
+		let zeroRows;
+		const zeroPending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 0 }).then((rows) => { zeroRows = rows; });
+		await tick();
+		check("timeout 0 does not wait", zeroRows !== undefined && zeroRows.some((r) => r.status === "thinking"), String(zeroRows && zeroRows.length));
+		await zeroPending;
 	}
 
 	{
@@ -888,24 +909,26 @@ function check(name, cond, extra) {
 	{
 		const dir = waitCase("dead-pid");
 		waitRecord(dir, "parent", "ghost", "thinking", { pid: 2147483647 });
-		const started = Date.now();
-		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000 });
-		const ghost = rows.find((r) => r.runId === "ghost");
-		check("dead pid treated as terminal without waiting", ghost && ghost.status === "failed" && Date.now() - started < 200, ghost && `${ghost.status} ${Date.now() - started}`);
+		let ghostRows;
+		const ghostPending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000 }).then((rows) => { ghostRows = rows; });
+		await tick();
+		const ghost = ghostRows && ghostRows.find((r) => r.runId === "ghost");
+		check("dead pid treated as terminal without waiting", ghostRows !== undefined && ghost && ghost.status === "failed", ghost && ghost.status);
+		await ghostPending;
 	}
 
 	{
 		const dir = waitCase("dead-while");
 		const child = spawnProcess("sleep", ["30"], { stdio: "ignore" });
 		waitRecord(dir, "parent", "live-pid", "thinking", { pid: child.pid });
-		const started = Date.now();
 		const pending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 3000, pollMs: 50 });
-		await waitSleep(20);
+		await tick();
+		await tick();
 		child.kill("SIGKILL");
 		await new Promise((resolveWait) => child.once("close", resolveWait));
 		const rows = await pending;
 		const live = rows.find((r) => r.runId === "live-pid");
-		check("dead pid during wait is noticed by poll", live && live.status === "failed" && Date.now() - started < 500, live && `${live.status} ${Date.now() - started}`);
+		check("dead pid during wait is noticed by poll", live && live.status === "failed", live && live.status);
 	}
 
 	// --- incremental check results ---
@@ -1157,16 +1180,20 @@ function check(name, cond, extra) {
 		// 1. A mesh settle notice wakes a check wait faster than the registry poll (250ms) ever could.
 		const childCheck = meshTools.child.get("check_subagents");
 		const nephewWait = childCheck.execute("settle-wait", { targets: ["me/mesh-nephew"], wait: true, mode: "all", timeoutMs: 5000 }, undefined, undefined, {});
-		setTimeout(() => {
-			void (async () => {
-				await completeMesh("mesh-nephew", "nephew", "nephew done");
-				void spawn.notifyParentSettled(meshAgentDir, registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-nephew"));
-			})();
-		}, 10);
-		const nephewWaitStarted = Date.now();
+		// The settled notice wakes the waiter event-driven: with the default
+		// 250ms poll interval, resolution within a wall-free flush proves
+		// the wake path, not the poll tick, delivered it (clocks play no part).
+		let nephewResolved = false;
+		void nephewWait.then(() => { nephewResolved = true; });
+		await tick();
+		await completeMesh("mesh-nephew", "nephew", "nephew done");
+		void spawn.notifyParentSettled(meshAgentDir, registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-nephew"));
+		// Wall-free flush: socket delivery takes a few macrotask hops, still
+		// far short of the 250ms poll interval, so resolution proves the wake.
+		for (let i = 0; i < 50 && !nephewResolved; i++) await tick();
+		check("mesh settle wakes check wait before the poll interval", nephewResolved === true);
 		const nephewResult = await nephewWait;
-		const nephewWaitElapsed = Date.now() - nephewWaitStarted;
-		check("mesh settle wakes check wait before the poll interval", nephewWaitElapsed < 200 && nephewResult.content[0].text.includes("nephew done"), `${nephewWaitElapsed}ms: ${nephewResult.content[0].text.slice(0, 120)}`);
+		check("mesh settle delivers the result", nephewResult.content[0].text.includes("nephew done"), nephewResult.content[0].text.slice(0, 120));
 		// 2. Ancestor observation is read-only; the direct parent still claims exactly once.
 		const parentCheck = meshTools.parent.get("check_subagents");
 		const ancestorView = await parentCheck.execute("settle-ancestor", { targets: ["/mesh-child/mesh-grand"], wait: false }, undefined, undefined, {});
@@ -1571,10 +1598,16 @@ function check(name, cond, extra) {
 		parentRunId: "parent",
 		rootRunId: "parent",
 		currentDepth: 0,
-		settings: { maxDepth: 2, maxConcurrency: -1, ...testRpcTimeouts },
+		settings: { maxDepth: 2, maxConcurrency: -1 },
 		parentModel: "fake/parent",
 		parentThinking: "off",
 		parentTools: ["read", "spawn_agent"],
+		// Test RPC headroom: the box freezes for tens of seconds under spawn
+		// load (traced: child booted, then no CPU for 51s on either side).
+		// Dead children still fail fast via close; only freezes ride these.
+		// Mechanism tests pin their own explicit small values.
+		rpcRequestTimeoutMs: 300_000,
+		rpcStartupTimeoutMs: 300_000,
 		scopedModels: [],
 		parentCwd: spawnDir,
 		projectTrusted: false,
@@ -1641,10 +1674,15 @@ function check(name, cond, extra) {
 	check("explicit thinking cannot escape scoped pin", pinThrew);
 	check("failed capability validation saves no record", registry.readRecords(spawnAgentDir).length === 4, String(registry.readRecords(spawnAgentDir).length));
 
-	const t0 = Date.now();
 	const settled = [];
-	const rec1 = await spawn.startSubagent({ task: "say hi", name: "alpha" }, { ...baseCtx(), onSettled: (r) => settled.push(r.status) });
-	check("startSubagent returns fast", Date.now() - t0 < 1000, String(Date.now() - t0));
+	// startSubagent only validates and queues: the promise resolves without any
+	// timer, so a macrotask flush observes it (clocks play no part).
+	let alphaReturned = false;
+	const alphaPromise = spawn.startSubagent({ task: "say hi", name: "alpha" }, { ...baseCtx(), onSettled: (r) => settled.push(r.status) });
+	void alphaPromise.then(() => { alphaReturned = true; });
+	await tick();
+	check("startSubagent returns fast", alphaReturned === true);
+	const rec1 = await alphaPromise;
 	check("startSubagent returns non-terminal record", !spawn.isTerminalStatus ? rec1.status !== "completed" : true, rec1.status);
 	let polled;
 	for (let i = 0; i < 100; i++) {
@@ -2001,7 +2039,7 @@ function check(name, cond, extra) {
 	check("child close persists PID clearing", closedSlow?.pid === undefined, String(closedSlow?.pid));
 
 	// Resume slot semantics: a resumed turn holds the gate while running, frees after.
-	const slotCtx = { ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1, ...testRpcTimeouts } };
+	const slotCtx = { ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 }, rpcRequestTimeoutMs: 300_000, rpcStartupTimeoutMs: 300_000 };
 	const kept = await spawn.startSubagent({ task: "keep-slot", name: "keep-slot" }, slotCtx);
 	for (let i = 0; i < 100; i++) {
 		if (registry.readRecords(spawnAgentDir).find((r) => r.runId === kept.runId)?.status === "completed") break;
@@ -2073,9 +2111,13 @@ function check(name, cond, extra) {
 		{ ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 } },
 	);
 	check("full gate queues the spawn", queuedRec.status === "queued", queuedRec.status);
-	const queuedSendStarted = Date.now();
-	const queuedAccepted = await spawn.sendSubagentMessage(queuedRec, "queued steer");
-	check("steering a queued child returns immediately", queuedAccepted && Date.now() - queuedSendStarted < 250, String(Date.now() - queuedSendStarted));
+	// Parking on a queued child is a synchronous map push: no timer involved.
+	let steerParked = false;
+	const steerPromise = spawn.sendSubagentMessage(queuedRec, "queued steer");
+	void steerPromise.then((accepted) => { steerParked = accepted; });
+	await tick();
+	check("steering a queued child returns immediately", steerParked === true);
+	const queuedAccepted = await steerPromise;
 	const queuedFollowRec = await spawn.startSubagent(
 		{ task: "qf", name: "queued-follow" },
 		{ ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 } },
@@ -2283,12 +2325,14 @@ function check(name, cond, extra) {
 		parentRunId: parent,
 		rootRunId: parent,
 		currentDepth: 0,
-		settings: { maxDepth: 2, maxConcurrency: -1, ...testRpcTimeouts },
+		settings: { maxDepth: 2, maxConcurrency: -1 },
 		parentModel: "fake/parent",
 		parentThinking: "off",
 		parentTools: ["read"],
 		scopedModels: [],
 		parentCwd: sandbox,
+		rpcRequestTimeoutMs: 300_000,
+		rpcStartupTimeoutMs: 300_000,
 		projectTrusted: false,
 	});
 	const rlUse = (name) => {
