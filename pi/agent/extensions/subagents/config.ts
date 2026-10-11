@@ -12,6 +12,8 @@ export const DEFAULT_SETTINGS: SubagentSettings = {
 	pruneUndeliveredAfterDays: 30,
 	pruneUndeliveredKeep: 500,
 	hideUnclaimableAfterDays: 7,
+	maxTurns: 0,
+	graceTurns: 5,
 };
 
 export const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -80,6 +82,13 @@ function pruneKeep(value: unknown, field: string): number {
 	return value;
 }
 
+function turnLimit(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		throw new Error(`${field} must be a non-negative integer (0 disables)`);
+	}
+	return value;
+}
+
 function validate(raw: RawSettings, source: string): RawSettings {
 	const result: RawSettings = {};
 	if (raw.defaultModel !== undefined) result.defaultModel = optionalString(raw.defaultModel, `${source}.defaultModel`);
@@ -107,6 +116,12 @@ function validate(raw: RawSettings, source: string): RawSettings {
 	}
 	if (raw.hideUnclaimableAfterDays !== undefined) {
 		result.hideUnclaimableAfterDays = pruneDays(raw.hideUnclaimableAfterDays, `${source}.hideUnclaimableAfterDays`);
+	}
+	if (raw.maxTurns !== undefined) {
+		result.maxTurns = turnLimit(raw.maxTurns, `${source}.maxTurns`);
+	}
+	if (raw.graceTurns !== undefined) {
+		result.graceTurns = turnLimit(raw.graceTurns, `${source}.graceTurns`);
 	}
 	return result;
 }

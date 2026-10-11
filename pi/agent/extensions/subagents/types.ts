@@ -69,6 +69,10 @@ export interface SubagentSettings {
 	pruneUndeliveredAfterDays?: number;
 	/** Keep this many newest undelivered runs; excess oldest go past the cap grace floor (default 500, 0 disables). */
 	pruneUndeliveredKeep?: number;
+	/** Abort a run after this many assistant turns (0 disables). Counts every assistant turn in the process, including steered follow-ups; resumes start a fresh process and counter. */
+	maxTurns?: number;
+	/** Turns past maxTurns before abort: at maxTurns the run gets one wrap-up steer, past maxTurns+graceTurns it is cancelled. Default 5. */
+	graceTurns?: number;
 	/** Hide unclaimable terminal rows (settled parent, resume refused) older than this many days (default 7, 0 disables). Display only; records and audits are untouched. */
 	hideUnclaimableAfterDays?: number;
 }

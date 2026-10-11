@@ -2124,6 +2124,38 @@ function check(name, cond, extra) {
 	}
 	check("followUp executes as its own turn", followDone?.latestText === "steered: after your work", followDone && `${followDone.status} ${followDone.latestText}`);
 
+	// Turn backstop: one wrap-up steer at maxTurns, cancel past maxTurns+grace.
+	const turnCtx = (maxTurns, graceTurns) => ({ ...baseCtx(), settings: { ...baseCtx().settings, maxTurns, graceTurns } });
+	process.env.FAKE_DELAY_MS = "500";
+	const wrapRec = await spawn.startSubagent({ task: "wrap-me", name: "turn-wrap-child" }, turnCtx(1, 5));
+	let wrapRow;
+	for (let i = 0; i < 200; i++) {
+		wrapRow = registry.readRecords(spawnAgentDir).find((r) => r.runId === wrapRec.runId);
+		if (wrapRow && ["thinking", "running_tool"].includes(wrapRow.status)) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	// Park follow-up work first: the wrap steer fires at turn end, when an
+	// instant child may already settle, so the queue must never drain empty.
+	await spawn.sendSubagentMessage(wrapRow, "after your work", undefined, "followUp");
+	delete process.env.FAKE_DELAY_MS;
+	let wrapDone;
+	for (let i = 0; i < 200; i++) {
+		wrapDone = registry.readRecords(spawnAgentDir).find((r) => r.runId === wrapRec.runId);
+		if (wrapDone?.status === "completed") break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("wrap-up steer fires at maxTurns", wrapDone?.status === "completed" && (wrapDone.latestText ?? "").includes("turn limit"), wrapDone && `${wrapDone.status} ${wrapDone.latestText}`);
+	process.env.FAKE_DELAY_MS = "2000";
+	const graceRec = await spawn.startSubagent({ task: "grace-me", name: "turn-grace-child" }, turnCtx(1, 0));
+	delete process.env.FAKE_DELAY_MS;
+	let graceDone;
+	for (let i = 0; i < 200; i++) {
+		graceDone = registry.readRecords(spawnAgentDir).find((r) => r.runId === graceRec.runId);
+		if (graceDone && registry.isTerminalStatus(graceDone.status)) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("grace exceeded cancels the run", graceDone?.status === "cancelled", graceDone && `${graceDone.status} ${graceDone.latestText}`);
+
 	// invalid modes are rejected with a clear error.
 	let invalidModeError;
 	try {

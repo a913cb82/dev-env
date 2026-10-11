@@ -1044,6 +1044,28 @@ async function runSubagentProcess(
 			},
 		};
 
+		// Turn backstop (maxTurns/graceTurns): a stuck runaway can otherwise hold
+		// its parent's linger and the box forever. Counts assistant turns per
+		// process and never resets — steered follow-up turns are work too;
+		// a resume starts a fresh process and a fresh counter.
+		let turnCount = 0;
+		const enforceTurnLimit = () => {
+			const maxTurns = context.settings.maxTurns ?? 0;
+			if (!(maxTurns > 0)) return;
+			const graceTurns = context.settings.graceTurns ?? 5;
+			if (turnCount === maxTurns && graceTurns > 0) {
+				const live = liveChildren.get(record.runId);
+				if (live) {
+					void live.sendMessage(
+						`You've reached your turn limit (${maxTurns}). Wrap up immediately \u2014 provide your final or partial answer and next steps now. Note that the job was interrupted by a usage limit and might require follow-up.`,
+						undefined,
+						"steer",
+					).catch(() => {});
+				}
+			} else if (turnCount >= maxTurns + graceTurns) {
+				void cancelSubagent(context.agentDir, record).catch(() => {});
+			}
+		};
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
 			let event: any;
@@ -1078,6 +1100,10 @@ async function runSubagentProcess(
 				return;
 			}
 			const important = applyChildEvent(record, state, event);
+			if (event?.type === "message_end" && event?.message?.role === "assistant") {
+				turnCount++;
+			enforceTurnLimit();
+			}
 			if (event.type === "agent_settled") {
 				if (record.status === "cancelled" || diskCancelled()) {
 					const onDisk = readRecords(context.agentDir).find((r) => r.runId === record.runId);
