@@ -103,7 +103,7 @@ check_subagents({ wait: true, timeoutMs: 120000 })
 check_subagents({ targets: ["/team/worker", "../sibling"], wait: true, mode: "any" })
 ```
 
-Each target is a tree path, exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected before waiting. `wait: true` blocks until the selected runs finish: `mode: "all"` (default) waits for every one, `mode: "any"` returns on the first. `timeoutMs` defaults to 30 seconds, is capped at 300 seconds, and is only a maximum; omitted `targets` watches every descendant.
+Each target is a tree path, exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected before waiting. `wait: true` blocks until the selected runs finish: `mode: "all"` (default) waits for every one, `mode: "any"` returns on the first. `timeoutMs` defaults to 30 seconds, is capped at 300 seconds, and is only a maximum; omitted `targets` watches every descendant. Terminal rows whose parent already settled (resume would refuse them) hide once older than `hideUnclaimableAfterDays` (default 7, display only — records and audits stay, and explicit `targets` still show them).
 
 ### `send_to_subagent`
 
@@ -115,6 +115,8 @@ send_to_subagent({ target: "../sibling", message: "When done, also audit the log
 ```
 
 Works on running, finished, cancelled, AND queued runs. Messaging a finished or cancelled run resumes it from its transcript in a fresh process as a new execution — the record keeps its parent (no ownership theft) and the resuming session only lends its concurrency slot. Resume is refused when the record's parent already settled (nobody could collect the result — spawn fresh instead). Names are required and unique among siblings so paths never go ambiguous; reload adoption suffixes past clashes automatically. Messaging a queued or starting run parks the message until its session starts. Every cross message is appended to the target's audit log (`<run>.messages.json` beside its record).
+
+Receipts name the transport honestly. Owned children go over the live channel (`... over its live channel (applies on its next turn)`); everything else goes by socket mesh (`... received, delivers when it idles` — receipt means the target's socket acknowledged it, not that it has read it). A busy session cannot take an injection, so mesh arrivals park and flush in order when it idles, settles, or reaches before-settle (last chance before death). The sender retries after any transport failure, so the same message can arrive twice; the receiver deduplicates by envelope id (second copy still acknowledged, never audited or injected). A session whose socket never binds records a `<run>.mesh-offline` marker (error plus consecutive failures) that its parent's `check_subagents` rows surface as `· mesh offline`; binds retry with count-based backoff across tool executes, and the marker clears on success.
 
 ### `cancel_subagent`
 
@@ -160,6 +162,7 @@ All fields are optional. Defaults are `maxDepth: 2` and `maxConcurrency: 4`.
 - `rpcMaxLineChars` — defensive limit per child stdout JSONL record, default `67108864` (64 Mi UTF-16 code units, including an optional trailing CR but excluding LF). Must be a positive safe integer; there is no unlimited mode.
 - `pruneDeliveredAfterDays` (default `14`) / `pruneDeliveredKeep` (default `50`) — rotation for delivered terminal runs: older than N days go, newest K are always kept.
 - `pruneUndeliveredAfterDays` (default `30`, `0` disables) / `pruneUndeliveredKeep` (default `500`, `0` disables) — rotation for terminal runs whose result was never collected. A terminal result older than the threshold has no live claimant left, so reaping it is safe. The count cap only takes runs older than 7 days, so a burst of fresh uncollected results is never trimmed.
+- `hideUnclaimableAfterDays` (default `7`, `0` disables) — hide terminal rows whose parent already settled and which are older than N days. Display only: no record, audit, or sidecar is touched, and explicit check targets bypass the hiding.
 
 The `--subagent-depth N` Pi flag overrides configured depth for the tree; descendants inherit that override rather than reapplying file limits. Without a flag override, explicit global or trusted-project depth settings may tighten the inherited limit. Built-in defaults never tighten an inherited limit. An explicit descendant `--subagent-depth N` may also tighten the limit and overrides file limits for its subtree. No descendant can raise an inherited limit.
 
@@ -173,11 +176,11 @@ While subagents are outstanding, a passive footer lists them, indented by depth:
 ● test-runner · openai-codex/gpt-5.5 · running npm test
 ```
 
-A child disappears the moment its result is read by its direct parent via `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. Non-direct rows always name their parent (`· via <name>`) so an orphaned run never looks like a promoted child once its parent is collected. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
+A child disappears the moment its result is read by its direct parent via `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. Non-direct rows always name their parent (`· via <name>`) so an orphaned run never looks like a promoted child once its parent is collected. Terminal rows whose parent settled hide once older than `hideUnclaimableAfterDays`, same as in `check_subagents`. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
 
 ## Registry maintenance
 
-Run records accumulate in `~/.pi/agent/subagents/runs/`. On every session start the extension prunes terminal runs: delivered ones older than `pruneDeliveredAfterDays` (default 14, always keeping the newest `pruneDeliveredKeep`, default 50), and undelivered ones older than `pruneUndeliveredAfterDays` (default 30, `0` disables) or beyond the newest `pruneUndeliveredKeep` (default 500, `0` disables; the cap never takes runs younger than 7 days). Running children, queued work, and young undelivered results are never pruned. Marker sidecars of pruned runs — and orphan markers whose record is already gone — go with them. Hot paths (footer ticks, tool results, waits) share one mtime-guarded scan per registry state instead of re-reading every file, so steady-state overhead is a single directory stat.
+Run records accumulate in `~/.pi/agent/subagents/runs/`. On every session start the extension prunes terminal runs: delivered ones older than `pruneDeliveredAfterDays` (default 14, always keeping the newest `pruneDeliveredKeep`, default 50), and undelivered ones older than `pruneUndeliveredAfterDays` (default 30, `0` disables) or beyond the newest `pruneUndeliveredKeep` (default 500, `0` disables; the cap never takes runs younger than 7 days). The newest-K keeps apply per root tree, so one busy session never evicts another session's newest runs from the shared registry. Startup also sweeps stale socket files (claimed by no live run and nothing listening), so senders stop paying wait timeouts on dead names. Running children, queued work, and young undelivered results are never pruned. Marker sidecars of pruned runs — and orphan markers whose record is already gone — go with them. Hot paths (footer ticks, tool results, waits) share one mtime-guarded scan per registry state instead of re-reading every file, so steady-state overhead is a single directory stat.
 
 ## Development
 
