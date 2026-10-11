@@ -44,7 +44,7 @@ function check(name, cond, extra) {
 	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 };
 	const rec = (runId, parentRunId, status, depth) => ({
 		version: 1, runId, parentRunId, rootRunId: "root", sessionId: `s-${runId}`,
-		name: runId, task: "t", cwd: "/tmp", model: "m", thinking: "off",
+		name: runId, task: "t", cwd: "/tmp", model: "prov/m", thinking: "xhigh",
 		depth, maxDepth: 3, status, usage: { ...usage }, startedAt: now, updatedAt: now,
 	});
 	registry.saveRecord(dir, rec("top", "me", "completed", 1));
@@ -65,6 +65,9 @@ function check(name, cond, extra) {
 		JSON.stringify(lines));
 	check("live descendant stays indented under its chain",
 		!/^ /.test(lines[0]) && /^  +/.test(lines[2]), JSON.stringify(lines));
+	check("no via parent suffix", lines.every((line) => !line.includes("via")), JSON.stringify(lines));
+	check("model shows short id plus thinking level",
+		lines.every((line) => line.includes("m · xhigh") && !line.includes("prov/")), JSON.stringify(lines));
 	// Control: once the descendant drains too, the footer clears.
 	const botRow = registry.readRecords(dir).find((r) => r.runId === "bot");
 	registry.saveRecord(dir, { ...botRow, status: "completed", updatedAt: new Date().toISOString() });
