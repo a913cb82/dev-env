@@ -132,7 +132,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		if (runId === runtime?.rootRunId) return "root";
 		return getCachedRecords(getAgentDir()).find((record) => record.runId === runId)?.name ?? runId;
 	};
+	/** Parked inbound mesh texts, oldest first. A busy session cannot take
+	 * an injection (the host drops it), so arrivals park here and flush in
+	 * order when the session idles. Bounded: beyond the cap the oldest goes. */
+	const meshParked: Array<{ from: string; mode: SubagentMessageMode; text: string }> = [];
+	const MESH_PARK_CAP = 50;
 	/** Inject mesh text into this session as a native steer/followUp message. */
+	const injectMeshNow = async (from: string, mode: SubagentMessageMode, text: string) => {
+		try {
+			await pi.sendMessage(
+				{ content: `[${senderName(from)}] ${text}` },
+				{ triggerTurn: true, deliverAs: mode },
+			);
+		} catch {
+			// Session ending or host rejection: the message is dropped.
+		}
+	};
 	const injectMeshText = async (from: string, mode: SubagentMessageMode, text: string) => {
 		if (!runtime || shuttingDown) return;
 		// Audit first: the append-only log never touches the record JSON
@@ -142,13 +157,18 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		} catch {
 			// Audit never blocks delivery.
 		}
-		try {
-			await pi.sendMessage(
-				{ content: `[${senderName(from)}] ${text}` },
-				{ triggerTurn: true, deliverAs: mode },
-			);
-		} catch {
-			// Session ending or host rejection: the message is dropped.
+		if (isIdle && !isIdle()) {
+			if (meshParked.length >= MESH_PARK_CAP) meshParked.shift();
+			meshParked.push({ from, mode, text });
+			return;
+		}
+		await injectMeshNow(from, mode, text);
+	};
+	/** Flush parked inbound mesh texts in order while the session idles. */
+	const flushMeshParked = async () => {
+		while (meshParked.length > 0 && !shuttingDown && runtime && (!isIdle || isIdle())) {
+			const next = meshParked.shift()!;
+			await injectMeshNow(next.from, next.mode, next.text);
 		}
 	};
 	const handleMeshMessage = (envelope: MeshEnvelope) => {
@@ -284,14 +304,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		agentActive = true;
 		deliveryPaused = false;
 		activeSignal = ctx.signal;
+		void flushMeshParked();
 	});
 	pi.on("message_end", (event) => {
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") deliveryPaused = true;
+		void flushMeshParked();
 	});
 	pi.on("agent_settled", () => {
 		agentActive = false;
 		if (activeSignal?.aborted) deliveryPaused = true;
 		if (!deliveryPaused) scheduleDelivery(0);
+		void flushMeshParked();
 	});
 	pi.on("session_tree", (_event, ctx) => {
 		restoreReceipts(ctx.sessionManager.getBranch());
@@ -391,18 +414,34 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		void (async () => {
 		try {
 			if (meshServer) {
-			try { await meshServer.close(); } catch { /* replaced */ }
-			meshServer = undefined;
-		}
-			meshServer = await startMeshServer({
-				socketDir: meshSocketDir(meshAgentDir),
-				runId: runtime!.runId,
-				maxLineChars: runtime!.settings.rpcMaxLineChars,
-				isKnownRunId: (id) =>
-					id === runtime!.rootRunId ||
-					getCachedRecords(meshAgentDir).some((record) => record.runId === id && record.rootRunId === runtime!.rootRunId),
-				onMessage: handleMeshMessage,
-			});
+				try { await meshServer.close(); } catch { /* replaced */ }
+				meshServer = undefined;
+			}
+			// A resumed session can race its own dying predecessor for the
+			// socket name: retry the bind instead of going deaf silently.
+			// Without this socket no tree message can reach this session.
+			let lastError: unknown;
+			for (let attempt = 0; attempt < 3 && !meshServer; attempt++) {
+				if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+				try {
+					meshServer = await startMeshServer({
+						socketDir: meshSocketDir(meshAgentDir),
+						runId: runtime!.runId,
+						maxLineChars: runtime!.settings.rpcMaxLineChars,
+						isKnownRunId: (id) =>
+							id === runtime!.rootRunId ||
+							getCachedRecords(meshAgentDir).some((record) => record.runId === id && record.rootRunId === runtime!.rootRunId),
+						onMessage: handleMeshMessage,
+					});
+				} catch (error) {
+					lastError = error;
+				}
+			}
+			if (!meshServer) {
+				try {
+					if (ctx.hasUI) ctx.ui.notify(`Subagent mesh offline (${lastError instanceof Error ? lastError.message : String(lastError)}): this session cannot receive tree messages.`, "error");
+				} catch { /* notification is best effort */ }
+			}
 		} catch {
 			meshServer = undefined;
 		}
