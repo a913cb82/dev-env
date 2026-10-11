@@ -244,14 +244,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			meshParked.push({ from, mode, text });
 			return;
 		}
-		await injectMeshNow(from, mode, text);
+		// Mesh senders never know the target's exact state (the socket hop is
+		// async), so a mesh steer can land mid-turn and abort it — healthy
+		// sessions settled `cancelled`. Only the live owned-child channel
+		// (spawn-agent's direct sendMessage, never this funnel) may redirect.
+		await injectMeshNow(from, mode === "steer" ? "followUp" : mode, text);
 	};
 	/** Flush parked inbound mesh texts in order while the session idles.
-	 * A parked steer goes out as a follow-up, never a steer: parking means
-	 * the target was busy, so the sender's redirect context is stale, and a
-	 * late steer aborts whatever the target is doing mid-turn — healthy
-	 * sessions settled `cancelled` instead of `completed`. Live (never
-	 * parked) steers keep redirecting; only delayed ones downgrade. */
+	 * Parked modes downgrade like the direct path (see injectMeshText): by
+	 * flush time the sender's redirect context is certainly stale. */
 	const flushMeshParked = async () => {
 		while (meshParked.length > 0 && !shuttingDown && runtime && (!isIdle || isIdle())) {
 			const next = meshParked.shift()!;

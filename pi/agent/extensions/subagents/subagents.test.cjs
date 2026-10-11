@@ -1215,7 +1215,7 @@ function check(name, cond, extra) {
 		const deepSteer = await meshSend.execute("mesh-steer", { target: "/mesh-child/mesh-grand", message: "deep hello" }, undefined, undefined, {});
 		check("deep steer sent", deepSteer.content[0].text.includes("grand"), deepSteer.content[0].text);
 		check("deep steer arrives at target runtime", await until(() => meshSends.grand.some((s) => String(s.message.content).includes("deep hello"))), JSON.stringify(meshSends.grand));
-		check("deep steer delivers as steer", meshSends.grand.some((s) => s.options && s.options.deliverAs === "steer"), JSON.stringify(meshSends.grand.map((s) => s.options)));
+		check("deep mesh steer arrives as follow-up", meshSends.grand.some((s) => s.options && s.options.deliverAs === "followUp"), JSON.stringify(meshSends.grand.map((s) => s.options)));
 		const deepFollow = await meshSend.execute("mesh-follow", { target: "mesh-grand", mode: "followUp", message: "queued hello" }, undefined, undefined, {});
 		check("deep follow-up sent", deepFollow.content[0].text.includes("follow-up"), deepFollow.content[0].text);
 		check("deep follow-up arrives as followUp", await until(() => meshSends.grand.some((s) => String(s.message.content).includes("queued hello") && s.options && s.options.deliverAs === "followUp")), JSON.stringify(meshSends.grand.map((s) => s.options)));
@@ -1282,6 +1282,18 @@ function check(name, cond, extra) {
 		// passed while it waited, and a late steer aborts the target's turn.
 		const parkedFlush = parkSends.find((s) => String(s.message.content).includes("parked hello"));
 		check("parked steer flushes as follow-up", parkedFlush?.options?.deliverAs === "followUp", JSON.stringify(parkedFlush?.options));
+		// A mesh steer that finds the target idle downgrades too: mesh senders
+		// never know the target state, so only the live channel may redirect.
+		const idleFrame = `${JSON.stringify({ v: 1, type: "steer", from: "park-sender", to: "park-me", id: "park-probe-2", seq: 2, payload: { text: "idle hello" } })}\n`;
+		await new Promise((resolveIdle, rejectIdle) => {
+			const sock = net.createConnection(mesh.meshSocketPath(mesh.meshSocketDir(meshAgentDir), "park-me"));
+			sock.on("error", rejectIdle);
+			sock.on("data", () => { sock.end(); resolveIdle(true); });
+			sock.on("connect", () => { sock.write(idleFrame); });
+		});
+		const idleArrived = await until(() => parkSends.some((s) => String(s.message.content).includes("idle hello")));
+		const idleSend = parkSends.find((s) => String(s.message.content).includes("idle hello"));
+		check("idle mesh steer injects as follow-up", idleArrived && idleSend?.options?.deliverAs === "followUp", JSON.stringify(idleSend?.options));
 		// Failed binds leave a parent-visible marker, back off across tool
 		// executes (attempts observable in the marker), and clear on recovery.
 		const offlineDir = path.join(sandbox, "offline-agent");
