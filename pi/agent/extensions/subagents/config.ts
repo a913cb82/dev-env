@@ -11,7 +11,8 @@ export const DEFAULT_SETTINGS: SubagentSettings = {
 	pruneDeliveredKeep: 50,
 	pruneUndeliveredAfterDays: 30,
 	pruneUndeliveredKeep: 500,
-	hideUnclaimableAfterDays: 7,
+	hideUncollectedAfterMinutes: 10,
+	hideUncollectedAfterParentTurns: 5,
 	maxTurns: 0,
 	graceTurns: 5,
 };
@@ -82,6 +83,13 @@ function pruneKeep(value: unknown, field: string): number {
 	return value;
 }
 
+function hideAmount(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		throw new Error(`${field} must be a non-negative integer (0 hides immediately)`);
+	}
+	return value;
+}
+
 function turnLimit(value: unknown, field: string): number {
 	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
 		throw new Error(`${field} must be a non-negative integer (0 disables)`);
@@ -114,8 +122,11 @@ function validate(raw: RawSettings, source: string): RawSettings {
 	if (raw.pruneUndeliveredKeep !== undefined) {
 		result.pruneUndeliveredKeep = pruneKeep(raw.pruneUndeliveredKeep, `${source}.pruneUndeliveredKeep`);
 	}
-	if (raw.hideUnclaimableAfterDays !== undefined) {
-		result.hideUnclaimableAfterDays = pruneDays(raw.hideUnclaimableAfterDays, `${source}.hideUnclaimableAfterDays`);
+	if (raw.hideUncollectedAfterMinutes !== undefined) {
+		result.hideUncollectedAfterMinutes = hideAmount(raw.hideUncollectedAfterMinutes, `${source}.hideUncollectedAfterMinutes`);
+	}
+	if (raw.hideUncollectedAfterParentTurns !== undefined) {
+		result.hideUncollectedAfterParentTurns = hideAmount(raw.hideUncollectedAfterParentTurns, `${source}.hideUncollectedAfterParentTurns`);
 	}
 	if (raw.maxTurns !== undefined) {
 		result.maxTurns = turnLimit(raw.maxTurns, `${source}.maxTurns`);

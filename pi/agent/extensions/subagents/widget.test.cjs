@@ -95,16 +95,23 @@ function check(name, cond, extra) {
 	// Disk half of durable observation: a dismissal sidecar survives fresh
 	// processes, so quit+resume restores it (the startup path that dropped it
 	// took the viewer from an uninitialized runtime - now explicit).
-	// Unclaimable corpses (terminal, parent settled, older than the hide
-	// threshold) stay out of the footer; fresh orphans still show.
-	const weekAgo = new Date(Date.now() - 8 * 86400000).toISOString();
-	registry.saveRecord(dir, { ...rec("oldp", "me", "completed", 1), updatedAt: weekAgo });
-	registry.saveRecord(dir, { ...rec("oldc", "oldp", "failed", 2), updatedAt: weekAgo });
+	// Uncollected terminal rows older than the hide gate (10min terminal AND
+	// 5 parent turns since) stay out of the footer; fresh orphans still show.
+	// The first render stamps first-seen, so the old row shows once, then
+	// vanishes after five parent turns.
+	const elevenAgo = new Date(Date.now() - 11 * 60000).toISOString();
+	registry.saveRecord(dir, { ...rec("oldp", "me", "completed", 1), updatedAt: elevenAgo });
+	registry.saveRecord(dir, { ...rec("oldc", "oldp", "failed", 2), updatedAt: elevenAgo });
 	registry.saveRecord(dir, rec("freshc", "oldp", "failed", 2));
-	const foot2 = new widget.SubagentStatusWidget(tui, theme, dir, "me");
-	const lines2 = foot2.render(200);
-	check("footer hides the old corpse", !lines2.some((line) => line.includes("oldc")), JSON.stringify(lines2));
-	check("footer keeps the fresh orphan", lines2.some((line) => line.includes("freshc")), JSON.stringify(lines2));
+	let parentTurns = 0;
+	const foot2 = new widget.SubagentStatusWidget(tui, theme, dir, "me", { parentTurns: () => parentTurns });
+	const firstLines = foot2.render(200);
+	check("footer stamps but still shows the old row", firstLines.some((line) => line.includes("oldc")), JSON.stringify(firstLines));
+	parentTurns = 5;
+	foot2.invalidate();
+	const timeLines2 = foot2.render(200);
+	check("footer hides the old row after five turns", !timeLines2.some((line) => line.includes("oldc")), JSON.stringify(timeLines2));
+	check("footer keeps the fresh orphan", timeLines2.some((line) => line.includes("freshc")), JSON.stringify(timeLines2));
 	foot2.dispose();
 	const dismissed = registry.readRecords(dir).find((r) => r.runId === "bot");
 	registry.markFooterDismissed(dir, dismissed, "me", "dismissal-key");

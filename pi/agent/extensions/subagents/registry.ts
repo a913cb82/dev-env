@@ -259,17 +259,24 @@ export function clearMeshOffline(agentDir: string, runId: string): void {
 	rmSync(meshOfflinePath(agentDir, runId), { force: true });
 }
 
-/** Whether a terminal row is an unclaimable corpse: its parent already
- * settled, so resuming is refused and no live claimant can collect it.
- * Display-only predicate (check rows, footer): records and audits stay.
- * A corrupt or missing timestamp never hides (conservative). */
-export function isUnclaimableCorpse(record: AgentRecord, parentTerminal: boolean, nowMs: number, hideAfterDays: number): boolean {
-	if (!isTerminalStatus(record.status)) return false;
-	if (!parentTerminal) return false;
-	if (!(hideAfterDays > 0)) return false;
-	const updated = Date.parse(record.updatedAt);
-	if (Number.isNaN(updated)) return false;
-	return nowMs - updated > hideAfterDays * 86400000;
+/** Display-only hide gate for uncollected terminal rows: hide once the row
+ * has been terminal for hideAfterMinutes AND this session has completed
+ * hideAfterParentTurns turns since first seeing it terminal. Collected rows
+ * vanish through the claim path; this covers the rest. Records, audits, and
+ * sidecars stay untouched; explicit targets bypass. firstSeenTurn undefined
+ * (never observed terminal yet) never hides; a corrupt or missing timestamp
+ * never hides (conservative). */
+export interface UncollectedHideGate {
+	hideAfterMinutes: number;
+	hideAfterParentTurns: number;
+}
+export function hideUncollectedRow(record: Pick<AgentRecord, "finishedAt" | "updatedAt">, firstSeenTurn: number | undefined, currentTurn: number, nowMs: number, gate: UncollectedHideGate): boolean {
+	if (firstSeenTurn === undefined) return false;
+	if (!(gate.hideAfterMinutes >= 0) || !(gate.hideAfterParentTurns >= 0)) return false;
+	if (currentTurn - firstSeenTurn < gate.hideAfterParentTurns) return false;
+	const finishedMs = Date.parse(record.finishedAt ?? record.updatedAt);
+	if (Number.isNaN(finishedMs)) return false;
+	return nowMs - finishedMs >= gate.hideAfterMinutes * 60_000;
 }
 
 /** Read this run's mesh-offline marker (absent or corrupt reads as undefined). */

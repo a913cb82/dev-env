@@ -103,7 +103,7 @@ check_subagents({ wait: true, timeoutMs: 120000 })
 check_subagents({ targets: ["/team/worker", "../sibling"], wait: true, mode: "any" })
 ```
 
-Each target is a tree path, exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected before waiting. `wait: true` blocks until the selected runs finish: `mode: "all"` (default) waits for every one, `mode: "any"` returns on the first. `timeoutMs` defaults to 30 seconds, is capped at 300 seconds, and is only a maximum; omitted `targets` watches every descendant. Terminal rows whose parent already settled (resume would refuse them) hide once older than `hideUnclaimableAfterDays` (default 7, display only — records and audits stay, and explicit `targets` still show them).
+Each target is a tree path, exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected before waiting. `wait: true` blocks until the selected runs finish: `mode: "all"` (default) waits for every one, `mode: "any"` returns on the first. `timeoutMs` defaults to 30 seconds, is capped at 300 seconds, and is only a maximum; omitted `targets` watches every descendant. Uncollected terminal rows hide once they have been terminal for `hideUncollectedAfterMinutes` (default 10) AND this session has completed `hideUncollectedAfterParentTurns` turns since (default 5, display only — records and audits stay, and explicit `targets` still show them).
 
 ### `send_to_subagent`
 
@@ -162,7 +162,7 @@ All fields are optional. Defaults are `maxDepth: 2` and `maxConcurrency: 4`.
 - `rpcMaxLineChars` — defensive limit per child stdout JSONL record, default `67108864` (64 Mi UTF-16 code units, including an optional trailing CR but excluding LF). Must be a positive safe integer; there is no unlimited mode.
 - `pruneDeliveredAfterDays` (default `14`) / `pruneDeliveredKeep` (default `50`) — rotation for delivered terminal runs: older than N days go, newest K are always kept.
 - `pruneUndeliveredAfterDays` (default `30`, `0` disables) / `pruneUndeliveredKeep` (default `500`, `0` disables) — rotation for terminal runs whose result was never collected. A terminal result older than the threshold has no live claimant left, so reaping it is safe. The count cap only takes runs older than 7 days, so a burst of fresh uncollected results is never trimmed.
-- `hideUnclaimableAfterDays` (default `7`, `0` disables) — hide terminal rows whose parent already settled and which are older than N days. Display only: no record, audit, or sidecar is touched, and explicit check targets bypass the hiding.
+- `hideUncollectedAfterMinutes` (default `10`) / `hideUncollectedAfterParentTurns` (default `5`) — hide uncollected terminal rows once both elapse. Display only: no record, audit, or sidecar is touched, and explicit check targets bypass the hiding.
 - `maxTurns` (default `0`, disabled) / `graceTurns` (default `5`) — backstop against stuck runaways. Every assistant turn in a child process counts (steered follow-ups included; resumes start fresh). At `maxTurns` the run gets one wrap-up steer; past `maxTurns` + `graceTurns` it is cancelled like an explicit cancel.
 
 The `--subagent-depth N` Pi flag overrides configured depth for the tree; descendants inherit that override rather than reapplying file limits. Without a flag override, explicit global or trusted-project depth settings may tighten the inherited limit. Built-in defaults never tighten an inherited limit. An explicit descendant `--subagent-depth N` may also tighten the limit and overrides file limits for its subtree. No descendant can raise an inherited limit.
@@ -177,7 +177,7 @@ While subagents are outstanding, a passive footer lists them, indented by depth:
 ● test-runner · openai-codex/gpt-5.5 · running npm test
 ```
 
-A child disappears the moment its result is read by its direct parent via `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. Non-direct rows always name their parent (`· via <name>`) so an orphaned run never looks like a promoted child once its parent is collected. Terminal rows whose parent settled hide once older than `hideUnclaimableAfterDays`, same as in `check_subagents`. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
+A child disappears the moment its result is read by its direct parent via `check_subagents`. Grandchildren disappear when *their* parent reads them, not when the root inspects them. Non-direct rows always name their parent (`· via <name>`) so an orphaned run never looks like a promoted child once its parent is collected. Uncollected terminal rows hide once past the hide gate (10 minutes terminal and 5 parent turns), same as in `check_subagents`. There is no interactive panel or transcript viewer: use `check_subagents` and the child's session file for history.
 
 ## Registry maintenance
 

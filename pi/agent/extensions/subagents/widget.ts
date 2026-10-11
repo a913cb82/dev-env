@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { statSync } from "node:fs";
-import { descendantsOf, executionResultKey, getCachedRecords, isTerminalStatus, isUnclaimableCorpse, listFooterDismissed, registryDir } from "./registry.ts";
+import { descendantsOf, executionResultKey, getCachedRecords, hideUncollectedRow, isTerminalStatus, listFooterDismissed, registryDir, type UncollectedHideGate } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
 /** How often the live activity line is refreshed. 2s: the line is passive
@@ -50,7 +50,11 @@ export class SubagentStatusWidget implements Component {
 		private theme: Theme,
 		private readonly agentDir: string,
 		private readonly currentRunId: string,
-		private readonly hideUnclaimableAfterDays: number = 7,
+		private readonly hide: {
+			hideAfterMinutes?: number;
+			hideAfterTurns?: number;
+			parentTurns?: () => number;
+		} = {},
 	) {
 		this.refresh();
 		this.timer = setInterval(() => this.refresh(), POLL_MS);
@@ -83,6 +87,20 @@ export class SubagentStatusWidget implements Component {
 		return this.dismissedCache.keys;
 	}
 
+	/** First-seen-terminal stamps (this session's turn count) for hide aging. */
+	private readonly firstSeenTerminal = new Map<string, number>();
+	/** True once an uncollected terminal row passes the hide gate. Delivered
+	 * rows vanish through the claim path; this covers the rest. */
+	private agedOut(record: AgentRecord): boolean {
+		if (!isTerminalStatus(record.status)) return false;
+		const parentTurns = this.hide.parentTurns?.() ?? 0;
+		if (!this.firstSeenTerminal.has(record.runId)) this.firstSeenTerminal.set(record.runId, parentTurns);
+		const gate: UncollectedHideGate = {
+			hideAfterMinutes: this.hide.hideAfterMinutes ?? 10,
+			hideAfterParentTurns: this.hide.hideAfterTurns ?? 5,
+		};
+		return hideUncollectedRow(record, this.firstSeenTerminal.get(record.runId), parentTurns, Date.now(), gate);
+	}
 	private outstanding(): AgentRecord[] {
 		// Runs I dismissed (viewed read-only) stay hidden across reloads, like
 		// delivered ones; a new execution resurfaces under a new key.
@@ -91,7 +109,7 @@ export class SubagentStatusWidget implements Component {
 		const byId = new Map(all.map((record) => [record.runId, record]));
 		const visible = descendantsOf(all, this.currentRunId).filter(
 			(record) => !(isTerminalStatus(record.status) && (record.resultsDelivered || dismissed.has(executionResultKey(record))))
-				&& !isUnclaimableCorpse(record, (() => { const parent = byId.get(record.parentRunId); return !!parent && isTerminalStatus(parent.status); })(), Date.now(), this.hideUnclaimableAfterDays),
+				&& !this.agedOut(record),
 		);
 		// Keep every visible row's ancestry: a live grandchild must never
 		// render as a root-level run after its parents are collected.

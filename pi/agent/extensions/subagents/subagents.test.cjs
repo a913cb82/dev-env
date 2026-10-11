@@ -454,18 +454,18 @@ function check(name, cond, extra) {
 		check("clearing an absent offline marker is safe", registry.readMeshOffline(markerDir, "never-existed") === undefined);
 	}
 
-	// --- unclaimable corpse predicate ---
+	// --- uncollected-row hide gate: 10min terminal AND 5 parent turns ---
 	{
-		const week = 86400000;
-		const oldStamp = new Date(Date.now() - 8 * week).toISOString();
+		const gate = { hideAfterMinutes: 10, hideAfterParentTurns: 5 };
+		const oldStamp = new Date(Date.now() - 11 * 60000).toISOString();
 		const freshStamp = new Date().toISOString();
-		check("old settled-parent corpse hides", registry.isUnclaimableCorpse({ status: "failed", updatedAt: oldStamp }, true, Date.now(), 7) === true);
-		check("fresh corpse still shows", registry.isUnclaimableCorpse({ status: "failed", updatedAt: freshStamp }, true, Date.now(), 7) === false);
-		check("live run never a corpse", registry.isUnclaimableCorpse({ status: "running", updatedAt: oldStamp }, true, Date.now(), 7) === false);
-		check("live parent never a corpse", registry.isUnclaimableCorpse({ status: "failed", updatedAt: oldStamp }, false, Date.now(), 7) === false);
-		check("corrupt timestamp never hides", registry.isUnclaimableCorpse({ status: "failed", updatedAt: "not-a-date" }, true, Date.now(), 7) === false);
-		check("zero threshold disables hiding", registry.isUnclaimableCorpse({ status: "failed", updatedAt: oldStamp }, true, Date.now(), 0) === false);
-		check("wider threshold keeps showing", registry.isUnclaimableCorpse({ status: "failed", updatedAt: oldStamp }, true, Date.now(), 30) === false);
+		const hide = (finishedAt, seen, now) => registry.hideUncollectedRow({ finishedAt, updatedAt: finishedAt }, seen, now, Date.now(), gate);
+		check("old row with enough turns hides", hide(oldStamp, 0, 5) === true);
+		check("old row with few turns shows", hide(oldStamp, 0, 4) === false);
+		check("fresh row with many turns shows", hide(freshStamp, 0, 99) === false);
+		check("never-observed row shows", registry.hideUncollectedRow({ finishedAt: oldStamp, updatedAt: oldStamp }, undefined, 99, Date.now(), gate) === false);
+		check("corrupt timestamp never hides", registry.hideUncollectedRow({ finishedAt: "not-a-date", updatedAt: "not-a-date" }, 0, 99, Date.now(), gate) === false);
+		check("zero thresholds hide at once", registry.hideUncollectedRow({ finishedAt: freshStamp, updatedAt: freshStamp }, 7, 7, Date.now(), { hideAfterMinutes: 0, hideAfterParentTurns: 0 }) === true);
 	}
 
 	// --- actionable run IDs ---
@@ -1336,10 +1336,12 @@ function check(name, cond, extra) {
 		else process.env.PI_SUBAGENT_ROOT_ID = savedOfflineRoot;
 		if (savedOfflineDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = savedOfflineDir;
-		// Unclaimable corpses (terminal, parent settled, older than the hide
-		// threshold) stay out of untargeted checks; explicit targets bypass.
+		// Uncollected terminal rows older than the hide gate (10min terminal AND
+		// 5 parent turns since) stay out of untargeted checks; explicit targets
+		// bypass. Stamps land on the first check, so one check shows the old
+		// row, five settled turns hide it on the next, the fresh row stays.
 		const corpseDir = path.join(sandbox, "corpse-agent");
-		const corpseOld = new Date(Date.now() - 8 * 86400000).toISOString();
+		const corpseOld = new Date(Date.now() - 11 * 60000).toISOString();
 		registry.saveRecord(corpseDir, meshMk("corpse-mid", "corpse-anchor", { name: "mid", status: "completed", rootRunId: "corpse-anchor", updatedAt: corpseOld }));
 		registry.saveRecord(corpseDir, meshMk("corpse-old", "corpse-mid", { name: "old-kid", status: "failed", rootRunId: "corpse-anchor", updatedAt: corpseOld }));
 		registry.saveRecord(corpseDir, meshMk("corpse-fresh", "corpse-mid", { name: "fresh-kid", status: "failed", rootRunId: "corpse-anchor" }));
@@ -1353,11 +1355,15 @@ function check(name, cond, extra) {
 		process.env.PI_CODING_AGENT_DIR = corpseDir;
 		subagentsExtension({ ...checkPi, on: (event, handler) => corpseHandlers.set(event, handler), registerTool: (tool) => corpseTools.set(tool.name, tool), sendMessage: async () => {} });
 		await corpseHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "corpse-anchor" }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+		const rowNames = (result) => (result.details?.records ?? []).map((record) => record.name);
+		const corpseFirst = await corpseTools.get("check_subagents").execute("corpse-first", {}, undefined, undefined, {});
+		check("first check stamps but still shows the old row", rowNames(corpseFirst).includes("old-kid"), JSON.stringify(rowNames(corpseFirst)));
+		for (let turn = 0; turn < 5; turn++) await corpseHandlers.get("agent_settled")({});
 		const corpseCheck = await corpseTools.get("check_subagents").execute("corpse-check", {}, undefined, undefined, {});
-		check("untargeted check hides the old corpse", !corpseCheck.content[0].text.includes("old-kid"), corpseCheck.content[0].text.slice(0, 600));
-		check("untargeted check keeps the fresh orphan", corpseCheck.content[0].text.includes("fresh-kid"), corpseCheck.content[0].text.slice(0, 600));
+		check("untargeted check hides the old row after five turns", !rowNames(corpseCheck).includes("old-kid"), JSON.stringify(rowNames(corpseCheck)));
+		check("untargeted check keeps the fresh orphan", rowNames(corpseCheck).includes("fresh-kid"), JSON.stringify(rowNames(corpseCheck)));
 		const corpseTargeted = await corpseTools.get("check_subagents").execute("corpse-targeted", { targets: ["old-kid"] }, undefined, undefined, {});
-		check("explicit targets bypass corpse hiding", corpseTargeted.content[0].text.includes("old-kid"), corpseTargeted.content[0].text.slice(0, 600));
+		check("explicit targets bypass corpse hiding", rowNames(corpseTargeted).includes("old-kid"), JSON.stringify(rowNames(corpseTargeted)));
 		if (savedCorpseRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
 		else process.env.PI_SUBAGENT_RUN_ID = savedCorpseRun;
 		if (savedCorpseRoot === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;

@@ -10,7 +10,7 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
-import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, isUnclaimableCorpse, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, markMeshOffline, clearMeshOffline, readMeshOffline, type ReloadInterruptMarker } from "./registry.ts";
+import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, hideUncollectedRow, type UncollectedHideGate, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, markMeshOffline, clearMeshOffline, readMeshOffline, type ReloadInterruptMarker } from "./registry.ts";
 import { deliverMeshMessage, startMeshServer, meshSocketDir, meshSocketPath, sanitizeRunId, sendMeshMessage, sweepStaleSockets, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
@@ -103,6 +103,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	let sessionAbort = new AbortController();
 	let shuttingDown = false;
 	let agentActive = false;
+	/** Parent turns this session has completed (drives uncollected-row hiding). */
+	let completedParentTurns = 0;
+	/** First-seen-terminal stamps (this session's turn count) for hide aging. */
+	const firstSeenTerminal = new Map<string, number>();
 	let isIdle: (() => boolean) | undefined;
 	let delivering = false;
 	let deliveryPaused = false;
@@ -415,6 +419,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	});
 	pi.on("agent_settled", () => {
 		agentActive = false;
+		completedParentTurns++;
 		if (activeSignal?.aborted) deliveryPaused = true;
 		if (!deliveryPaused) scheduleDelivery(0);
 		void flushMeshParked();
@@ -584,7 +589,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			"subagents",
 			(tui, theme) => {
 				widget?.dispose();
-				widget = new SubagentStatusWidget(tui, theme, getAgentDir(), runtime!.runId, runtime!.settings.hideUnclaimableAfterDays ?? 7);
+				widget = new SubagentStatusWidget(tui, theme, getAgentDir(), runtime!.runId, {
+				hideAfterMinutes: runtime!.settings.hideUncollectedAfterMinutes ?? 10,
+				hideAfterTurns: runtime!.settings.hideUncollectedAfterParentTurns ?? 5,
+				parentTurns: () => completedParentTurns,
+			});
 				return widget;
 			},
 			{ placement: "belowEditor" },
@@ -1038,15 +1047,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				});
 			}
 			// Refresh before claiming results so auto-delivery that happened while
-			// waiting is not repeated by this check. Unclaimable corpses
-			// (terminal, parent settled, older than the hide threshold) stay
-			// out of every row: resume would refuse them, so listing them
-			// only invites a dead-end action. Records and audits are untouched.
-			const hideAfterDays = runtime!.settings.hideUnclaimableAfterDays ?? 7;
-			const parentsById = new Map(getCachedRecords(agentDir).map((record) => [record.runId, record]));
+			// waiting is not repeated by this check. Uncollected terminal rows
+			// older than the hide gate stay out of untargeted rows: stale rows
+			// only invite dead-end actions. Records and audits are untouched.
+			const hideGate: UncollectedHideGate = {
+				hideAfterMinutes: runtime!.settings.hideUncollectedAfterMinutes ?? 10,
+				hideAfterParentTurns: runtime!.settings.hideUncollectedAfterParentTurns ?? 5,
+			};
 			const rows = targetIds ? snapshot() : snapshot().filter((record) => {
-				const parent = parentsById.get(record.parentRunId);
-				return !isUnclaimableCorpse(record, !!parent && isTerminalStatus(parent.status), Date.now(), hideAfterDays);
+				if (!isTerminalStatus(record.status) || record.resultsDelivered) return true;
+				if (!firstSeenTerminal.has(record.runId)) firstSeenTerminal.set(record.runId, completedParentTurns);
+				return !hideUncollectedRow(record, firstSeenTerminal.get(record.runId), completedParentTurns, Date.now(), hideGate);
 			});
 			// This session owns delivery only for its direct children. Descendant
 			// results remain visible, but their direct parent must claim them.
