@@ -2,6 +2,7 @@
 // Run: node subagents.test.cjs
 const { execSync, execFileSync, spawn: spawnProcess } = require("node:child_process");
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -69,6 +70,7 @@ function check(name, cond, extra) {
 	const wait = await jiti.import(path.join(HERE, "wait.ts"));
 	const cost = await jiti.import(path.join(HERE, "cost.ts"));
 	const { SubagentStatusWidget, POLL_MS } = await jiti.import(path.join(HERE, "widget.ts"));
+	const mesh = await jiti.import(path.join(HERE, "mesh.ts"));
 	const { default: subagentsExtension } = await jiti.import(path.join(HERE, "index.ts"));
 
 	// --- config ---
@@ -1132,6 +1134,27 @@ function check(name, cond, extra) {
 		const grandSend = meshTools.grand.get("send_to_subagent");
 		await grandSend.execute("mesh-sibling", { target: "../mesh-aunt", message: "sibling hello" }, undefined, undefined, {});
 		check("sibling message arrives", await until(() => meshSends.aunt.some((s) => String(s.message.content).includes("sibling hello"))), JSON.stringify(meshSends.aunt));
+		// Duplicate envelope ids inject once (failover retry must not double-deliver).
+		const dupeFrame = `${JSON.stringify({ v: 1, type: "steer", from: "mesh-aunt", to: "mesh-grand", id: "dupe-probe-1", seq: 4242, payload: { text: "dupe hello" } })}\n`;
+		const dupeSendsBase = meshSends.grand.length;
+		const dupeAuditBase = registry.readAgentMessages(meshAgentDir, "mesh-grand").length;
+		await new Promise((resolveDupe, rejectDupe) => {
+			let acks = "";
+			const sock = net.createConnection(mesh.meshSocketPath(mesh.meshSocketDir(meshAgentDir), "mesh-grand"));
+			sock.on("error", rejectDupe);
+			sock.on("data", (chunk) => {
+				acks += chunk.toString();
+				if ((acks.match(/"ack"/g) || []).length >= 2) { sock.end(); resolveDupe(true); }
+			});
+			sock.on("connect", () => { sock.write(dupeFrame); sock.write(dupeFrame); });
+		});
+		check("duplicate envelope acked twice", await until(() => meshSends.grand.length >= dupeSendsBase + 1), JSON.stringify(meshSends.grand.length));
+		// Give the duplicate full room through record-lock serialization,
+		// then assert singularity (a bare tick races the lock handoff).
+		await until(() => meshSends.grand.length >= dupeSendsBase + 2);
+		check("duplicate envelope injects once", meshSends.grand.length === dupeSendsBase + 1, JSON.stringify(meshSends.grand.length));
+		await until(() => registry.readAgentMessages(meshAgentDir, "mesh-grand").length >= dupeAuditBase + 2);
+		check("duplicate envelope audits once", registry.readAgentMessages(meshAgentDir, "mesh-grand").length === dupeAuditBase + 1, JSON.stringify(registry.readAgentMessages(meshAgentDir, "mesh-grand").length));
 		// Terminal resume keeps the original parent (no adoption).
 		const savedCommand = process.env.PI_SUBAGENT_COMMAND;
 		const savedDelay = process.env.FAKE_DELAY_MS;

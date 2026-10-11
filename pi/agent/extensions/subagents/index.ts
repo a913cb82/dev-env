@@ -221,8 +221,20 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			await injectMeshNow(next.from, next.mode, next.text);
 		}
 	};
+	// Recently seen inbound mesh envelope ids. The sender retries after any
+	// transport failure, so the same envelope can arrive twice (both copies
+	// are ACKed); the second copy must not audit, park, or inject again.
+	// Bounded: insertion-ordered, the oldest id goes past the cap.
+	const seenMeshIds = new Set<string>();
+	const SEEN_MESH_ID_CAP = 200;
 	const handleMeshMessage = (envelope: MeshEnvelope) => {
 		if (!runtime || shuttingDown) return;
+		if (seenMeshIds.has(envelope.id)) return;
+		seenMeshIds.add(envelope.id);
+		if (seenMeshIds.size > SEEN_MESH_ID_CAP) {
+			const oldest = seenMeshIds.values().next().value;
+			if (oldest !== undefined) seenMeshIds.delete(oldest);
+		}
 		if (envelope.type === "settled") {
 			notifyWaiters(getAgentDir());
 			scheduleDelivery(0);
