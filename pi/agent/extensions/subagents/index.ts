@@ -15,6 +15,7 @@ import { deliverMeshMessage, startMeshServer, meshSocketDir, meshSocketPath, sen
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
+	type SubagentSendChannel,
 	cancelSubagent,
 	gate,
 	killPidTree,
@@ -637,7 +638,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 		mode: SubagentMessageMode = "steer",
 		ctx?: { cwd: string; scopedModels: Array<{ model: { provider: string; id: string }; thinkingLevel?: string }>; ui: any },
-	): Promise<{ resumed: boolean; queued?: boolean }> => {
+	): Promise<{ resumed: boolean; queued?: boolean; channel?: SubagentSendChannel }> => {
 		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
 		mode = normalizeMessageMode(mode);
 		signal = signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal;
@@ -647,7 +648,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		// Any tree node except this session is addressable: owned children
 		// use the direct RPC channel, everything else the socket mesh.
 		if (!isTerminalStatus(current.status)) {
-			if (await sendSubagentMessage(current, text, signal, mode, sender)) return { resumed: false };
+			const channel = await sendSubagentMessage(current, text, signal, mode, sender);
+			if (channel) return { resumed: false, channel };
 			current = latestRecord(record);
 			if (!isTerminalStatus(current.status)) {
 				if (current.status === "queued" || current.status === "starting") {
@@ -1059,14 +1061,19 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					// Audit is best effort; delivery already succeeded.
 				}
 				return {
-					content: [{ type: "text", text: `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to the root session.` }],
+					content: [{ type: "text", text: `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to the root session: received, delivers when it idles.` }],
 					details: {},
 				};
 			}
 			const record = resolved.record;
-			const { resumed, queued } = await sendToRecord(record, params.message, signal, mode, ctx);
+			const { resumed, queued, channel } = await sendToRecord(record, params.message, signal, mode, ctx);
+			const kind = mode === "followUp" ? "follow-up" : "steering";
+			const receipt = resumed ? `Resumed ${record.name} from its transcript with a new execution.`
+				: queued || channel === "starting" ? `Queued message for ${record.name} (not running yet; delivers when its session starts).`
+				: channel === "live" ? `Sent ${kind} message to ${record.name} over its live channel (applies on its next turn).`
+				: `Sent ${kind} message to ${record.name}: received, delivers when it idles.`;
 			return {
-				content: [{ type: "text", text: resumed ? `Resumed ${record.name} from its transcript with a new execution.` : queued ? `Queued message for ${record.name} (not running yet; delivers when its session starts).` : `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to ${record.name}.` }],
+				content: [{ type: "text", text: receipt }],
 				details: { record },
 			};
 		},

@@ -153,19 +153,22 @@ function fireSettled(context: SpawnContext, record: AgentRecord): void {
  * them via a fresh process from the saved transcript; unreachable
  * non-terminal children also return false after a bounded socket wait so
  * the caller can park (queued/starting) or fail (running) explicitly. */
-export async function sendSubagentMessage(record: AgentRecord, message: string, signal?: AbortSignal, mode: SubagentMessageMode = "steer", sender?: MeshSender): Promise<boolean> {
+/** Which transport carried a subagent message: the owned live RPC channel,
+ * the starting-process queue, or the socket mesh. `false` means undelivered. */
+export type SubagentSendChannel = "live" | "starting" | "mesh";
+export async function sendSubagentMessage(record: AgentRecord, message: string, signal?: AbortSignal, mode: SubagentMessageMode = "steer", sender?: MeshSender): Promise<SubagentSendChannel | false> {
 	if (signal?.aborted) throw new Error("Subagent message was aborted");
 	mode = normalizeMessageMode(mode);
 	if (isTerminalStatus(record.status)) return false;
 	const live = liveChildren.get(record.runId);
 	if (live) {
 		await live.sendMessage(message, signal, mode);
-		return true;
+		return "live";
 	}
 	const startup = startingChildren.get(record.runId);
 	if (startup) {
 		startup.messages.push({ text: message, mode });
-		return true;
+		return "starting";
 	}
 	if (!sender) return false;
 	try {
@@ -178,7 +181,7 @@ export async function sendSubagentMessage(record: AgentRecord, message: string, 
 			waitMs: sender.waitMs,
 			signal,
 		});
-		return true;
+		return "mesh";
 	} catch {
 		return false;
 	}

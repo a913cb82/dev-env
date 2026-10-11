@@ -1171,6 +1171,11 @@ function check(name, cond, extra) {
 		const grandSend = meshTools.grand.get("send_to_subagent");
 		await grandSend.execute("mesh-sibling", { target: "../mesh-aunt", message: "sibling hello" }, undefined, undefined, {});
 		check("sibling message arrives", await until(() => meshSends.aunt.some((s) => String(s.message.content).includes("sibling hello"))), JSON.stringify(meshSends.aunt));
+		// Receipts name the transport honestly (mesh receipt, not blind "sent").
+		const meshReceipt = await meshSend.execute("mesh-receipt", { target: "mesh-aunt", message: "receipt check" }, undefined, undefined, {});
+		check("mesh send receipt promises receipt not delivery", meshReceipt.content[0].text.includes("received") && meshReceipt.content[0].text.includes("idles"), meshReceipt.content[0].text);
+		const meshFollowReceipt = await meshSend.execute("mesh-receipt-follow", { target: "mesh-aunt", mode: "followUp", message: "receipt follow" }, undefined, undefined, {});
+		check("mesh follow-up receipt keeps the mode word", meshFollowReceipt.content[0].text.includes("follow-up") && meshFollowReceipt.content[0].text.includes("received"), meshFollowReceipt.content[0].text);
 		// Duplicate envelope ids inject once (failover retry must not double-deliver).
 		const dupeFrame = `${JSON.stringify({ v: 1, type: "steer", from: "mesh-aunt", to: "mesh-grand", id: "dupe-probe-1", seq: 4242, payload: { text: "dupe hello" } })}\n`;
 		const dupeSendsBase = meshSends.grand.length;
@@ -1906,7 +1911,7 @@ function check(name, cond, extra) {
 	check("finished child resumes as a new execution", polled && polled.executionId !== finishedExec && polled.status === "completed", polled && `${polled.status} ${polled.executionId === finishedExec}`);
 
 	// followUp mode to a running child: accepted, queued behind current work.
-	process.env.FAKE_DELAY_MS = "800";
+	process.env.FAKE_DELAY_MS = "3000";
 	const followRec = await spawn.startSubagent({ task: "follow-me", name: "follow-child" }, baseCtx());
 	let followRow;
 	for (let i = 0; i < 100; i++) {
@@ -1914,11 +1919,52 @@ function check(name, cond, extra) {
 		if (followRow && ["thinking", "running_tool"].includes(followRow.status)) break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
+	// Tool-level receipt over the owned live channel. NOTE: jiti loads one
+	// module copy per import, so the direct-spawn copy (spawn.*) and the
+	// tool copy (index.*) keep separate live maps. A tool-level live send
+	// needs a tool-level spawn: same module copy, live map shared.
+	// Session start here is side-effect free: prune thresholds are
+	// days/counts, and no reload markers exist in the spawn dir.
+	const liveProbeTools = new Map();
+	const liveProbeHandlers = new Map();
+	const savedProbeRun = process.env.PI_SUBAGENT_RUN_ID;
+	const savedProbeRoot = process.env.PI_SUBAGENT_ROOT_ID;
+	const savedProbeDir = process.env.PI_CODING_AGENT_DIR;
+	const savedProbeCmd = process.env.PI_SUBAGENT_COMMAND;
+	const savedProbeDelay = process.env.FAKE_DELAY_MS;
+	process.env.PI_SUBAGENT_RUN_ID = "parent";
+	process.env.PI_SUBAGENT_ROOT_ID = "parent";
+	process.env.PI_CODING_AGENT_DIR = spawnAgentDir;
+	process.env.PI_SUBAGENT_COMMAND = path.join(HERE, "fake-pi.cjs");
+	process.env.FAKE_DELAY_MS = "30000";
+	subagentsExtension({ ...checkPi, on: (event, handler) => liveProbeHandlers.set(event, handler), registerTool: (tool) => liveProbeTools.set(tool.name, tool), sendMessage: async () => {} });
+	await liveProbeHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "parent" }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+	const liveSpawnCtx = { cwd: sandbox, scopedModels: [], ui: {}, model: { provider: "fake", id: "probe" } };
+	await liveProbeTools.get("spawn_agent").execute("live-spawn", { task: "live-receipt-me", name: "live-receipt-child" }, undefined, undefined, liveSpawnCtx);
+	let liveProbeRow;
+	for (let i = 0; i < 200; i++) {
+		liveProbeRow = registry.readRecords(spawnAgentDir).find((r) => r.name === "live-receipt-child");
+		if (liveProbeRow && ["thinking", "running_tool"].includes(liveProbeRow.status)) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	const followToolReceipt = await liveProbeTools.get("send_to_subagent").execute("send-live-receipt", { target: "me/live-receipt-child", message: "live check" }, undefined, undefined, liveSpawnCtx);
+	await liveProbeTools.get("cancel_subagent").execute("send-live-cancel", { target: "me/live-receipt-child" }, undefined, undefined, {});
+	if (savedProbeRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+	else process.env.PI_SUBAGENT_RUN_ID = savedProbeRun;
+	if (savedProbeRoot === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
+	else process.env.PI_SUBAGENT_ROOT_ID = savedProbeRoot;
+	if (savedProbeDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = savedProbeDir;
+	if (savedProbeCmd === undefined) delete process.env.PI_SUBAGENT_COMMAND;
+	else process.env.PI_SUBAGENT_COMMAND = savedProbeCmd;
+	if (savedProbeDelay === undefined) delete process.env.FAKE_DELAY_MS;
+	else process.env.FAKE_DELAY_MS = savedProbeDelay;
+	check("live send receipt names the live channel", followToolReceipt.content[0].text.includes("live channel") && followToolReceipt.content[0].text.includes("live-receipt-child"), followToolReceipt.content[0].text);
 	const followAccepted = await spawn.sendSubagentMessage(followRow, "after your work", undefined, "followUp");
 	delete process.env.FAKE_DELAY_MS;
-	check("followUp to a running child is accepted", followAccepted === true);
+	check("followUp to a running child is accepted", followAccepted === "live", String(followAccepted));
 	let followDone;
-	for (let i = 0; i < 100; i++) {
+	for (let i = 0; i < 300; i++) {
 		followDone = registry.readRecords(spawnAgentDir).find((r) => r.runId === followRec.runId);
 		if (followDone?.status === "completed" && followDone.latestText === "steered: after your work") break;
 		await new Promise((r) => setTimeout(r, 50));
@@ -2234,14 +2280,14 @@ function check(name, cond, extra) {
 	const steerPromise = spawn.sendSubagentMessage(queuedRec, "queued steer");
 	void steerPromise.then((accepted) => { steerParked = accepted; });
 	await tick();
-	check("steering a queued child returns immediately", steerParked === true);
+	check("steering a queued child returns immediately", steerParked === "starting", String(steerParked));
 	const queuedAccepted = await steerPromise;
 	const queuedFollowRec = await spawn.startSubagent(
 		{ task: "qf", name: "queued-follow" },
 		{ ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 } },
 	);
 	const queuedFollowAccepted = await spawn.sendSubagentMessage(queuedFollowRec, "queued followup", undefined, "followUp");
-	check("followUp to a queued child is retained with its mode", queuedFollowAccepted === true);
+	check("followUp to a queued child is retained with its mode", queuedFollowAccepted === "starting", String(queuedFollowAccepted));
 	held();
 	for (let i = 0; i < 100; i++) {
 		polled = registry.readRecords(spawnAgentDir).find((r) => r.runId === queuedRec.runId);
