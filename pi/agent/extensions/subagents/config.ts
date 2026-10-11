@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS: SubagentSettings = {
 	pruneDeliveredKeep: 50,
 	pruneUndeliveredAfterDays: 30,
 	pruneUndeliveredKeep: 500,
+	hideUnclaimableAfterDays: 7,
 };
 
 export const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -103,6 +104,9 @@ function validate(raw: RawSettings, source: string): RawSettings {
 	}
 	if (raw.pruneUndeliveredKeep !== undefined) {
 		result.pruneUndeliveredKeep = pruneKeep(raw.pruneUndeliveredKeep, `${source}.pruneUndeliveredKeep`);
+	}
+	if (raw.hideUnclaimableAfterDays !== undefined) {
+		result.hideUnclaimableAfterDays = pruneDays(raw.hideUnclaimableAfterDays, `${source}.hideUnclaimableAfterDays`);
 	}
 	return result;
 }

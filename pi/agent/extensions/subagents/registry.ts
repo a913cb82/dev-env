@@ -259,6 +259,19 @@ export function clearMeshOffline(agentDir: string, runId: string): void {
 	rmSync(meshOfflinePath(agentDir, runId), { force: true });
 }
 
+/** Whether a terminal row is an unclaimable corpse: its parent already
+ * settled, so resuming is refused and no live claimant can collect it.
+ * Display-only predicate (check rows, footer): records and audits stay.
+ * A corrupt or missing timestamp never hides (conservative). */
+export function isUnclaimableCorpse(record: AgentRecord, parentTerminal: boolean, nowMs: number, hideAfterDays: number): boolean {
+	if (!isTerminalStatus(record.status)) return false;
+	if (!parentTerminal) return false;
+	if (!(hideAfterDays > 0)) return false;
+	const updated = Date.parse(record.updatedAt);
+	if (Number.isNaN(updated)) return false;
+	return nowMs - updated > hideAfterDays * 86400000;
+}
+
 /** Read this run's mesh-offline marker (absent or corrupt reads as undefined). */
 export function readMeshOffline(agentDir: string, runId: string): MeshOfflineMarker | undefined {
 	try {

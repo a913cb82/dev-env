@@ -84,6 +84,17 @@ function check(name, cond, extra) {
 	// Disk half of durable observation: a dismissal sidecar survives fresh
 	// processes, so quit+resume restores it (the startup path that dropped it
 	// took the viewer from an uninitialized runtime - now explicit).
+	// Unclaimable corpses (terminal, parent settled, older than the hide
+	// threshold) stay out of the footer; fresh orphans still show.
+	const weekAgo = new Date(Date.now() - 8 * 86400000).toISOString();
+	registry.saveRecord(dir, { ...rec("oldp", "me", "completed", 1), updatedAt: weekAgo });
+	registry.saveRecord(dir, { ...rec("oldc", "oldp", "failed", 2), updatedAt: weekAgo });
+	registry.saveRecord(dir, rec("freshc", "oldp", "failed", 2));
+	const foot2 = new widget.SubagentStatusWidget(tui, theme, dir, "me");
+	const lines2 = foot2.render(200);
+	check("footer hides the old corpse", !lines2.some((line) => line.includes("oldc")), JSON.stringify(lines2));
+	check("footer keeps the fresh orphan", lines2.some((line) => line.includes("freshc")), JSON.stringify(lines2));
+	foot2.dispose();
 	const dismissed = registry.readRecords(dir).find((r) => r.runId === "bot");
 	registry.markFooterDismissed(dir, dismissed, "me", "dismissal-key");
 	check("dismissal sidecar persists the key",

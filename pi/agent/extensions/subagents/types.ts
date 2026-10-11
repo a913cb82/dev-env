@@ -69,6 +69,8 @@ export interface SubagentSettings {
 	pruneUndeliveredAfterDays?: number;
 	/** Keep this many newest undelivered runs; excess oldest go past the cap grace floor (default 500, 0 disables). */
 	pruneUndeliveredKeep?: number;
+	/** Hide unclaimable terminal rows (settled parent, resume refused) older than this many days (default 7, 0 disables). Display only; records and audits are untouched. */
+	hideUnclaimableAfterDays?: number;
 }
 
 export interface SpawnAgentInput {

@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { statSync } from "node:fs";
-import { descendantsOf, executionResultKey, getCachedRecords, isTerminalStatus, listFooterDismissed, registryDir } from "./registry.ts";
+import { descendantsOf, executionResultKey, getCachedRecords, isTerminalStatus, isUnclaimableCorpse, listFooterDismissed, registryDir } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
 /** How often the live activity line is refreshed. 2s: the line is passive
@@ -50,6 +50,7 @@ export class SubagentStatusWidget implements Component {
 		private theme: Theme,
 		private readonly agentDir: string,
 		private readonly currentRunId: string,
+		private readonly hideUnclaimableAfterDays: number = 7,
 	) {
 		this.refresh();
 		this.timer = setInterval(() => this.refresh(), POLL_MS);
@@ -89,7 +90,8 @@ export class SubagentStatusWidget implements Component {
 		const all = getCachedRecords(this.agentDir);
 		const byId = new Map(all.map((record) => [record.runId, record]));
 		const visible = descendantsOf(all, this.currentRunId).filter(
-			(record) => !(isTerminalStatus(record.status) && (record.resultsDelivered || dismissed.has(executionResultKey(record)))),
+			(record) => !(isTerminalStatus(record.status) && (record.resultsDelivered || dismissed.has(executionResultKey(record))))
+				&& !isUnclaimableCorpse(record, (() => { const parent = byId.get(record.parentRunId); return !!parent && isTerminalStatus(parent.status); })(), Date.now(), this.hideUnclaimableAfterDays),
 		);
 		// Keep every visible row's ancestry: a live grandchild must never
 		// render as a root-level run after its parents are collected.
