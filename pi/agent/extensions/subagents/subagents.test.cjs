@@ -1215,7 +1215,7 @@ function check(name, cond, extra) {
 		const deepSteer = await meshSend.execute("mesh-steer", { target: "/mesh-child/mesh-grand", message: "deep hello" }, undefined, undefined, {});
 		check("deep steer sent", deepSteer.content[0].text.includes("grand"), deepSteer.content[0].text);
 		check("deep steer arrives at target runtime", await until(() => meshSends.grand.some((s) => String(s.message.content).includes("deep hello"))), JSON.stringify(meshSends.grand));
-		check("deep mesh steer arrives as follow-up", meshSends.grand.some((s) => s.options && s.options.deliverAs === "followUp"), JSON.stringify(meshSends.grand.map((s) => s.options)));
+		check("deep steer keeps its mode", meshSends.grand.some((s) => s.options && s.options.deliverAs === "steer"), JSON.stringify(meshSends.grand.map((s) => s.options)));
 		const deepFollow = await meshSend.execute("mesh-follow", { target: "mesh-grand", mode: "followUp", message: "queued hello" }, undefined, undefined, {});
 		check("deep follow-up sent", deepFollow.content[0].text.includes("follow-up"), deepFollow.content[0].text);
 		check("deep follow-up arrives as followUp", await until(() => meshSends.grand.some((s) => String(s.message.content).includes("queued hello") && s.options && s.options.deliverAs === "followUp")), JSON.stringify(meshSends.grand.map((s) => s.options)));
@@ -1226,9 +1226,12 @@ function check(name, cond, extra) {
 		check("sibling message arrives", await until(() => meshSends.aunt.some((s) => String(s.message.content).includes("sibling hello"))), JSON.stringify(meshSends.aunt));
 		// Receipts name the transport honestly (mesh receipt, not blind "sent").
 		const meshReceipt = await meshSend.execute("mesh-receipt", { target: "mesh-aunt", message: "receipt check" }, undefined, undefined, {});
-		check("mesh send receipt promises receipt not delivery", meshReceipt.content[0].text.includes("received") && meshReceipt.content[0].text.includes("idles"), meshReceipt.content[0].text);
+		check("mesh steer receipt names the tool-call boundary", meshReceipt.content[0].text.includes("received") && meshReceipt.content[0].text.includes("tool call"), meshReceipt.content[0].text);
 		const meshFollowReceipt = await meshSend.execute("mesh-receipt-follow", { target: "mesh-aunt", mode: "followUp", message: "receipt follow" }, undefined, undefined, {});
 		check("mesh follow-up receipt keeps the mode word", meshFollowReceipt.content[0].text.includes("follow-up") && meshFollowReceipt.content[0].text.includes("received"), meshFollowReceipt.content[0].text);
+		// Interrupt without the live channel downgrades to follow-up, honestly.
+		const meshInterruptReceipt = await meshSend.execute("mesh-receipt-interrupt", { target: "mesh-grand", mode: "interrupt", message: "receipt interrupt" }, undefined, undefined, {});
+		check("mesh interrupt downgrades with an honest receipt", meshInterruptReceipt.content[0].text.includes("as follow-up") && meshInterruptReceipt.content[0].text.includes("live channel"), meshInterruptReceipt.content[0].text);
 		// Duplicate envelope ids inject once (failover retry must not double-deliver).
 		const dupeFrame = `${JSON.stringify({ v: 1, type: "steer", from: "mesh-aunt", to: "mesh-grand", id: "dupe-probe-1", seq: 4242, payload: { text: "dupe hello" } })}\n`;
 		const dupeSendsBase = meshSends.grand.length;
@@ -1281,7 +1284,7 @@ function check(name, cond, extra) {
 		// A parked steer downgrades to follow-up on flush: the redirect moment
 		// passed while it waited, and a late steer aborts the target's turn.
 		const parkedFlush = parkSends.find((s) => String(s.message.content).includes("parked hello"));
-		check("parked steer flushes as follow-up", parkedFlush?.options?.deliverAs === "followUp", JSON.stringify(parkedFlush?.options));
+		check("parked steer flushes as steer", parkedFlush?.options?.deliverAs === "steer", JSON.stringify(parkedFlush?.options));
 		check("parked flush never force-triggers", parkedFlush?.options?.triggerTurn !== true, JSON.stringify(parkedFlush?.options));
 		// A mesh steer that finds the target idle downgrades too: mesh senders
 		// never know the target state, so only the live channel may redirect.
@@ -1294,7 +1297,7 @@ function check(name, cond, extra) {
 		});
 		const idleArrived = await until(() => parkSends.some((s) => String(s.message.content).includes("idle hello")));
 		const idleSend = parkSends.find((s) => String(s.message.content).includes("idle hello"));
-		check("idle mesh steer injects as follow-up", idleArrived && idleSend?.options?.deliverAs === "followUp", JSON.stringify(idleSend?.options));
+		check("idle mesh steer injects as steer", idleArrived && idleSend?.options?.deliverAs === "steer", JSON.stringify(idleSend?.options));
 		check("idle inject still triggers the turn", idleArrived && idleSend?.options?.triggerTurn === true, JSON.stringify(idleSend?.options));
 		// Failed binds leave a parent-visible marker, back off across tool
 		// executes (attempts observable in the marker), and clear on recovery.
@@ -2137,6 +2140,51 @@ function check(name, cond, extra) {
 	if (savedProbeDelay === undefined) delete process.env.FAKE_DELAY_MS;
 	else process.env.FAKE_DELAY_MS = savedProbeDelay;
 	check("live send receipt names the live channel", followToolReceipt.content[0].text.includes("live channel") && followToolReceipt.content[0].text.includes("live-receipt-child"), followToolReceipt.content[0].text);
+	check("live steer receipt names the tool-call boundary", followToolReceipt.content[0].text.includes("tool call"), followToolReceipt.content[0].text);
+	// Interrupt stops the tool call first, then delivers: the run continues.
+	const intTools = new Map();
+	const intHandlers = new Map();
+	const savedIntRun = process.env.PI_SUBAGENT_RUN_ID;
+	const savedIntRoot = process.env.PI_SUBAGENT_ROOT_ID;
+	const savedIntDir = process.env.PI_CODING_AGENT_DIR;
+	const savedIntCmd = process.env.PI_SUBAGENT_COMMAND;
+	const savedIntDelay = process.env.FAKE_DELAY_MS;
+	process.env.PI_SUBAGENT_RUN_ID = "int-parent";
+	process.env.PI_SUBAGENT_ROOT_ID = "int-parent";
+	process.env.PI_CODING_AGENT_DIR = spawnAgentDir;
+	process.env.PI_SUBAGENT_COMMAND = path.join(HERE, "fake-pi.cjs");
+	process.env.FAKE_DELAY_MS = "2000";
+	subagentsExtension({ ...checkPi, on: (event, handler) => intHandlers.set(event, handler), registerTool: (tool) => intTools.set(tool.name, tool), sendMessage: async () => {} });
+	await intHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "int-parent" }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+	const intSpawnCtx = { cwd: sandbox, scopedModels: [], ui: {}, model: { provider: "fake", id: "probe" } };
+	await intTools.get("spawn_agent").execute("int-spawn", { task: "int-me", name: "int-child" }, undefined, undefined, intSpawnCtx);
+	let intRow;
+	for (let i = 0; i < 200; i++) {
+		intRow = registry.readRecords(spawnAgentDir).find((r) => r.name === "int-child");
+		if (intRow && ["thinking", "running_tool"].includes(intRow.status)) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	const intReceipt = await intTools.get("send_to_subagent").execute("send-int", { target: "me/int-child", mode: "interrupt", message: "stop that" }, undefined, undefined, intSpawnCtx);
+	delete process.env.FAKE_DELAY_MS;
+	let intDone;
+	for (let i = 0; i < 300; i++) {
+		intDone = registry.readRecords(spawnAgentDir).find((r) => r.name === "int-child");
+		if (intDone && registry.isTerminalStatus(intDone.status)) break;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	if (savedIntRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+	else process.env.PI_SUBAGENT_RUN_ID = savedIntRun;
+	if (savedIntRoot === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
+	else process.env.PI_SUBAGENT_ROOT_ID = savedIntRoot;
+	if (savedIntDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = savedIntDir;
+	if (savedIntCmd === undefined) delete process.env.PI_SUBAGENT_COMMAND;
+	else process.env.PI_SUBAGENT_COMMAND = savedIntCmd;
+	if (savedIntDelay === undefined) delete process.env.FAKE_DELAY_MS;
+	else process.env.FAKE_DELAY_MS = savedIntDelay;
+	check("interrupt receipt promises immediate delivery", intReceipt.content[0].text.includes("Interrupted") && intReceipt.content[0].text.includes("at once"), intReceipt.content[0].text);
+	check("interrupted run continues to completion", intDone?.status === "completed", intDone && `${intDone.status} ${intDone.latestText}`);
+	check("interrupted run processes the message", (intDone?.latestText ?? "").includes("stop that"), intDone && `${intDone.status} ${intDone.latestText}`);
 	const followAccepted = await spawn.sendSubagentMessage(followRow, "after your work", undefined, "followUp");
 	delete process.env.FAKE_DELAY_MS;
 	check("followUp to a running child is accepted", followAccepted === "live", String(followAccepted));
@@ -2185,12 +2233,12 @@ function check(name, cond, extra) {
 	try {
 		await checkTools.get("send_to_subagent").execute("send-bad-mode", { target: followRec.runId, message: "x", mode: "bogus" }, undefined, undefined, {});
 	} catch (error) { invalidModeError = error; }
-	check("invalid send mode rejected", invalidModeError?.message.includes('"steer" or "followUp"'), invalidModeError?.message);
+	check("invalid send mode rejected", invalidModeError?.message.includes('"followUp", or "interrupt"'), invalidModeError?.message);
 	let directModeError;
 	try {
 		await spawn.sendSubagentMessage(followRow, "x", undefined, "bogus");
 	} catch (error) { directModeError = error; }
-	check("invalid direct send mode rejected", directModeError?.message.includes('"steer" or "followUp"'), directModeError?.message);
+	check("invalid direct send mode rejected", directModeError?.message.includes('"followUp", or "interrupt"'), directModeError?.message);
 
 	process.env.FAKE_DELAY_MS = "100";
 	const immediateRec = await spawn.startSubagent({ task: "initial", name: "immediate-child" }, baseCtx());

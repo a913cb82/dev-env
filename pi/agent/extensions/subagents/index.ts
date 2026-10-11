@@ -74,7 +74,7 @@ const SendSchema = Type.Object({
 	target: Type.String({ description: "Tree path, name, run id, or session id. A path can be /a/b, me/child, or ../sibling." }),
 	message: Type.String({ description: "Message for the subagent" }),
 	mode: Type.Optional(Type.String({
-		description: "Message mode. steer asks the target to change direction. followUp waits for the current work. Default steer. A busy target queues both as follow-up. The receipt states the delivery.",
+		description: "Message mode. steer applies after the current tool call. followUp waits for the agent to settle. interrupt stops the current tool call and applies at once. Default steer. The receipt states the delivery.",
 		enum: ["steer", "followUp"],
 	})),
 });
@@ -220,13 +220,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	};
 	/** Parked inbound mesh texts, oldest first. A busy session cannot take
 	 * an injection (the host drops it), so arrivals park here and flush in
-	 * order when the session idles. Bounded: beyond the cap the oldest goes. */
+	 * order. Flush hands them to the host without triggering. The host
+	 * applies steers after the tool call and follow-ups at settle. Bounded:
+	 * beyond the cap the oldest goes. */
 	const meshParked: Array<{ from: string; mode: SubagentMessageMode; text: string }> = [];
 	const MESH_PARK_CAP = 50;
-	/** Inject mesh text into this session as a native followUp message.
-	 * triggerTurn wakes an idle session; it must never fire into a busy one
-	 * (kicked mid-turn targets die), so parked flushes queue silently and let
-	 * the host drain the queue after the current work. */
+	/** Inject mesh text into this session with its own mode. triggerTurn wakes
+	 * an idle session. It kills a busy one, so parked flushes pass false and
+	 * the host applies the message at its boundary. */
 	const injectMeshNow = async (from: string, mode: SubagentMessageMode, text: string, triggerTurn = true) => {
 		try {
 			await pi.sendMessage(
@@ -251,19 +252,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			meshParked.push({ from, mode, text });
 			return;
 		}
-		// Mesh senders never know the target's exact state (the socket hop is
-		// async), so a mesh steer can land mid-turn and abort it — healthy
-		// sessions settled `cancelled`. Only the live owned-child channel
-		// (spawn-agent's direct sendMessage, never this funnel) may redirect.
-		await injectMeshNow(from, mode === "steer" ? "followUp" : mode, text);
+		// Mesh senders never see the target state across the socket hop, so
+		// this funnel never aborts. Aborts use the live channel only.
+		await injectMeshNow(from, mode, text);
 	};
-	/** Flush parked inbound mesh texts in order while the session idles.
-	 * Parked modes downgrade like the direct path (see injectMeshText): by
-	 * flush time the sender's redirect context is certainly stale. */
+	/** Flush parked inbound mesh texts in order. Modes pass through: the host
+	 * applies each message at its boundary. triggerTurn stays false: a
+	 * parked message arrives late, so it must never force a turn. */
 	const flushMeshParked = async () => {
 		while (meshParked.length > 0 && !shuttingDown && runtime && (!isIdle || isIdle())) {
 			const next = meshParked.shift()!;
-			await injectMeshNow(next.from, next.mode === "steer" ? "followUp" : next.mode, next.text, false);
+			await injectMeshNow(next.from, next.mode, next.text, false);
 		}
 	};
 	// Recently seen inbound mesh envelope ids. The sender retries after any
@@ -373,7 +372,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	};
 
 	const deliverResults = async () => {
-		// Steering pings may interrupt active work: the parent decides whether to
+		// Result pings can arrive during active work: the parent decides whether to
 		// address a finish straight away or keep working and pull via check_subagents.
 		if (!runtime || shuttingDown || delivering || deliveryPaused) return;
 		const agentDir = getAgentDir();
@@ -1110,7 +1109,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "send_to_subagent",
 		label: "Send to Subagent",
-		description: "Send a message to any subagent except your own session. Address it by path, name, run id, or session id. A running session gets the message in place. A finished session resumes from its transcript. A queued session gets the message at start. A busy session queues the message as a follow-up. It never interrupts the busy session.",
+		description: "Send a message to any subagent except your own session. Address it by path, name, run id, or session id. Steer applies after the target's current tool call. followUp waits for the target to settle. interrupt stops the target's tool call and applies at once. It needs the live channel. A finished session resumes from its transcript. A queued session gets the message at start.",
 		promptSnippet: "Message any subagent",
 		parameters: SendSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -1140,17 +1139,27 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					// Audit is best effort; delivery already succeeded.
 				}
 				return {
-					content: [{ type: "text", text: `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to the root session: received, delivers when it idles.` }],
+					content: [{ type: "text", text: mode === "followUp"
+						? `Sent follow-up message to the root session: received, delivers when it settles.`
+						: `Sent steering message to the root session: received, delivers after its current tool call.` }],
 					details: {},
 				};
 			}
 			const record = resolved.record;
 			const { resumed, queued, channel } = await sendToRecord(record, params.message, signal, mode, ctx);
-			const kind = mode === "followUp" ? "follow-up" : "steering";
+			const liveDelivery = mode === "followUp"
+				? `Sent follow-up message to ${record.name} over its live channel. It waits for the agent to settle.`
+				: `Sent steering message to ${record.name} over its live channel. It applies after the current tool call.`;
+			const meshDelivery = mode === "followUp"
+				? `Sent follow-up message to ${record.name}: received, delivers when it settles.`
+				: `Sent steering message to ${record.name}: received, delivers after its current tool call.`;
 			const receipt = resumed ? `Resumed ${record.name} from its transcript with a new execution.`
+				: channel === "stopped" ? `Interrupted ${record.name}, but it stopped before the message landed.`
+				: mode === "interrupt" && channel === "live" ? `Interrupted ${record.name}. The message applies at once.`
+				: mode === "interrupt" ? `Queued for ${record.name} as follow-up. Interrupt needs the live channel.`
 				: queued || channel === "starting" ? `Queued message for ${record.name}. It is not running yet. It delivers when its session starts.`
-				: channel === "live" ? `Sent ${kind} message to ${record.name} over its live channel. It applies on its next turn.`
-				: `Sent ${kind} message to ${record.name}: received, delivers when it idles.`;
+				: channel === "live" ? liveDelivery
+				: meshDelivery;
 			return {
 				content: [{ type: "text", text: receipt }],
 				details: { record },

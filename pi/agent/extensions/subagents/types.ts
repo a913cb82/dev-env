@@ -95,12 +95,12 @@ export interface SpawnAgentInput {
  * call) and follow-up (`followUp`: queued until current work finishes)
  * queueing. Transported as `prompt` + `streamingBehavior` so an idle child
  * starts a turn instead of stranding the message in a queue no run drains. */
-export type SubagentMessageMode = "steer" | "followUp";
+export type SubagentMessageMode = "steer" | "followUp" | "interrupt";
 
 export function normalizeMessageMode(value: unknown): SubagentMessageMode {
 	if (value === undefined) return "steer";
-	if (value === "steer" || value === "followUp") return value;
-	throw new Error(`Subagent message mode must be "steer" or "followUp", got ${JSON.stringify(value)}`);
+	if (value === "steer" || value === "followUp" || value === "interrupt") return value;
+	throw new Error(`Subagent message mode must be "steer", "followUp", or "interrupt", got ${JSON.stringify(value)}`);
 }
 
 export const EMPTY_USAGE: UsageSummary = {

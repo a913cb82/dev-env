@@ -147,19 +147,46 @@ function fireSettled(context: SpawnContext, record: AgentRecord): void {
 }
 
 /** Send to any live session: owned children use the direct RPC channel,
- * everything else goes over the socket mesh. Mode selects pi-native
- * delivery: `steer` (default) redirects current work, `followUp` queues
- * behind it. Terminal children always return false so the caller resumes
- * them via a fresh process from the saved transcript; unreachable
+ * everything else goes over the socket mesh. `steer` (default) applies after
+ * the current tool call, `followUp` waits for settle, `interrupt` stops the
+ * tool call first. `interrupt` works only over the live channel: elsewhere it
+ * behaves as `followUp`. Terminal children always return false so the caller
+ * resumes them via a fresh process from the saved transcript; unreachable
  * non-terminal children also return false after a bounded socket wait so
  * the caller can park (queued/starting) or fail (running) explicitly. */
 /** Which transport carried a subagent message: the owned live RPC channel,
  * the starting-process queue, or the socket mesh. `false` means undelivered. */
 export type SubagentSendChannel = "live" | "starting" | "mesh";
-export async function sendSubagentMessage(record: AgentRecord, message: string, signal?: AbortSignal, mode: SubagentMessageMode = "steer", sender?: MeshSender): Promise<SubagentSendChannel | false> {
+export async function sendSubagentMessage(record: AgentRecord, message: string, signal?: AbortSignal, mode: SubagentMessageMode = "steer", sender?: MeshSender): Promise<SubagentSendChannel | "stopped" | false> {
 	if (signal?.aborted) throw new Error("Subagent message was aborted");
 	mode = normalizeMessageMode(mode);
 	if (isTerminalStatus(record.status)) return false;
+	// Interrupt stops the tool call first, then delivers. Send first so the
+	// message waits in the queue, then abort: the abort drops the tool call
+	// and the queue drains into the new turn. Abort first would settle an
+	// idle session before the message arrives. Only the live channel may
+	// abort: elsewhere interrupt behaves as followUp.
+	if (mode === "interrupt") {
+		const live = liveChildren.get(record.runId);
+		if (live && ownedChildren.has(record.runId) && (record.status === "thinking" || record.status === "running_tool")) {
+			try {
+				await live.sendMessage(message, signal, "steer");
+			} catch {
+				return "stopped";
+			}
+			try {
+				await live.abortTurn();
+			} catch {
+				// Abort failed; the queued steer still delivers after the tool call.
+			}
+			return "live";
+		}
+		if (live && ownedChildren.has(record.runId)) {
+			await live.sendMessage(message, signal, "steer");
+			return "live";
+		}
+		return sendSubagentMessage(record, message, signal, "followUp", sender);
+	}
 	const live = liveChildren.get(record.runId);
 	if (live) {
 		await live.sendMessage(message, signal, mode);
