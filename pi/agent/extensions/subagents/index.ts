@@ -798,6 +798,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					model: params.model,
 					thinking: params.thinking,
 					tools: params.tools,
+					maxDepth: params.maxDepth,
 				},
 				{
 					agentDir: getAgentDir(),
