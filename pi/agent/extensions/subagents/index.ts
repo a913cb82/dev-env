@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	getAgentDir,
@@ -170,6 +170,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		} catch { /* notification is best effort */ }
 	};
 	const ensureMeshBound = async (ui?: { notify?: (message: string, type?: string) => void }) => {
+		try { appendFileSync("/tmp/mesh-live.log", `${new Date().toISOString()} ensure runtime=${!!runtime} shuttingDown=${shuttingDown} haveServer=${!!meshServer} failures=${meshBindFailures} cooldown=${meshBindCooldown}\n`); } catch { /* diag */ }
 		if (!runtime || shuttingDown) return;
 		// A stale handle (server object set, socket file gone - killed racing
 		// predecessor, external unlink) must rebind, not early-return deaf.
