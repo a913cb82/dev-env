@@ -107,7 +107,8 @@ export class SubagentStatusWidget implements Component {
 		}
 		// Parent-first, family-grouped: registry order is arbitrary, so sort
 		// by (direct-child family, depth) for a readable top-down tree.
-		const index = new Map(all.map((record, i) => [record.runId, i]));
+		// Families and siblings both sort by creation time (oldest first);
+		// names break ties.
 		const familyRoot = (record) => {
 			let node = record;
 			for (;;) {
@@ -118,7 +119,15 @@ export class SubagentStatusWidget implements Component {
 		};
 		return all
 			.filter((record) => keep.has(record.runId))
-			.sort((a, b) => index.get(familyRoot(a))! - index.get(familyRoot(b))! || a.depth - b.depth || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+			.sort((a, b) => {
+				const rootA = byId.get(familyRoot(a))!;
+				const rootB = byId.get(familyRoot(b))!;
+				const byTime = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+				return byTime(rootA.startedAt, rootB.startedAt)
+					|| a.depth - b.depth
+					|| byTime(a.startedAt, b.startedAt)
+					|| byTime(a.name, b.name);
+			});
 	}
 
 	private build(): string[] {

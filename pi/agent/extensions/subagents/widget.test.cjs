@@ -42,10 +42,10 @@ function check(name, cond, extra) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "widget-"));
 	const now = new Date().toISOString();
 	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 };
-	const rec = (runId, parentRunId, status, depth) => ({
+	const rec = (runId, parentRunId, status, depth, startedAt = now) => ({
 		version: 1, runId, parentRunId, rootRunId: "root", sessionId: `s-${runId}`,
 		name: runId, task: "t", cwd: "/tmp", model: "prov/m", thinking: "xhigh",
-		depth, maxDepth: 3, status, usage: { ...usage }, startedAt: now, updatedAt: now,
+		depth, maxDepth: 3, status, usage: { ...usage }, startedAt, updatedAt: now,
 	});
 	registry.saveRecord(dir, rec("top", "me", "completed", 1));
 	registry.saveRecord(dir, rec("mid", "top", "completed", 2));
@@ -64,7 +64,18 @@ function check(name, cond, extra) {
 	check("footer keeps collected parents of a live descendant", lines.length === 5, JSON.stringify(lines));
 	check("grandchild guides follow a non-last parent", /^│  └─ /.test(lines.find((line) => line.includes("m2a")) ?? ""), JSON.stringify(lines));
 	check("roots render bare", /^✓ top /.test(lines[0]), JSON.stringify(lines));
-	check("siblings order by name", lines[1].includes("m2") && lines[2].includes("mid"), JSON.stringify(lines));
+	check("siblings share timestamps so names break the tie", lines[1].includes("m2") && lines[2].includes("mid"), JSON.stringify(lines));
+	// Siblings sort by creation time, oldest first, regardless of name.
+	const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "widget-"));
+	const mkRec = (runId, startedAt) => ({
+		version: 1, runId, parentRunId: "me", rootRunId: "root", sessionId: `s-${runId}`,
+		name: runId, task: "t", cwd: "/tmp", model: "prov/m", thinking: "xhigh",
+		depth: 1, maxDepth: 3, status: "running", usage: { ...usage }, startedAt, updatedAt: now,
+	});
+	registry.saveRecord(dir2, mkRec("zeta", "2026-01-01T00:00:00.000Z"));
+	registry.saveRecord(dir2, mkRec("alpha", "2026-06-01T00:00:00.000Z"));
+	const timeLines = new widget.SubagentStatusWidget(tui, theme, dir2, "me").render(200);
+	check("siblings order by creation time", timeLines[0].includes("zeta") && timeLines[1].includes("alpha"), JSON.stringify(timeLines));
 	check("non-last child uses mid branch", /^├─ /.test(lines[1]), JSON.stringify(lines));
 	check("last child uses end branch", /^└─ /.test(lines[2]), JSON.stringify(lines));
 	check("grandchild guides follow a last parent", /^   └─ /.test(lines[3]) && lines[3].includes("bot"), JSON.stringify(lines));
