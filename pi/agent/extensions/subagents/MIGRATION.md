@@ -1,4 +1,4 @@
-# Subagents: process-to-in-process migration plan (v2)
+# Subagents: process-to-in-process migration plan (v3)
 
 Goal: run subagents as in-process pi sessions instead of spawned `pi --mode rpc`
 processes. Keep every tree semantic. Delete the transport layer.
@@ -10,214 +10,173 @@ Simplicity is a hard constraint on the path, not just the end state. One
 transport per tree. Thin adapter or it fails review. Delete, do not port.
 No phase may add lasting complexity to serve the transition.
 
-## 1. Adversarial review verdicts (5 reviewers, all read the code)
+## 0. Round-1 review verdicts (4 reviewers, all read the code)
 
-- Process skeptic: BLOCK. Fault isolation loss is fatal until proven
-  otherwise: one poisoned child shares the parent heap and event loop, and
-  there is no `kill -9` for a session. Debuggability regresses from Unix
-  tools to `getSessionStats()`. The async design already hides spawn
-  latency, so the payoff must be stated as maintainability, not speed.
-- API hawk: AMEND. The surface is public but fast-moving with semantic
-  breaks an adapter cannot contain (0.87.0 redefined settle timing with
-  signatures intact). Phase 3 must not start on an uninstalled version.
-- Harness: AMEND. The zero-test-edit gate is false. Receipts name the
-  transport, liveness means PID-aliveness today, timing stacks differ.
-  Replace with a coupling budget plus weaken-and-split triage.
-- Functionality auditor: BLOCK. Approval inheritance and ui-request
-  forwarding have no probe and no in-process equivalent established. The
-  cross-writer safety net (locks, cancelled/closed markers, supersede
-  checks) must survive in adapted form: reload generations still race.
-- Strangler: BLOCK as sequenced. Phase 0 extraction is a rewrite in a
-  refactor costume. Per-spawn flip plus one-transport-per-tree is
-  contradictory. Corrected order: probes as kill gates, freeze target
-  semantics, delete first, flag day on idle trees, delete together.
+- Correctness: 2x BLOCK + AMEND. Orphan resume needs a specified sweeper
+  before any deletion. Approval/UI carriers must pin to the pinned SDK
+  before the freeze. Cancel/interrupt needs execution-scoped markers, a
+  generation sequence (not wall-clock equality), and serialized
+  send-then-abort.
+- Value: BLOCK. The payoff is unpriced, the migration is a capability
+  downgrade (isolation, orphan survival), and the adapter is a permanent
+  tax. Added below as Gate 0: price it or stop.
+- Verifiability: BLOCK. Probe 5 is untestable as written (no metrics, three
+  failure modes in one sentence). Suite-green gates pass while the
+  migration fails (weakened asserts, fake seam, topic-list ladder).
+- Simplicity: AMEND. Delete the interface, the backend seam, the split
+  suites, the extraction phase, the multi-writer afterlife, and 6 of 9
+  probes. Flag day on idle trees with direct SDK calls.
 
-Common ground: probes come FIRST and can still kill this. The suite gets
-versioned to target semantics once, explicitly. No dual-transport period.
+v3 resolutions: Gate 0 prices the migration first. Probes carry kill
+criteria with numbers. The freeze gains the orphan sweeper, the cancel
+contract, and per-prompt trust. The path loses the interface, the seam,
+and the split suites: tool-level tests need no shared abstraction.
+
+## 1. Gate 0: price it or stop (before everything)
+
+Run these two first. Either one passing justifies continuing; neither
+passing stops the migration with nothing rewritten.
+
+1. Latency share: spawn-latency distribution (p50/p99, cold/warm) and the
+   share of a user-waited path that waits on it. Pass if p99 spawn exceeds
+   ~10% of a waited path (depth-3 chains, quorum waits) where async cannot
+   hide it.
+2. Defect ledger: 3 months of extension fixes classified by subsystem. Pass
+   if mesh/PID/lock/sweep defects dominate maintenance (>50% of fixes, or a
+   recurrence no incremental fix closes).
+
+If both fail, the never-migrate world wins: keep the boring transport,
+revisit when the SDK stops moving or the ledger says otherwise. Probes
+never run, phases never start.
 
 ## 2. API stability verdict: PUBLIC but FAST-MOVING
 
-Investigated against installed `@earendil-works/pi-coding-agent` 1.0.0
-(latest npm 1.1.0; ~50 releases since 0.74.0, created 2026-05-07).
+Installed `@earendil-works/pi-coding-agent` 1.0.0 (latest npm 1.1.0; ~50
+releases since 0.74.0, created 2026-05-07).
 
-What exists, first-class (no experimental/internal markers; `docs/sdk.md`
-documents it as the integration path):
+First-class, no experimental markers, documented in `docs/sdk.md`:
+`createAgentSession(options)` returns `{ session, extensionsResult }`;
+`AgentSession` has `prompt`, `steer`, `followUp`, `abort`, `waitForIdle`,
+`clearQueue`, `subscribe`, `getSessionStats`, `dispose`; `SessionManager`
+has `create`, `open`, `continueRecent`, `findById`, `list`, `forkFrom`,
+`inMemory`; sessions persist as JSONL auto-migrated to v3; resume works
+across restarts; `getSessionStats()` aggregates over compacted history.
 
-- `createAgentSession(options)` returns `{ session, extensionsResult }`.
-  Options carry cwd, agentDir, model, thinkingLevel, tools, customTools,
-  sessionManager, settingsManager.
-- `AgentSession`: `prompt()`, `steer()`, `followUp()`, `abort()`,
-  `waitForIdle()`, `clearQueue()`, `subscribe()`, `getSessionStats()`,
-  `dispose()`.
-- `SessionManager`: `create`, `open`, `continueRecent`, `findById`, `list`,
-  `forkFrom`, `inMemory`. Sessions persist as JSONL, auto-migrated to v3.
-  Resume works across restarts. Ephemeral opt-out exists.
-- `getSessionStats()` aggregates tokens and cost over all entries including
-  compacted history.
-- Settle signal: `agent_settled` (1.1.0 adds an `aborted` flag; installed
-  1.0.0 emits it bare).
-
-Why an adapter is necessary but not sufficient: past breaks redefined
-timing, not signatures (0.87.0 deferred settle actions; 0.99.0 added
-per-input disposition and made `prompt()` without `streamingBehavior`
-reject). A signature adapter contains the first column, not the timing
-column. Policy: pin the exact pi version in `package.json` plus lockfile.
-Upgrade means bump pin, rerun probes, rerun the suite on both backends,
-amend the adapter. Never build against a version not installed in the
-checkout. Types and runnable probes outrank prose docs and d.ts examples
-(the shipped example uses a `continueSession` option that does not exist).
+Past breaks redefined timing, not signatures (0.87.0 deferred settle
+actions; 0.99.0 added per-input disposition, made bare `prompt()` reject).
+Policy: pin the exact pi version in `package.json` plus lockfile. Upgrade
+means bump pin, rerun probes, rerun the suite, amend the adapter. Never
+build against a version not installed in the checkout. Types and runnable
+probes outrank prose docs and d.ts examples (the shipped example uses a
+`continueSession` option that does not exist).
 
 ## 3. Target semantics (frozen before any refactor)
 
-These decisions are the migration. Everything else is typing.
+- Orphan survival becomes resume with a specified sweeper: `session_start`
+  re-queues non-terminal runs with no `reloadInterrupted` marker via
+  `SessionManager` instead of synthesizing `failed`. Liveness without PIDs
+  is session reachability, never a dummy pid. Test 21 asserts
+  resume-and-collect. `spareLiveTree` and `self-report.ts` stay until the
+  sweeper is green.
+- Interrupt stays send-first-then-abort as one serialized unit on the live
+  handle only, replicating the current `messageQueue` chain; elsewhere it
+  degrades to `followUp`. Abort-then-steer ordering is proven per probe 3,
+  not assumed.
+- Cancel is execution-scoped: markers carry `executionId`; resume claims a
+  generation under lock; cancel re-checks generation after abort and loops
+  if the run re-queued beneath it. Supersede uses a monotonic generation
+  sequence, never wall-clock equality.
+- Approval inheritance is preserved with per-prompt trust: symlink
+  re-resolution at every prompt and resume, not at session create, scoped
+  through the pinned per-session mechanism or the migration stops.
+  Silent always-approve is escalation; silent never-approve is a hang.
+- UI requests keep forward-or-cancel with exactly-once delivery per
+  request; headless auto-cancel stays until a designed replacement ships
+  with its own probe.
+- Concurrency gates and queued/starting lifecycles stay explicit.
+- Unreachable children stay visible with error text, not a boolean.
+- Usage reporting keeps the full 6-field summary the cost math needs.
 
-- Orphan survival becomes resume, not outliving. Today a grandchild
-  process survives its parent's death. In-process, host death is children
-  death. The guarantee becomes: every child persists its session file, and
-  the next live host (or the root on wake) resumes it. Test 21 asserts
-  resume-and-collect, not concurrent outliving.
-- Interrupt stays abort-then... no: send-first-then-abort, live handle
-  only, exactly as today. The adapter owns one ordering, proven by the
-  abort/steer matrix probe.
-- Approval inheritance is preserved, not re-decided. Per-session trust
-  scoping must be found in settingsManager or equivalent, with symlink
-  re-resolution kept. Silent always-approve is privilege escalation.
-  Silent never-approve is a hang. Probe first.
-- UI requests keep the forward-or-cancel boundary. Headless auto-cancel
-  stays until a designed replacement ships.
-- Cancel stays monotonic: cancelled markers beat concurrent resume, keyed
-  on execution ids instead of PIDs. Stale writers skip via `updatedAt`
-  supersede checks. Reload generations are still writers; the lock becomes
-  a same-process mutex plus the file lock while any process transport
-  exists.
-- Concurrency gates and queued/starting lifecycles stay explicit. Holding
-  an un-started session without prompting must be designed, not assumed.
-- Unreachable children stay visible. Mesh-offline surfacing becomes
-  session-unreachable surfacing with error text, not a boolean.
-- Usage reporting keeps the full 6-field summary the cost math needs, not
-  a 3-field subset.
+## 4. Probes: kill gates with numbers (time-boxed, days)
 
-## 4. Probes: kill gates before any refactor (time-boxed, days)
-
-Each probe runs against the PINNED installed version. Any failure stops
-the migration with no loss: nothing is rewritten yet.
+Each runs against the pinned installed version. Any failure stops the
+migration with nothing rewritten.
 
 1. Cross-restart resume: transcript, usage, and model restore via
-   `SessionManager`.
-2. `getSessionStats()` matches billed cost across compaction, nested
-   tools, and aborts.
+   `SessionManager`. Kill if any field drops.
+2. Cost match: `getSessionStats()` equals billed cost across compaction,
+   nested tools, and aborts. Kill on mismatch.
 3. Abort/steer matrix: steer-then-abort, abort-then-steer, abort mid-tool
-   then clean steer. One ordering specified, implemented once in the
-   adapter.
-4. Concurrency: ten children, one hung turn, p99 settle of the other nine
-   within 2x of the process baseline.
-5. Fault containment with teeth, on a live model: tool throw, infinite
-   loop to turn limits, 100MB transcript, while the parent holds a turn.
-   Parent heap and event-loop lag bounded, siblings unaffected, offender
-   reaped by `abort()` alone. `kill -9` equivalence or it does not count.
-6. `agent_settled` payload and timing on the pinned version: `aborted`
-   flag presence, settle vs `waitForIdle` ordering, sends during settle
-   emission.
-7. Approval scoping per session plus symlink re-resolution.
-8. UI/approval request surfacing from a child session: forward, deadlock,
-   double-prompt, or vanish.
-9. Payoff number: spawn-latency distribution (p50/p99, cold/warm) and the
-   share of any user-visible path that waits on it. If the payoff is
-   maintainability (delete the transport layer and its future races),
-   state that and stop claiming speed.
+   then clean steer. Exactly one ordering specified, implemented once.
+   Kill if the queued steer does not survive.
+4. Concurrency: ten children, one hung turn. Kill if the other nine do
+   not all settle or their p99 exceeds 2x the same-day process baseline.
+5. Fault containment, three separate legs with a parent holding a turn:
+   (a) sync infinite loop in a child tool, (b) async never-resolving
+   tool, (c) 100MB transcript growth. Each leg records parent event-loop
+   lag p99 (dedicated heartbeat; kill if over budget for the window),
+   parent heap delta ceiling, sibling settle ceiling, and offender
+   `abort()`-to-settled latency. Any leg needing a process restart, or
+   blocking a sibling past ceiling, kills the migration.
+6. Settle payload and timing on the pinned version: `aborted` flag
+   presence, settle vs `waitForIdle` ordering, sends during settle
+   emission. Kill on skew the adapter cannot absorb.
+7. Approval matrix: trusted/untrusted x inside/outside x
+   symlink-swap-between-check-and-prompt. Kill on silent always-approve
+   or silent never-approve hang.
+8. UI matrix: headless parent, UI parent, two concurrent child requests.
+   Pass is exactly-once forward-or-cancel per request with dismissal
+   normalized at the boundary. Deadlock, vanish, or double-prompt kills.
+9. Orphan probe: kill the host with a live grandchild, start a new host,
+   collect via `check_subagents`. Kill if the result is `failed` instead
+   of resume-and-collect.
 
-## 5. tree.test.cjs: versioned once to target semantics
+## 5. Suite: parity corpus, no new harness
 
-New file next to the existing suites. Rules:
+No new test file, no backend seam, no split suites, no coupling budget.
+The existing `subagents.test.cjs` stays as-is on processes. A parity
+corpus is named, not built: delivery-once bodies, cancel-monotonicity,
+cost-once plus audit ordering, orphan-resume-and-collect, reload
+supersede. The corpus runs UNCHANGED on both backends; it is the only
+suite gate that matters. Transport-specific assertions are deleted inline
+at cutover with the transport, not versioned beforehand. Any other edit
+that tightens timings or silences failures is red. Fake-only green is
+never a phase exit: Phase 4 exits on the pinned live SDK with ceilings
+and content checks (depth-3 bodies, sibling-steer ordering, wake-up
+delivery, cancel-then-collect, cross-restart resume with usage intact).
 
-- Drive only the four tools plus settings. Assert receipts, statuses,
-  bodies, audit entries, delivery-once, ordering, error texts.
-- Never assert sockets, PIDs, locks, mesh frames, signals, files as IPC,
-  or fixed sleeps. Poll with ceilings via `timeoutMs` and `pollMs`.
-- The suite is versioned to section 3 ONCE, explicitly, before Phase 3.
-  After that the coupling budget governs: an edit is allowed iff it
-  weakens an over-specific assertion or moves a transport-specific
-  assertion to `transport-<name>.test.cjs`. Edits that tighten timings
-  or silence failures are red. Each move is tracked in review.
+## 6. Phase order
 
-Triage (from review; applies at versioning time):
+1. Gate 0 (section 1). Price or stop.
+2. Probes (section 4). Kill gates. No refactor yet.
+3. Freeze section 3 on paper. One page, no code.
+4. Flag day on idle trees: rewrite `spawn-agent.ts` to call the SDK
+   directly (no interface, no flag, no schema version; clean shutdown
+   required). Same release delete `mesh.ts`, `self-report.ts`, locks,
+   sweeps, parks, PID fields, sidecars. Drain and restart in-flight
+   trees; never mixed trees.
+5. Rollback is whole-tree restart on the old release, not a flag.
 
-- Truly identical: addressing (6-8), depth limit (19), name uniqueness
-  (18), turn backstop text (20), cost-once and audit ordering (24-25),
-  root refusal and invalid mode (26-27).
-- Weaken in place: latency bounds become liveness-with-ceiling (1, 3-5),
-  receipts become boundary regexes not exact strings (9-12), dedupe
-  becomes at-most-once body (15).
-- Split per transport: delivery-once mechanics (2), resume mechanics
-  (13), starting-queue parking (14), cancel mechanics (16-17), orphan
-  resume (21), settled-parent refusal text (22), reload mechanics (23).
-  Process-only file is deleted with the transport.
+Every phase ends with the full suite green. The live ladder repeats the
+proven legs (depth-3 chain, sibling steer, wake-up, cancel, resume) on
+in-process before the old release is retired.
 
-Backend seam: an env flag selects the child backend (`fake-pi.cjs`
-today, an in-process fake session later with the same script surface).
-
-## 6. ChildTransport contract (revised)
-
-```ts
-interface SpawnedChild {
-  runId: string;
-  send(text: string, mode: "steer" | "followUp"): Promise<void>;
-  abortTurn(): Promise<void>;
-  kill(): Promise<void>;
-  waitSettled(): Promise<SettleInfo>; // resolves like waitForIdle, not on raw event
-  usage(): UsageSummary; // full 6-field summary for cost.ts
-  transcriptPath(): string | undefined; // absent before the first prompt
-  onEvent(cb: (ev: ChildEvent) => void): () => void;
-  onUiRequest?: (req: UiRequest) => Promise<UiResponse>; // forward-or-cancel
-}
-type ChildEvent =
-  | { type: "turn"; text: string; stopReason: string }
-  | { type: "settled"; status: string; lastText: string; aborted: boolean };
-```
-
-The interface carries concurrency lifecycle (`queued`/`starting`), trust
-scope, and ui-request forwarding. Anything it cannot carry thinly is a
-sign the semantics are not frozen.
-
-## 7. Phase order (corrected)
-
-1. Probes (section 4). Kill gates. No refactor yet.
-2. Freeze section 3 and version `tree.test.cjs` to it. Decide every
-   delete up front: mesh parks, offline markers, PID liveness synthesis,
-   `spareLiveTree`, starting queues. Deletion happens here on paper.
-3. Extract pure logic only: tool/model/thinking resolution, path
-   resolution, cost math, receipts. No `ChildTransport` yet. These are
-   the only clean seams.
-4. Build the in-process tree as a separate path, selected once per root
-   (env plus registry schema version; refuse if a live node disagrees).
-   Cut over idle trees only; drain and restart in-flight trees. No
-   per-spawn flag, no mixed trees, no dual-transport period.
-5. Delete the RPC transport in the same release: `mesh.ts`,
-   `self-report.ts`, locks, sweeps, parks, PID fields. Never maintain
-   both behind an interface.
-
-Gates: every phase ends with the full suite green. Phase 2 ends with the
-suite versioned and green on processes. Phase 4 ends with the suite green
-on in-process plus the repeated live ladder (depth-3 chain, sibling
-steer, wake-up, cancel, resume). Rollback before Phase 5 is whole-tree
-restart on the old release, not a flag.
-
-## 8. File-by-file fate
+## 7. File-by-file fate
 
 Delete: `mesh.ts`, `self-report.ts`, pending-message sidecars, offline
-markers, stale-socket sweeps, PID trees, linger logic.
+markers, stale-socket sweeps, PID trees, linger logic, parked flush,
+`withRecordLock` (single writer needs none), wall-clock supersede checks.
 
-Rewrite: `spawn-agent.ts` core becomes the SDK adapter (spawn, send,
+Rewrite: `spawn-agent.ts` core becomes direct SDK calls (spawn, send,
 abort, turn backstop on subscribe events, settle via `waitForIdle`);
-`index.ts` edges (ingress funnel becomes subscriptions, parked flush
-deleted with parks, resume via `SessionManager`); `registry.ts` (drop
-PID liveness and process locks; keep records, markers on execution ids,
-claim logic, audit schema).
+`index.ts` edges (ingress becomes subscriptions, resume via
+`SessionManager`); `registry.ts` (drop PID liveness and process locks;
+keep records, execution-scoped markers with generation sequence, claim
+logic, audit schema).
 
 Unchanged: `config.ts`, `types.ts`, `cost.ts`, `widget.ts`, addressing,
 tool descriptions, receipts, README behavior sections.
 
-Explicitly retained in adapted form: `withRecordLock` semantics (mutex
-plus file lock), cancelled/closed markers, `updatedAt` supersede checks,
-reload-interrupt markers, adoption suffixing, symlink trust resolution,
-headless auto-cancel.
+Explicitly retained in adapted form: cancelled/closed markers on
+execution ids, reload-interrupt markers, adoption suffixing, symlink
+trust resolution, headless auto-cancel, the orphan sweeper.
