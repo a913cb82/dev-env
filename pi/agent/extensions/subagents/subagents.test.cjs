@@ -415,6 +415,21 @@ function check(name, cond, extra) {
 		check("mixed array plus JSONL reads", mixed.length === 2 && mixed[1].text === "new", JSON.stringify(mixed));
 	}
 
+	// --- mesh-offline marker ---
+	{
+		const markerDir = path.join(sandbox, "marker-agent");
+		fs.mkdirSync(markerDir, { recursive: true });
+		check("absent offline marker reads undefined", registry.readMeshOffline(markerDir, "m1") === undefined);
+		const marked = registry.markMeshOffline(markerDir, "m1", "EADDRINUSE", 2);
+		const reread = registry.readMeshOffline(markerDir, "m1");
+		check("offline marker roundtrips", reread?.error === "EADDRINUSE" && reread?.attempts === 2 && reread?.runId === "m1", JSON.stringify(reread));
+		check("offline marker carries the write", marked.attempts === 2 && typeof marked.offlineAt === "string");
+		registry.clearMeshOffline(markerDir, "m1");
+		check("cleared offline marker reads undefined", registry.readMeshOffline(markerDir, "m1") === undefined);
+		registry.clearMeshOffline(markerDir, "never-existed");
+		check("clearing an absent offline marker is safe", registry.readMeshOffline(markerDir, "never-existed") === undefined);
+	}
+
 	// --- actionable run IDs ---
 	const targetA = mk("12345678-aaaa-4000-8000-000000000001", "root", { name: "review", sessionId: "session-a" });
 	const targetB = mk("87654321-bbbb-4000-8000-000000000002", "root", { name: "review", sessionId: "session-b" });
@@ -1225,6 +1240,46 @@ function check(name, cond, extra) {
 		parkIdle = true;
 		parkHandlers.get("agent_before_settle")({});
 		check("before_settle flushes the parked text", await until(() => parkSends.some((s) => String(s.message.content).includes("parked hello"))), JSON.stringify(parkSends));
+		// Failed binds leave a parent-visible marker, back off across tool
+		// executes (attempts observable in the marker), and clear on recovery.
+		const offlineDir = path.join(sandbox, "offline-agent");
+		const offlineSockDir = mesh.meshSocketDir(offlineDir);
+		fs.mkdirSync(offlineSockDir, { recursive: true });
+		const offlineSock = mesh.meshSocketPath(offlineSockDir, "offline-me");
+		fs.mkdirSync(offlineSock); // blocker: a directory where the socket must bind
+		const offlineTools = new Map();
+		const offlineHandlers = new Map();
+		const savedOfflineRun = process.env.PI_SUBAGENT_RUN_ID;
+		const savedOfflineRoot = process.env.PI_SUBAGENT_ROOT_ID;
+		const savedOfflineDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_SUBAGENT_RUN_ID = "offline-me";
+		process.env.PI_SUBAGENT_ROOT_ID = "offline-parent";
+		process.env.PI_CODING_AGENT_DIR = offlineDir;
+		registry.saveRecord(offlineDir, meshMk("offline-me", "offline-parent", { name: "offliner", status: "running", rootRunId: "offline-parent" }));
+		subagentsExtension({ ...checkPi, on: (event, handler) => offlineHandlers.set(event, handler), registerTool: (tool) => offlineTools.set(tool.name, tool), sendMessage: async () => {} });
+		await offlineHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "offline-me" }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+		check("failed startup bind leaves an offline marker", await until(() => registry.readMeshOffline(offlineDir, "offline-me")?.attempts === 1), JSON.stringify(registry.readMeshOffline(offlineDir, "offline-me")));
+		const offlineCheck = offlineTools.get("check_subagents");
+		await offlineCheck.execute("offline-skip", {}, undefined, undefined, {});
+		check("backoff skips the next bind attempt", registry.readMeshOffline(offlineDir, "offline-me")?.attempts === 1, JSON.stringify(registry.readMeshOffline(offlineDir, "offline-me")));
+		await offlineCheck.execute("offline-retry", {}, undefined, undefined, {});
+		check("backoff retry records the next failure", registry.readMeshOffline(offlineDir, "offline-me")?.attempts === 2, JSON.stringify(registry.readMeshOffline(offlineDir, "offline-me")));
+		registry.saveRecord(offlineDir, meshMk("offline-kid", "offline-me", { name: "kid", status: "running", rootRunId: "offline-parent" }));
+		registry.markMeshOffline(offlineDir, "offline-kid", "EADDRINUSE", 1);
+		const offlineRow = await offlineCheck.execute("offline-row", {}, undefined, undefined, {});
+		check("check row surfaces the offline marker", offlineRow.content[0].text.includes("mesh offline"), offlineRow.content[0].text.slice(0, 600));
+		fs.rmdirSync(offlineSock);
+		for (let i = 0; i < 6 && !fs.existsSync(offlineSock); i++) {
+			await offlineCheck.execute(`offline-recover-${i}`, {}, undefined, undefined, {});
+		}
+		check("recovery binds the socket", fs.existsSync(offlineSock));
+		check("recovery clears the offline marker", registry.readMeshOffline(offlineDir, "offline-me") === undefined);
+		if (savedOfflineRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+		else process.env.PI_SUBAGENT_RUN_ID = savedOfflineRun;
+		if (savedOfflineRoot === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
+		else process.env.PI_SUBAGENT_ROOT_ID = savedOfflineRoot;
+		if (savedOfflineDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = savedOfflineDir;
 		if (savedParkRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
 		else process.env.PI_SUBAGENT_RUN_ID = savedParkRun;
 		if (savedParkRoot === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;

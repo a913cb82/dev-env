@@ -225,6 +225,53 @@ function reloadInterruptPath(agentDir: string, runId: string): string {
 	return join(registryDir(agentDir), `${safeRunId(runId)}.reloadInterrupted`);
 }
 
+export interface MeshOfflineMarker {
+	version: 1;
+	runId: string;
+	offlineAt: string;
+	error: string;
+	/** Consecutive failed bind attempts (drives retry backoff). */
+	attempts: number;
+}
+
+function meshOfflinePath(agentDir: string, runId: string): string {
+	return join(registryDir(agentDir), `${safeRunId(runId)}.mesh-offline`);
+}
+
+/** Record that this run's mesh socket failed to bind. Headless sessions
+ * (RPC children) have no UI to warn through, so the marker makes deafness
+ * visible to the parent tree instead of failing silently. */
+export function markMeshOffline(agentDir: string, runId: string, error: string, attempts: number): MeshOfflineMarker {
+	mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
+	const marker: MeshOfflineMarker = {
+		version: 1,
+		runId,
+		offlineAt: new Date().toISOString(),
+		error,
+		attempts,
+	};
+	atomicWrite(meshOfflinePath(agentDir, runId), `${JSON.stringify(marker)}\n`);
+	return marker;
+}
+
+/** Clear the mesh-offline marker after a successful bind. */
+export function clearMeshOffline(agentDir: string, runId: string): void {
+	rmSync(meshOfflinePath(agentDir, runId), { force: true });
+}
+
+/** Read this run's mesh-offline marker (absent or corrupt reads as undefined). */
+export function readMeshOffline(agentDir: string, runId: string): MeshOfflineMarker | undefined {
+	try {
+		const value = JSON.parse(readFileSync(meshOfflinePath(agentDir, runId), "utf8")) as Partial<MeshOfflineMarker>;
+		if (value?.version === 1 && value.runId === runId && typeof value.offlineAt === "string" && typeof value.error === "string" && typeof value.attempts === "number") {
+			return value as MeshOfflineMarker;
+		}
+	} catch {
+		// Absent or corrupt.
+	}
+	return undefined;
+}
+
 /** Mark a run as interrupted by a session reload so the next session_start can
  * resume it from its transcript. Only the interrupted execution may claim it:
  * the marker records the execution id (absent for never-started runs). */

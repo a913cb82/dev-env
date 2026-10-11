@@ -10,7 +10,7 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
-import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
+import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, markMeshOffline, clearMeshOffline, readMeshOffline, type ReloadInterruptMarker } from "./registry.ts";
 import { deliverMeshMessage, startMeshServer, meshSocketDir, meshSocketPath, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
@@ -135,8 +135,35 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 		return lastError;
 	};
-	const warnMeshOffline = (lastError: unknown, ui?: { notify?: (message: string, type?: string) => void }) => {
-		if (meshServer || meshWarned) return;
+	// Consecutive failed mesh binds + executes to skip before retrying.
+	// Count-based (freeze-immune): under sustained load each tool execute
+	// gets a later chance instead of hammering rapid failing binds.
+	let meshBindFailures = 0;
+	let meshBindCooldown = 0;
+	const MESH_BIND_MAX_SKIP = 15;
+	const recordMeshBindFailure = (lastError: unknown) => {
+		if (!runtime) return;
+		meshBindFailures++;
+		meshBindCooldown = Math.min(2 ** Math.min(meshBindFailures, 5) - 1, MESH_BIND_MAX_SKIP);
+		try {
+			markMeshOffline(getAgentDir(), runtime.runId, lastError instanceof Error ? lastError.message : String(lastError), meshBindFailures);
+		} catch { /* the marker is best effort */ }
+	};
+	const recordMeshBindSuccess = () => {
+		if (!runtime) return;
+		meshBindFailures = 0;
+		meshBindCooldown = 0;
+		try {
+			clearMeshOffline(getAgentDir(), runtime.runId);
+		} catch { /* the marker is best effort */ }
+	};
+	const noteMeshBindOutcome = (lastError: unknown, ui?: { notify?: (message: string, type?: string) => void }) => {
+		if (meshServer) {
+			recordMeshBindSuccess();
+			return;
+		}
+		recordMeshBindFailure(lastError);
+		if (meshWarned) return;
 		meshWarned = true;
 		try {
 			ui?.notify?.(`Subagent mesh offline (${lastError instanceof Error ? lastError.message : String(lastError)}): this session cannot receive tree messages.`, "error");
@@ -155,7 +182,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			} catch { /* on doubt keep the existing handle */ }
 		}
 		if (meshServer) return;
-		warnMeshOffline(await bindMeshServer(), ui);
+		if (meshBindCooldown > 0) {
+			meshBindCooldown--;
+			return;
+		}
+		noteMeshBindOutcome(await bindMeshServer(), ui);
 	};
 	const deliveredResults = new Set<string>();
 	const notifiedResults = new Set<string>();
@@ -480,7 +511,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				try { await meshServer.close(); } catch { /* replaced */ }
 				meshServer = undefined;
 			}
-			warnMeshOffline(await bindMeshServer(), ctx.hasUI ? ctx.ui : undefined);
+			meshBindCooldown = 0;
+			noteMeshBindOutcome(await bindMeshServer(), ctx.hasUI ? ctx.ui : undefined);
 		} catch {
 			meshServer = undefined;
 		}
@@ -1017,7 +1049,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					const readOnly = record.parentRunId !== runtime!.runId
 						? descendantIds.has(record.runId) ? " · read-only descendant" : " · read-only"
 						: "";
-					const meta = `${record.model} · depth ${record.depth}/${record.maxDepth} · ${record.cwd}${record.runId ? ` · run ${shortId(record.runId)}` : ""}${readOnly}${record.parentRunId !== runtime!.runId ? ` · via ${senderName(record.parentRunId)}` : ""}${record.adoptedFrom ? ` · adopted from ${senderName(record.adoptedFrom)}` : ""}`;
+					const meta = `${record.model} · depth ${record.depth}/${record.maxDepth} · ${record.cwd}${record.runId ? ` · run ${shortId(record.runId)}` : ""}${readOnly}${record.parentRunId !== runtime!.runId ? ` · via ${senderName(record.parentRunId)}` : ""}${record.adoptedFrom ? ` · adopted from ${senderName(record.adoptedFrom)}` : ""}${readMeshOffline(agentDir, record.runId) ? " · mesh offline" : ""}`;
 					return formatResult(record, meta);
 				});
 			const summary =
