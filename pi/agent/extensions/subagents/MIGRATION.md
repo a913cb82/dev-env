@@ -62,11 +62,17 @@ Verifiability BLOCK. Simplicity AMEND (no interface, no seam, kept).
    weeks: transport 52% fix-only, 41% full ledger — extend the window
    before pricing on this leg). Pass if mesh/PID/lock/sweep defects
    dominate (>50%) or a recurrence no incremental fix closes.
-3. Standing cost: probe-days per adopted pi bump times your real update
-   rate (you update rarely, not per release) versus ledger cost per
-   quarter. Pass only if staying migrated costs less than the transport
-   it replaces. Cadence arguments in this plan key on bumps you adopt,
-   never on the ~2.6-day release train.
+3. Simplicity: the end state must contain strictly fewer mechanisms
+   than the start, counted in advance and verified at cutover. The
+   start list: child processes, socket mesh plus protocol, PID trees,
+   file locks, mesh parks, offline markers, dismissal and delivery
+   sidecars, the env identity channel, the self-report wake chain.
+   Pass if the target removes a supermajority of these with no unlisted
+   addition surviving review, net source deletion clears 25%, and the
+   failure-mode enumeration (one line each, written before flag day)
+   is shorter after than before. Simple is robust: fewer mechanisms
+   means fewer ways to break. Update cadence stays rare by habit, so
+   upkeep is priced never; complexity is the gate.
 
 Any leg failing stops the migration with nothing rewritten. Revisit when
 SDK cadence drops below one breaking change per quarter or the ledger
