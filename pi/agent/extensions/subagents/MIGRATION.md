@@ -10,7 +10,21 @@ Simplicity is a hard constraint on the path, not just the end state. One
 transport per tree. Thin adapter or it fails review. Delete, do not port.
 No phase may add lasting complexity to serve the transition.
 
-## 0. Review verdicts (12 reviewers, all read the code)
+## 0. Review verdicts (16 reviewers, all read the code, rounds 4-5 with Codex source)
+
+Round 4: low-interrupt AMEND (abort-first-then-send replaces
+send-first-then-abort; messageQueue does not port; probe 3 gains an
+idle-interrupt leg plus a queued-survives-abort assert). Mid-events:
+wait contract is level-check then subscribe-filter then re-check,
+waitForIdle on the child handle plus a state read; raw agent_settled
+and bare waitForIdle are each insufficient alone. Mid-tree AMEND (keep,
+cut, and keep-because-Codex-lacks lists; four over-specified §3 items
+narrowed to outcomes). High-arch: steal roles overlay, residency pin,
+limit error plus wait clamp, resume-time depth check, request-id
+idempotency; skip message board, full-history fork, turn-item telemetry.
+Load incident: a 4-at-once reviewer volley killed one spawn at the 15s
+startup handshake (contention, not logic; solo retry green). Spawn
+storms stagger from here on.
 
 Round 3: downgrade BLOCK (trust downgrade is surrender — the child itself
 exploits the window; orphan resume needs fencing, order, no-replay, wait
@@ -75,42 +89,43 @@ docs and d.ts examples.
 
 ## 3. Target semantics (frozen before any refactor)
 
-- Orphan survival becomes resume with fencing first: claim generation
-  before adoption, single-writer enforcement, deepest-first resume order
-  with parent wake-text chaining, mid-tool no-replay guard, waits
-  re-registered on the new host. The seven disk states triage to resume
+- Orphan handling is a pre-flag-day guard, not a target semantic: the
+  target says orphans remain queryable under the manager with no wake
+  chain (Codex proves the deletion). Until cutover, resume needs claim
+  generation before adoption, single-writer enforcement, deepest-first
+  order with parent wake-text chaining, mid-tool no-replay guard, and
+  waits re-registered on the new host. The seven disk states triage to resume
   (mid-LLM with new executionId), inspect-first (mid-tool), fresh start
   (never-started), collect-only (self-reported terminal), hands-off
   (cancelled or delivered), drain-then-resume (parked), resolve-or-fail
   (stale sessionFile). Test 21 asserts resume-and-collect with no
   duplicate side effects. `spareLiveTree` and `self-report.ts` stay until
   the fenced sweeper plus probe 9 are green.
-- Interrupt stays send-first-then-abort as one serialized unit on the
-  live handle only; elsewhere it degrades to `followUp`.
-- Cancel is execution-scoped: markers carry `executionId`; resume claims
-  a generation under `withRecordLock`, which is retained (single writer
-  was never true while monitor, self-report, and poller coexist); cancel
-  re-checks generation after abort and loops if the run re-queued
-  beneath it. Supersede uses a monotonic generation sequence.
-- Approval trust is per-session-at-spawn with the window named: resolve
-  once via ensureDirectory plus containment, pin the child's
-  SettingsManager, re-resolve by fresh runtime at resume. The TOCTOU-safe
-  per-spawn form is lost without an SDK-side atomic trust input; the
-  child itself can exploit the window, so this downgrade needs either
-  the SDK knob or adapter-side re-resolve on every prompt and approval
-  decision before flag day. Silent always-approve or silent hang kills.
+- Interrupt is abort-first-then-send as one serialized unit: abort,
+  observe post-abort state, steer if still active else start a new turn
+  if idle. The RPC send-first order does not port (no messageQueue, no
+  pre-parked drain). Elsewhere interrupt degrades to `followUp`.
+- Cancel is execution-scoped with a single writer behind it: markers
+  carry `executionId`; resume claims a generation; cancel re-checks
+  generation after abort and loops if the run re-queued beneath it.
+  The mechanism is a mutex in the adapter, not the file lock; the
+  frozen item is the outcome (monotonic, no lost update), and
+  `withRecordLock` stays only until the sweeper claim proves the
+  replacement. Supersede uses a monotonic generation sequence.
+- Approval holds the property, not the form: no silent approve, no
+  silent hang, window named. Precondition is the SDK knob or
+  adapter-side re-resolve on every prompt and approval decision, landed
+  and probed (probe 7) before flag day.
 - UI requests keep exactly-once forward-or-cancel; headless auto-cancel
   stays until a designed replacement ships with its own probe.
 - Concurrency gates go per-root (the module-global gate contaminates
   across trees); queued/starting lifecycles stay explicit; settings
   freeze per session.
 - Unreachable children stay visible with error text.
-- Usage has one writer: subscribe-events or stats-polling feeds
-  `record.usage`, never both; `finalizeOwnRun` merges by per-field max,
-  never replaces. Floor never regresses: `floor.set` is maxVector-guarded
-  and `restoreCostFloor` fails loud on missing history. The floor lives
-  outside the compactable transcript or receipts are proven
-  compaction-immune on the pinned version.
+- Usage has one writer and is counted once across abort, nest, fork,
+  and compaction; the floor never regresses observably. Data structures
+  (maxVector guard, fail-loud restore, sidecar versus proof) are adapter
+  choices, not frozen items.
 - Identity travels in closures, never env: `config.ts` becomes env-free
   pure functions of explicit args. `PARENT_ID` was write-only dead weight
   and goes. `DEFAULT_MODEL` and `DEFAULT_THINKING` are operator ambient
@@ -133,8 +148,11 @@ migration with nothing rewritten.
    parent compaction (no re-emit); abort matrix naming the canonical
    source; nested-tool single-count proof; fork and navigation
    invariance; zero-cost-model token reporting.
-3. Abort/steer matrix: steer-then-abort, abort-then-steer, abort mid-tool
-   then clean steer. One ordering, implemented once.
+3. Abort/steer matrix on abort-first-then-send: abort-then-steer,
+   abort mid-tool then clean steer, interrupt of a strictly-idle child
+   (delivery must start, not drop), pre-existing queued messages
+   surviving abort (abort must not imply clearQueue). One ordering,
+   implemented once.
 4. Concurrency: ten children, one hung turn. All nine settle, p99 within
    2x same-day process baseline.
 5. Fault containment, three legs with a parent holding a turn: sync
@@ -187,8 +205,10 @@ Delete: `mesh.ts`, `self-report.ts`, pending-message sidecars, offline
 markers, stale-socket sweeps, PID trees, linger logic, parked flush,
 wall-clock supersede checks, `PARENT_ID`, `PI_SUBAGENT_COMMAND`.
 
-Rewrite: `spawn-agent.ts` core (direct SDK calls, settle via
-`waitForIdle`); `index.ts` edges (subscriptions, `SessionManager`
+Rewrite: `spawn-agent.ts` core (direct SDK calls; per-child wait is
+level-check then subscribe-filter then re-check, waitForIdle on the
+child handle plus a state read for status, text, usage, and the aborted
+flag); `index.ts` edges (subscriptions, `SessionManager`
 resume, per-session runtime map, rekeyed gates); `registry.ts` (drop PID
 liveness and process locks; keep records, execution-scoped markers with
 generation sequence, claim logic, audit schema); `config.ts` (env-free
@@ -197,7 +217,14 @@ pure functions, root-inherit for operator ambient).
 Unchanged: `types.ts`, `cost.ts`, `widget.ts`, addressing, tool
 descriptions, receipts, README behavior sections.
 
-Retained: cancelled/closed markers on execution ids, reload-interrupt
-markers, adoption suffixing, symlink trust resolution, headless
-auto-cancel, the fenced orphan sweeper, `withRecordLock` until the
-single-writer rule is proven.
+Retained until proven replaced: cancelled/closed markers on execution
+ids, reload-interrupt markers, adoption suffixing, symlink trust
+resolution, headless auto-cancel, the fenced orphan sweeper,
+`withRecordLock`.
+
+Stolen from Codex for the freeze: advisory roles overlay on spawn
+params; residency pin around send (target cannot evict mid-send);
+named limit error plus wait clamp; depth re-check on resume;
+request-id idempotency plus never-wake-finalized for the message path.
+Skipped: message-board backend, full-history fork, turn-item telemetry
+as audit.
