@@ -78,6 +78,8 @@ export interface SpawnAgentInput {
 	model?: string;
 	thinking?: string;
 	tools?: string[];
+	/** Tree depth budget. Root sessions only; descendants inherit and can never raise it. */
+	maxDepth?: number;
 }
 
 /** How a parent message is delivered to a subagent. Maps to pi's native

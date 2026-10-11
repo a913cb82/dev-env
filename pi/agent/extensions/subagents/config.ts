@@ -38,7 +38,7 @@ function optionalString(value: unknown, field: string): string | undefined {
 	return value.trim();
 }
 
-function depth(value: unknown, field: string): number {
+export function depth(value: unknown, field: string): number {
 	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
 		throw new Error(`${field} must be a non-negative integer`);
 	}
@@ -132,9 +132,15 @@ export function loadSettings(options: {
 		(inheritedDepth !== undefined && env.PI_SUBAGENT_DEPTH_FLAG_OVERRIDE === "1");
 	// A flag overrides file configuration throughout its subtree. Without one,
 	// explicit file limits may tighten inheritance, but built-in defaults may not.
-	const configuredDepth = flagDepth ??
-		(maxDepthFlagOverride ? inheritedDepth : project.maxDepth ?? global.maxDepth) ??
-		inheritedDepth ?? DEFAULT_SETTINGS.maxDepth;
+	// Only the top-level root controls the tree budget (default 2, overridable
+	// per spawn, flag, or settings file). A non-root session inherits its
+	// budget: settings files along the way can neither raise nor lower it.
+	// CLI flags still tighten - the human operator's escape hatch.
+	const configuredDepth = inheritedDepth !== undefined && !maxDepthFlagOverride
+		? inheritedDepth
+		: (flagDepth ??
+			(maxDepthFlagOverride ? inheritedDepth : project.maxDepth ?? global.maxDepth) ??
+			inheritedDepth ?? DEFAULT_SETTINGS.maxDepth);
 	const envThinking = env.PI_SUBAGENT_DEFAULT_THINKING
 		? validateThinkingLevel(env.PI_SUBAGENT_DEFAULT_THINKING, "PI_SUBAGENT_DEFAULT_THINKING")
 		: undefined;

@@ -46,6 +46,10 @@ const SpawnAgentSchema = Type.Object({
 		Type.String({ description: "Thinking level for this subagent", enum: [...THINKING_LEVEL_VALUES] }),
 	),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Subset of my active tools; omit to inherit all" })),
+	maxDepth: Type.Optional(Type.Integer({
+		description: "Tree depth budget for this spawn (default 2). Only the top-level root session may set it; descendants inherit and can never raise it.",
+		minimum: 0,
+	})),
 });
 
 const CheckSchema = Type.Object({

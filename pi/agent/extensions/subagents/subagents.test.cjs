@@ -125,12 +125,17 @@ function check(name, cond, extra) {
 	fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ maxDepth: 4 }));
 	const unflaggedRoot = config.loadSettings({ ...depthOptions, env: {} });
 	const restrictedChild = config.loadSettings({ ...depthOptions, projectTrusted: true, env: inheritDepth(unflaggedRoot) });
-	check("root global4 without flag permits child project2 restriction", restrictedChild.maxDepth === 2, restrictedChild.maxDepth);
+	check("non-root ignores project restriction files", restrictedChild.maxDepth === 4, restrictedChild.maxDepth);
+	const rootProject = config.loadSettings({ ...depthOptions, projectTrusted: true, env: {} });
+	check("root project file still restricts", rootProject.maxDepth === 2, rootProject.maxDepth);
+	fs.writeFileSync(path.join(sandbox, ".pi", "subagents.json"), JSON.stringify({ maxDepth: 9 }));
+	const raisedChild = config.loadSettings({ ...depthOptions, projectTrusted: true, env: inheritDepth({ maxDepth: 2 }) });
+	check("non-root ignores project raise files", raisedChild.maxDepth === 2, raisedChild.maxDepth);
 	const restrictedGrandchild = config.loadSettings({ ...depthOptions, env: inheritDepth(restrictedChild) });
-	check("larger global config cannot raise child restriction", restrictedGrandchild.maxDepth === 2, restrictedGrandchild.maxDepth);
+	check("child preserves inherited budget over files", restrictedGrandchild.maxDepth === 4, restrictedGrandchild.maxDepth);
 	fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ maxDepth: 2 }));
 	const globalRestrictedChild = config.loadSettings({ ...depthOptions, env: inheritDepth(unflaggedRoot) });
-	check("explicit global config tightens unflagged inheritance", globalRestrictedChild.maxDepth === 2, globalRestrictedChild.maxDepth);
+	check("non-root ignores global restriction files", globalRestrictedChild.maxDepth === 4, globalRestrictedChild.maxDepth);
 	const configuredRoot = config.loadSettings({ ...depthOptions, projectTrusted: true, depthFlag: "4", env: {} });
 	check("root flag overrides lower global config", configuredRoot.maxDepth === 4, configuredRoot.maxDepth);
 	const configuredChild = config.loadSettings({ ...depthOptions, projectTrusted: true, env: inheritDepth(configuredRoot) });
@@ -153,7 +158,7 @@ function check(name, cond, extra) {
 	check("project config cannot raise inherited depth", s.maxDepth === 4, s.maxDepth);
 	fs.writeFileSync(path.join(sandbox, ".pi", "subagents.json"), JSON.stringify({ maxDepth: 1 }));
 	s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: true, env: { PI_SUBAGENT_MAX_DEPTH: "4" } });
-	check("project config tightens unflagged inherited depth", s.maxDepth === 1, s.maxDepth);
+	check("project config cannot tighten inherited depth", s.maxDepth === 4, s.maxDepth);
 	s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: true, env: inheritDepth(rootDepth) });
 	check("project config cannot undo inherited flag override", s.maxDepth === 4, s.maxDepth);
 	s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: true, depthFlag: "2", env: { PI_SUBAGENT_MAX_DEPTH: "4" } });
@@ -2030,6 +2035,30 @@ function check(name, cond, extra) {
 		depthThrew = String(error).includes("depth limit");
 	}
 	check("depth limit throws at spawn", depthThrew);
+	// Only the root controls the tree budget: per-spawn maxDepth override,
+	// rejected for descendants, still enforced at spawn. Isolated dir: the
+	// budgeted child must not pollute the shared spawn-agent counts.
+	{
+		const budgetDir = path.join(sandbox, "budget");
+		const budgetCtx = { ...baseCtx(), agentDir: budgetDir };
+		const budgeted = await spawn.startSubagent({ task: "x", name: "budgeted", maxDepth: 5 }, budgetCtx);
+		const budgetedRow = registry.readRecords(budgetDir).find((r) => r.runId === budgeted.runId);
+		check("root per-spawn maxDepth sets the tree budget", budgetedRow?.maxDepth === 5, budgetedRow?.maxDepth);
+		let nonRootThrew = false;
+		try {
+			await spawn.startSubagent({ task: "x", name: "upstart", maxDepth: 5 }, { ...budgetCtx, parentRunId: "p2" });
+		} catch (error) {
+			nonRootThrew = String(error).includes("Only the root");
+		}
+		check("descendant maxDepth override throws", nonRootThrew);
+		let zeroThrew = false;
+		try {
+			await spawn.startSubagent({ task: "x", name: "nogrand", maxDepth: 0 }, budgetCtx);
+		} catch (error) {
+			zeroThrew = String(error).includes("depth limit");
+		}
+		check("per-spawn zero budget blocks spawn", zeroThrew);
+	}
 
 	// Cancel stops the child process; resume restarts it from the transcript.
 	process.env.FAKE_DELAY_MS = "5000";

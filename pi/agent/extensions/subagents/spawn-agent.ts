@@ -4,7 +4,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_SETTINGS, validateRpcMaxLineChars, validateThinkingLevel } from "./config.ts";
+import { DEFAULT_SETTINGS, depth, validateRpcMaxLineChars, validateThinkingLevel } from "./config.ts";
 import { meshSocketDir, sendMeshMessage, waitForMeshSocket } from "./mesh.ts";
 import { applyChildEvent, type ParsedChildState } from "./events.ts";
 import {
@@ -599,8 +599,16 @@ async function findSessionFile(cwd: string, sessionId: string): Promise<string |
  */
 export async function startSubagent(input: SpawnAgentInput, context: SpawnContext): Promise<AgentRecord> {
 	if (context.signal?.aborted) throw new Error("Subagent spawn was aborted");
-	if (context.currentDepth >= context.settings.maxDepth) {
-		throw new Error(`Subagent depth limit reached (${context.currentDepth}/${context.settings.maxDepth})`);
+	// Only the top-level root controls the tree budget (default 2): it may set
+	// maxDepth per spawn, and descendants inherit without ever raising it.
+	if (input.maxDepth !== undefined && context.parentRunId !== context.rootRunId) {
+		throw new Error("Only the root session may set maxDepth; descendant budgets inherit.");
+	}
+	const settings = input.maxDepth === undefined
+		? context.settings
+		: { ...context.settings, maxDepth: depth(input.maxDepth, "maxDepth") };
+	if (context.currentDepth >= settings.maxDepth) {
+		throw new Error(`Subagent depth limit reached (${context.currentDepth}/${settings.maxDepth})`);
 	}
 	const queued = gate.isFull(context.settings.maxConcurrency);
 	const runId = randomUUID();
@@ -649,7 +657,7 @@ export async function startSubagent(input: SpawnAgentInput, context: SpawnContex
 		thinking,
 		tools,
 		depth: context.currentDepth + 1,
-		maxDepth: context.settings.maxDepth,
+		maxDepth: settings.maxDepth,
 		status: queued ? "queued" : "starting",
 		activity: queued ? "waiting for a concurrency slot" : "starting",
 		usage: { ...EMPTY_USAGE },
@@ -909,7 +917,7 @@ async function runSubagentProcess(
 					PI_SUBAGENT_PARENT_ID: context.parentRunId,
 					PI_SUBAGENT_ROOT_ID: context.rootRunId,
 					PI_SUBAGENT_DEPTH: String(record.depth),
-					PI_SUBAGENT_MAX_DEPTH: String(context.settings.maxDepth),
+					PI_SUBAGENT_MAX_DEPTH: String(record.maxDepth),
 					PI_SUBAGENT_DEPTH_FLAG_OVERRIDE: context.settings.maxDepthFlagOverride ? "1" : "0",
 				},
 			});
