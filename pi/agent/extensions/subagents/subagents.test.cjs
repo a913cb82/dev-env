@@ -1278,6 +1278,10 @@ function check(name, cond, extra) {
 		parkIdle = true;
 		parkHandlers.get("agent_before_settle")({});
 		check("before_settle flushes the parked text", await until(() => parkSends.some((s) => String(s.message.content).includes("parked hello"))), JSON.stringify(parkSends));
+		// A parked steer downgrades to follow-up on flush: the redirect moment
+		// passed while it waited, and a late steer aborts the target's turn.
+		const parkedFlush = parkSends.find((s) => String(s.message.content).includes("parked hello"));
+		check("parked steer flushes as follow-up", parkedFlush?.options?.deliverAs === "followUp", JSON.stringify(parkedFlush?.options));
 		// Failed binds leave a parent-visible marker, back off across tool
 		// executes (attempts observable in the marker), and clear on recovery.
 		const offlineDir = path.join(sandbox, "offline-agent");

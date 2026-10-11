@@ -246,11 +246,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 		await injectMeshNow(from, mode, text);
 	};
-	/** Flush parked inbound mesh texts in order while the session idles. */
+	/** Flush parked inbound mesh texts in order while the session idles.
+	 * A parked steer goes out as a follow-up, never a steer: parking means
+	 * the target was busy, so the sender's redirect context is stale, and a
+	 * late steer aborts whatever the target is doing mid-turn — healthy
+	 * sessions settled `cancelled` instead of `completed`. Live (never
+	 * parked) steers keep redirecting; only delayed ones downgrade. */
 	const flushMeshParked = async () => {
 		while (meshParked.length > 0 && !shuttingDown && runtime && (!isIdle || isIdle())) {
 			const next = meshParked.shift()!;
-			await injectMeshNow(next.from, next.mode, next.text);
+			await injectMeshNow(next.from, next.mode === "steer" ? "followUp" : next.mode, next.text);
 		}
 	};
 	// Recently seen inbound mesh envelope ids. The sender retries after any
