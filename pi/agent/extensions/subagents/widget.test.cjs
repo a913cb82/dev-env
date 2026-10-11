@@ -81,6 +81,14 @@ function check(name, cond, extra) {
 	foot.invalidate();
 	check("drained chain clears the footer", foot.render(200).length === 0, JSON.stringify(foot.render(200)));
 	foot.dispose();
+	// Disk half of durable observation: a dismissal sidecar survives fresh
+	// processes, so quit+resume restores it (the startup path that dropped it
+	// took the viewer from an uninitialized runtime - now explicit).
+	const dismissed = registry.readRecords(dir).find((r) => r.runId === "bot");
+	registry.markFooterDismissed(dir, dismissed, "me", "dismissal-key");
+	check("dismissal sidecar persists the key",
+		registry.listFooterDismissed(dir, "me").includes("dismissal-key"),
+		JSON.stringify(registry.listFooterDismissed(dir, "me")));
 
 	console.log(failures === 0 ? "\nAll widget tests passed." : `\n${failures} widget test(s) failed.`);
 	process.exit(failures === 0 ? 0 : 1);

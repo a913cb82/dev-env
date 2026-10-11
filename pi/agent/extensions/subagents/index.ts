@@ -179,7 +179,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			}
 		}
 	};
-	const restoreReceipts = (entries: readonly SessionEntry[]) => {
+	const restoreReceipts = (entries: readonly SessionEntry[], viewerRunId?: string) => {
 		seenDescendantResults.clear();
 		for (const entry of entries) {
 			const rawDetails = entry.type === "custom_message" && entry.customType === "subagent-results"
@@ -198,9 +198,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		// Second durability leg for observation: transcript receipts are lost to
 		// compaction, forks, and branch subsets, but the dismissal sidecars
 		// survive. Claims need no help here; their markers already persist.
-		if (runtime) {
+		// The viewer is explicit because fresh startups restore before the
+		// runtime exists - without it every dismissed descendant resurfaces
+		// after quit+resume.
+		const viewer = viewerRunId ?? runtime?.runId;
+		if (viewer) {
 			try {
-				for (const key of listFooterDismissed(getAgentDir(), runtime.runId)) seenDescendantResults.add(key);
+				for (const key of listFooterDismissed(getAgentDir(), viewer)) seenDescendantResults.add(key);
 			} catch {
 				// Observation is best effort; the transcript leg still applies.
 			}
@@ -339,10 +343,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		deliveryPaused = false;
 		deliveredResults.clear();
 		notifiedResults.clear();
-		restoreReceipts(ctx.sessionManager.getBranch?.() ?? []);
-		restoreCostFloor(costFloor, ctx.sessionManager);
 		const runId = process.env.PI_SUBAGENT_RUN_ID || ctx.sessionManager.getSessionId();
 		const rootRunId = process.env.PI_SUBAGENT_ROOT_ID || runId;
+		restoreReceipts(ctx.sessionManager.getBranch?.() ?? [], runId);
+		restoreCostFloor(costFloor, ctx.sessionManager);
 		try {
 			runtime = {
 				runId,

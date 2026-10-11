@@ -1522,7 +1522,7 @@ function check(name, cond, extra) {
 	let widget = new SubagentStatusWidget(tui, theme, agentDir2, "root2");
 	const shown = widget.render(100);
 	check("widget shows outstanding children", shown.some((l) => l.includes("alpha")) && shown.some((l) => l.includes("beta")), shown.join(" | "));
-	check("widget shows model and activity", shown.some((l) => l.includes("prov/model-x") && l.includes("npm test")), shown.join(" | "));
+	check("widget shows model and activity", shown.some((l) => l.includes("model-x") && !l.includes("prov/") && l.includes("npm test")), shown.join(" | "));
 	const strip = (l) => l.replace(/\x1b\[[0-9;]*m/g, "");
 	for (const w of [20, 80, 200]) {
 		const over = widget.render(w).filter((l) => [...strip(l)].length > w);
@@ -1556,7 +1556,7 @@ function check(name, cond, extra) {
 	registry.saveRecord(agentDir3, mk("orphan-leaf", "dead-parent", { name: "orphan-leaf", status: "running_tool", currentTool: "bash sleep" }));
 	widget = new SubagentStatusWidget(tui, theme, agentDir3, "root");
 	const orphaned = widget.render(100);
-	check("widget shows an orphan's lineage", orphaned.some((l) => l.includes("orphan-leaf") && l.includes("via dead-parent")), orphaned.join(" | "));
+	check("widget shows an orphan's lineage", orphaned.some((l) => l.includes("dead-parent")) && orphaned.some((l) => /^[├└│]/.test(l) && l.includes("orphan-leaf")), orphaned.join(" | "));
 	widget.dispose();
 
 	// The footer hides terminal runs dismissed by me, durable across reloads,
