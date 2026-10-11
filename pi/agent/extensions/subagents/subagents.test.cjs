@@ -1197,6 +1197,38 @@ function check(name, cond, extra) {
 		check("duplicate envelope injects once", meshSends.grand.length === dupeSendsBase + 1, JSON.stringify(meshSends.grand.length));
 		await until(() => registry.readAgentMessages(meshAgentDir, "mesh-grand").length >= dupeAuditBase + 2);
 		check("duplicate envelope audits once", registry.readAgentMessages(meshAgentDir, "mesh-grand").length === dupeAuditBase + 1, JSON.stringify(registry.readAgentMessages(meshAgentDir, "mesh-grand").length));
+		// Parked mesh texts flush on before_settle (last chance before death).
+		const parkSends = [];
+		const parkHandlers = new Map();
+		const parkTools = new Map();
+		const savedParkRun = process.env.PI_SUBAGENT_RUN_ID;
+		const savedParkRoot = process.env.PI_SUBAGENT_ROOT_ID;
+		process.env.PI_SUBAGENT_RUN_ID = "park-me";
+		process.env.PI_SUBAGENT_ROOT_ID = "park-parent";
+		process.env.PI_CODING_AGENT_DIR = meshAgentDir;
+		registry.saveRecord(meshAgentDir, meshMk("park-me", "park-parent", { name: "parkee", status: "running", rootRunId: "park-parent" }));
+		registry.saveRecord(meshAgentDir, meshMk("park-sender", "park-parent", { name: "parker", status: "running", rootRunId: "park-parent" }));
+		let parkIdle = false;
+		subagentsExtension({ ...checkPi, on: (event, handler) => parkHandlers.set(event, handler), registerTool: (tool) => parkTools.set(tool.name, tool), sendMessage: async (message, options) => { parkSends.push({ message, options }); } });
+		await parkHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "park-me" }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false, isIdle: () => parkIdle });
+		delete process.env.PI_SUBAGENT_RUN_ID;
+		delete process.env.PI_SUBAGENT_ROOT_ID;
+		const parkFrame = `${JSON.stringify({ v: 1, type: "steer", from: "park-sender", to: "park-me", id: "park-probe-1", seq: 1, payload: { text: "parked hello" } })}\n`;
+		await new Promise((resolvePark, rejectPark) => {
+			const sock = net.createConnection(mesh.meshSocketPath(mesh.meshSocketDir(meshAgentDir), "park-me"));
+			sock.on("error", rejectPark);
+			sock.on("data", () => { sock.end(); resolvePark(true); });
+			sock.on("connect", () => { sock.write(parkFrame); });
+		});
+		await tick(); await tick();
+		check("busy receipt parks without injecting", parkSends.length === 0, JSON.stringify(parkSends.length));
+		parkIdle = true;
+		parkHandlers.get("agent_before_settle")({});
+		check("before_settle flushes the parked text", await until(() => parkSends.some((s) => String(s.message.content).includes("parked hello"))), JSON.stringify(parkSends));
+		if (savedParkRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+		else process.env.PI_SUBAGENT_RUN_ID = savedParkRun;
+		if (savedParkRoot === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
+		else process.env.PI_SUBAGENT_ROOT_ID = savedParkRoot;
 		// Terminal resume keeps the original parent (no adoption).
 		const savedCommand = process.env.PI_SUBAGENT_COMMAND;
 		const savedDelay = process.env.FAKE_DELAY_MS;

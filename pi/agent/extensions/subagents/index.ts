@@ -604,6 +604,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 	};
 	pi.on("agent_before_settle", (event) => {
+		// Last chance for parked inbound mesh texts: flush before the turn
+		// dies (they would otherwise wait for a settle that never injects).
+		// Runs for every session; best effort, failures stay parked.
+		void flushMeshParked();
 		void handleOwnSettle(event as SettleEventLike).catch(() => {});
 	});
 
