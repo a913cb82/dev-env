@@ -1057,7 +1057,7 @@ async function runSubagentProcess(
 				const live = liveChildren.get(record.runId);
 				if (live) {
 					void live.sendMessage(
-						`You've reached your turn limit (${maxTurns}). Wrap up immediately \u2014 provide your final or partial answer and next steps now. Note that the job was interrupted by a usage limit and might require follow-up.`,
+						`You reached your turn limit (${maxTurns}). Wrap up now. Give your final answer or a partial answer. List the next steps. The job stopped at a usage limit. It may need follow-up.`,
 						undefined,
 						"steer",
 					).catch(() => {});

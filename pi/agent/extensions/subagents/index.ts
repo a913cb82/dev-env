@@ -43,38 +43,38 @@ const SpawnAgentSchema = Type.Object({
 	task: Type.String({ description: "Task to delegate" }),
 	name: Type.String({ description: "Subagent name (required, unique among siblings)" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory (relative unless absolute)" })),
-	model: Type.Optional(Type.String({ description: "Exact model selector. Overrides configured and inherited defaults." })),
+	model: Type.Optional(Type.String({ description: "Exact model selector. It overrides configured and inherited defaults." })),
 	thinking: Type.Optional(
 		Type.String({ description: "Thinking level for this subagent", enum: [...THINKING_LEVEL_VALUES] }),
 	),
-	tools: Type.Optional(Type.Array(Type.String(), { description: "Subset of my active tools; omit to inherit all" })),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "A subset of your active tools. Omit to inherit all of them." })),
 	maxDepth: Type.Optional(Type.Integer({
-		description: "Tree depth budget for this spawn (default 2). Only the top-level root session may set it; descendants inherit and can never raise it.",
+		description: "Tree depth budget for this spawn. Default 2. Only the root session sets it. Descendants inherit it. They cannot increase it.",
 		minimum: 0,
 	})),
 });
 
 const CheckSchema = Type.Object({
 	targets: Type.Optional(Type.Array(Type.String(), {
-		description: "Tree paths (/a/b absolute, me/child, ../sibling) or run id/prefix, session id, or name; omit for all",
+		description: "Tree path, name, run id, or session id. Omit for all of them. A path can be /a/b, me/child, or ../sibling.",
 	})),
-	wait: Type.Optional(Type.Boolean({ description: "Block until they finish (returns early)" })),
+	wait: Type.Optional(Type.Boolean({ description: "Block until the targets finish or the timeout ends." })),
 	mode: Type.Optional(Type.String({
-		description: "With wait: resolve when any or all finish (default all)",
+		description: "all waits for every target. any returns at the first finished target. Default all.",
 		enum: ["any", "all"],
 	})),
 	timeoutMs: Type.Optional(Type.Integer({ description: "Max wait in ms (default 30000, max 300000)" })),
 });
 
 const CancelSchema = Type.Object({
-	target: Type.String({ description: "Tree path (/a/b, me/child, ../sibling) or run id/prefix, session id, or name" }),
+	target: Type.String({ description: "Tree path, name, run id, or session id. Paths with /a/b start at the root. me/child names your child. ../name names a sibling. Two dots reach the root from a direct child. A single slash reaches the root from below." }),
 });
 
 const SendSchema = Type.Object({
-	target: Type.String({ description: "Tree path (/a/b absolute, me/child, ../sibling) or run id/prefix, session id, or name" }),
+	target: Type.String({ description: "Tree path, name, run id, or session id. A path can be /a/b, me/child, or ../sibling." }),
 	message: Type.String({ description: "Message for the subagent" }),
 	mode: Type.Optional(Type.String({
-		description: "steer (default) redirects current work; followUp queues behind it",
+		description: "Message mode. steer asks the target to change direction. followUp waits for the current work. Default steer. A busy target queues both as follow-up. The receipt states the delivery.",
 		enum: ["steer", "followUp"],
 	})),
 });
@@ -737,7 +737,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		// on a result nobody can collect, so refuse and re-delegate instead.
 		const resumerParent = getCachedRecords(agentDir).find((candidate) => candidate.runId === current.parentRunId);
 		if (resumerParent && isTerminalStatus(resumerParent.status)) {
-			throw new Error(`Cannot resume ${current.name}: its parent ${resumerParent.name} already ${resumerParent.status}. Spawn a fresh subagent instead.`);
+			throw new Error(`Cannot resume ${current.name}. Its parent ${resumerParent.name} already ${resumerParent.status}. Spawn a fresh subagent.`);
 		}
 		if (!ctx?.scopedModels || !ctx?.cwd) throw new Error(`${current.name} finished (${current.status}); retry with session context to resume it`);
 		await resumeSubagent(
@@ -928,11 +928,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		name: "spawn_agent",
 		label: "Spawn Agent",
 		description:
-			"Spawn a recursive Pi subagent that runs in the background and returns immediately. Finishing sends a steering notice; use check_subagents to read results.",
+			"Start a background subagent. It can spawn its own subagents. It returns immediately. When it finishes, you get a notice. Use check_subagents to read the result.",
 		promptSnippet: "Delegate work to a background subagent",
 		promptGuidelines: [
-			"spawn_agent returns immediately; keep working while the child runs.",
-			"Call check_subagents with wait:true before relying on spawned results; cancel_subagent stops a runaway.",
+			"spawn_agent returns immediately. Keep working while the child runs.",
+			"Call check_subagents with wait:true before you use spawned results. cancel_subagent stops a runaway.",
 		],
 		parameters: SpawnAgentSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -971,7 +971,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Spawned subagent "${record.name}" (run ${shortId(record.runId)}, depth ${record.depth}/${record.maxDepth}, model ${record.model}). It is ${record.status === "queued" ? "queued" : "running in the background"} — continue with other work and call check_subagents (wait:true) to collect its result.`,
+						text: `Spawned subagent "${record.name}" (run ${shortId(record.runId)}, depth ${record.depth}/${record.maxDepth}, model ${record.model}). It is ${record.status === "queued" ? "queued" : "running in the background"}. Continue your other work. Call check_subagents (wait:true) to collect its result.`,
 					},
 				],
 				details: { record },
@@ -1000,8 +1000,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		name: "check_subagents",
 		label: "Check Subagents",
 		description:
-			"Check this session's subagents — all of them, or a `targets` list — and collect each finished result once. Already-delivered results are not repeated.",
-		promptSnippet: "Check background subagent results",
+			"Check your subagents. Omit targets to check all of them. check_subagents delivers each finished result once. Delivered results never repeat. Mode all waits for every target. Mode any returns at the first finished target. The footer lists uncollected results. They hide after 10 minutes and 5 of your turns.",
+		promptSnippet: "Check subagent results",
 		parameters: CheckSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (!runtime) throw new Error("Subagent extension settings failed to initialize");
@@ -1110,8 +1110,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "send_to_subagent",
 		label: "Send to Subagent",
-		description: "Message anyone in the tree except this session: /a/b absolute from root, me/child, ../sibling, or a name/run id/session id. `..` from a direct child and `/` from anywhere reach the root session itself. Running sessions receive it in place (steer redirects, followUp queues); finished ones resume from transcript without changing owner; queued ones park until start.",
-		promptSnippet: "Message any subagent by tree path (running, finished, queued, or cancelled)",
+		description: "Send a message to any subagent except your own session. Address it by path, name, run id, or session id. A running session gets the message in place. A finished session resumes from its transcript. A queued session gets the message at start. A busy session queues the message as a follow-up. It never interrupts the busy session.",
+		promptSnippet: "Message any subagent",
 		parameters: SendSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			await ensureMeshBound(ctx?.ui);
@@ -1148,8 +1148,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			const { resumed, queued, channel } = await sendToRecord(record, params.message, signal, mode, ctx);
 			const kind = mode === "followUp" ? "follow-up" : "steering";
 			const receipt = resumed ? `Resumed ${record.name} from its transcript with a new execution.`
-				: queued || channel === "starting" ? `Queued message for ${record.name} (not running yet; delivers when its session starts).`
-				: channel === "live" ? `Sent ${kind} message to ${record.name} over its live channel (applies on its next turn).`
+				: queued || channel === "starting" ? `Queued message for ${record.name}. It is not running yet. It delivers when its session starts.`
+				: channel === "live" ? `Sent ${kind} message to ${record.name} over its live channel. It applies on its next turn.`
 				: `Sent ${kind} message to ${record.name}: received, delivers when it idles.`;
 			return {
 				content: [{ type: "text", text: receipt }],
@@ -1161,7 +1161,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "cancel_subagent",
 		label: "Cancel Subagent",
-		description: "Abort a running or queued subagent's current turn and stop its process. Send a new message later to resume it from its transcript.",
+		description: "Stop a running or queued subagent. Its current turn ends. Its process stops. Send a message later to resume it from its transcript.",
 		promptSnippet: "Stop a running subagent",
 		parameters: CancelSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
