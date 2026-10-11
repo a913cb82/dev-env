@@ -86,9 +86,37 @@ export class SubagentStatusWidget implements Component {
 		// Runs I dismissed (viewed read-only) stay hidden across reloads, like
 		// delivered ones; a new execution resurfaces under a new key.
 		const dismissed = this.dismissedByMe();
-		return descendantsOf(getCachedRecords(this.agentDir), this.currentRunId).filter(
+		const all = getCachedRecords(this.agentDir);
+		const byId = new Map(all.map((record) => [record.runId, record]));
+		const visible = descendantsOf(all, this.currentRunId).filter(
 			(record) => !(isTerminalStatus(record.status) && (record.resultsDelivered || dismissed.has(executionResultKey(record)))),
 		);
+		// Keep every visible row's ancestry: a live grandchild must never
+		// render as a root-level run after its parents are collected.
+		const keep = new Set(visible.map((record) => record.runId));
+		for (const record of visible) {
+			let parentId = record.parentRunId;
+			while (parentId && parentId !== this.currentRunId && !keep.has(parentId)) {
+				const parent = byId.get(parentId);
+				if (!parent) break;
+				keep.add(parentId);
+				parentId = parent.parentRunId;
+			}
+		}
+		// Parent-first, family-grouped: registry order is arbitrary, so sort
+		// by (direct-child family, depth) for a readable top-down tree.
+		const index = new Map(all.map((record, i) => [record.runId, i]));
+		const familyRoot = (record) => {
+			let node = record;
+			for (;;) {
+				const parent = byId.get(node.parentRunId);
+				if (!parent || parent.runId === this.currentRunId) return node.runId;
+				node = parent;
+			}
+		};
+		return all
+			.filter((record) => keep.has(record.runId))
+			.sort((a, b) => index.get(familyRoot(a))! - index.get(familyRoot(b))! || a.depth - b.depth);
 	}
 
 	private build(): string[] {

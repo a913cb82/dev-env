@@ -148,6 +148,16 @@ function assistantMessage(text, msgUsage) {
 	registry.saveRecord(wakeDir, makeRecord({ runId: "livep", parentRunId: "root", status: "running" }));
 	registry.saveRecord(wakeDir, makeRecord({ runId: "liveg", parentRunId: "livep", status: "completed" }));
 	check("live parent never wakes", (await self.maybeWakeParent({ agentDir: wakeDir, ownRunId: "liveg", canLaunch: () => true, buildContext: wakeCtx })) === "parent-live");
+	// A settled-but-lingering parent owns its turn: the owner path delivers,
+	// so waking it too would run two writers on one session (live duplicate).
+	registry.saveRecord(wakeDir, makeRecord({ runId: "lingerp", parentRunId: "root", status: "completed", pid: process.pid }));
+	registry.saveRecord(wakeDir, makeRecord({ runId: "lingerg", parentRunId: "lingerp", status: "completed" }));
+	let resumeAttempted = false;
+	const lingerResult = await self.maybeWakeParent({
+		agentDir: wakeDir, ownRunId: "lingerg", canLaunch: () => true,
+		buildContext: () => { resumeAttempted = true; return wakeCtx(); },
+	});
+	check("settled-but-lingering parent never wakes", lingerResult === "parent-live" && resumeAttempted === false, lingerResult);
 	check("missing own skips", (await self.maybeWakeParent({ agentDir: wakeDir, ownRunId: "orphan-g", canLaunch: () => true, buildContext: wakeCtx })) === "missing");
 	registry.saveRecord(wakeDir, makeRecord({ runId: "nop-g", parentRunId: "ghost", status: "completed" }));
 	check("missing parent skips", (await self.maybeWakeParent({ agentDir: wakeDir, ownRunId: "nop-g", canLaunch: () => true, buildContext: wakeCtx })) === "no-parent");

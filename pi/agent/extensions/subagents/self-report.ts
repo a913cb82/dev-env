@@ -1,4 +1,4 @@
-import { isTerminalStatus, readRecords, saveRecord } from "./registry.ts";
+import { isProcessAlive, isTerminalStatus, readRecords, saveRecord } from "./registry.ts";
 export { shouldSkipOwnerWrite } from "./registry.ts";
 import { resumeSubagent, type SpawnContext } from "./spawn-agent.ts";
 import { EMPTY_USAGE, type AgentRecord, type UsageSummary } from "./types.ts";
@@ -123,7 +123,10 @@ export interface WakeDeps {
 
 /** Wake a settled parent with our result notification. The parent resumes
  * from its transcript (same run, same owner) and collects our already
- * finalized record; live parents are left to their own monitor. */
+ * finalized record. Liveness, not status, decides: a settled-but-lingering
+ * parent owns its turn (its monitor and mesh server are up, so the owner
+ * path delivers), and resuming it too would run two writers on one session.
+ * Only a settled parent with no live process is resumed. */
 export async function maybeWakeParent(deps: WakeDeps): Promise<"resumed" | "parent-live" | "no-parent" | "missing" | "gate-full" | "resume-failed"> {
 	const rows = readRecords(deps.agentDir);
 	const own = rows.find((record) => record.runId === deps.ownRunId);
@@ -131,6 +134,7 @@ export async function maybeWakeParent(deps: WakeDeps): Promise<"resumed" | "pare
 	const parent = rows.find((record) => record.runId === own.parentRunId);
 	if (!parent) return "no-parent";
 	if (!isTerminalStatus(parent.status)) return "parent-live";
+	if (isProcessAlive(parent.pid)) return "parent-live";
 	if (!deps.canLaunch()) return "gate-full";
 	const wakeText =
 		`Subagent ${own.name} finished (${own.status}, run ${own.runId.slice(0, 8)}). ` +
