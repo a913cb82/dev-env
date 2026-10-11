@@ -50,6 +50,8 @@ function check(name, cond, extra) {
 	registry.saveRecord(dir, rec("top", "me", "completed", 1));
 	registry.saveRecord(dir, rec("mid", "top", "completed", 2));
 	registry.saveRecord(dir, rec("bot", "mid", "running", 3));
+	registry.saveRecord(dir, rec("m2", "top", "running", 2));
+	registry.saveRecord(dir, rec("m2a", "m2", "running", 3));
 	// Collect the parents (as if their results were delivered to their owners).
 	for (const id of ["top", "mid"]) {
 		const row = registry.readRecords(dir).find((r) => r.runId === id);
@@ -59,20 +61,23 @@ function check(name, cond, extra) {
 	const theme = { fg: (color, text) => text };
 	const foot = new widget.SubagentStatusWidget(tui, theme, dir, "me");
 	const lines = foot.render(200);
-	check("footer keeps collected parents of a live descendant", lines.length === 3, JSON.stringify(lines));
-	check("chain order reads top-down",
-		lines[0].includes("top") && lines[1].includes("mid") && lines[2].includes("bot"),
-		JSON.stringify(lines));
-	check("live descendant stays indented under its chain",
-		!/^ /.test(lines[0]) && /^  +/.test(lines[2]), JSON.stringify(lines));
+	check("footer keeps collected parents of a live descendant", lines.length === 5, JSON.stringify(lines));
+	check("grandchild guides follow a non-last parent", /^│  └─ /.test(lines.find((line) => line.includes("m2a")) ?? ""), JSON.stringify(lines));
+	check("roots render bare", /^✓ top /.test(lines[0]), JSON.stringify(lines));
+	check("siblings order by name", lines[1].includes("m2") && lines[2].includes("mid"), JSON.stringify(lines));
+	check("non-last child uses mid branch", /^├─ /.test(lines[1]), JSON.stringify(lines));
+	check("last child uses end branch", /^└─ /.test(lines[2]), JSON.stringify(lines));
+	check("grandchild guides follow a last parent", /^   └─ /.test(lines[3]) && lines[3].includes("bot"), JSON.stringify(lines));
 	check("no via parent suffix", lines.every((line) => !line.includes("via")), JSON.stringify(lines));
 	check("model shows short id plus thinking level",
 		lines.every((line) => line.includes("m · xhigh") && !line.includes("prov/")), JSON.stringify(lines));
-	// Control: once the descendant drains too, the footer clears.
-	const botRow = registry.readRecords(dir).find((r) => r.runId === "bot");
-	registry.saveRecord(dir, { ...botRow, status: "completed", updatedAt: new Date().toISOString() });
-	const botDone = registry.readRecords(dir).find((r) => r.runId === "bot");
-	registry.markRecordResultState(dir, botDone, "resultsDelivered");
+	// Control: once the descendants drain too, the footer clears.
+	for (const id of ["bot", "m2", "m2a"]) {
+		const row = registry.readRecords(dir).find((r) => r.runId === id);
+		registry.saveRecord(dir, { ...row, status: "completed", updatedAt: new Date().toISOString() });
+		const done = registry.readRecords(dir).find((r) => r.runId === id);
+		registry.markRecordResultState(dir, done, "resultsDelivered");
+	}
 	foot.invalidate();
 	check("drained chain clears the footer", foot.render(200).length === 0, JSON.stringify(foot.render(200)));
 	foot.dispose();

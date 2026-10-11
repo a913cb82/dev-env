@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { statSync } from "node:fs";
-import { descendantsOf, executionResultKey, getCachedRecords, isTerminalStatus, listFooterDismissed, registryDir, relativeDepths } from "./registry.ts";
+import { descendantsOf, executionResultKey, getCachedRecords, isTerminalStatus, listFooterDismissed, registryDir } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
 /** How often the live activity line is refreshed. 2s: the line is passive
@@ -116,24 +116,48 @@ export class SubagentStatusWidget implements Component {
 		};
 		return all
 			.filter((record) => keep.has(record.runId))
-			.sort((a, b) => index.get(familyRoot(a))! - index.get(familyRoot(b))! || a.depth - b.depth);
+			.sort((a, b) => index.get(familyRoot(a))! - index.get(familyRoot(b))! || a.depth - b.depth || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	}
 
 	private build(): string[] {
 		const rows = this.outstanding();
 		if (rows.length === 0) return [];
-		const depths = relativeDepths(rows, this.currentRunId);
+		// Compact box-drawing tree: roots bare, children on ├─/└─ branches,
+		// deeper levels guided by │ only where a sibling follows below.
+		// Rows arrive parent-first and family-grouped with siblings ordered
+		// by name, so branch positions are deterministic.
+		const byId = new Map(rows.map((record) => [record.runId, record]));
+		const isRoot = (record: AgentRecord) =>
+			record.parentRunId === this.currentRunId || !byId.has(record.parentRunId);
+		const lastSibling = new Map<string, string>();
+		for (const record of rows) {
+			if (!isRoot(record)) lastSibling.set(record.parentRunId, record.runId);
+		}
+		const prefixFor = (record: AgentRecord): string => {
+			if (isRoot(record)) return "";
+			const ancestors: AgentRecord[] = [];
+			let id = record.parentRunId;
+			while (id && id !== this.currentRunId) {
+				const parent = byId.get(id);
+				if (!parent) break;
+				ancestors.unshift(parent);
+				id = parent.parentRunId;
+			}
+			// Guides cover every ancestor below the family root, which is bare.
+			const guides = ancestors
+				.slice(1)
+				.map((ancestor) => (lastSibling.get(ancestor.parentRunId) === ancestor.runId ? "   " : "│  "))
+				.join("");
+			return guides + (lastSibling.get(record.parentRunId) === record.runId ? "└─ " : "├─ ");
+		};
 		return rows.map((record) => {
-			const indent = "  ".repeat(depths.get(record.runId) ?? 0);
 			const icon = this.theme.fg(statusColor(record), statusIcon(record));
 			const activity = record.currentTool || record.activity || record.status;
 			const adopted = record.adoptedFrom ? ` · adopted` : "";
 			// Short model id (provider prefix dropped) plus thinking level.
-			// No `via` suffix: ancestry retention plus indent already shows
-			// the tree, so a live grandchild cannot look promoted.
 			const model = record.model.split("/").pop() || record.model;
 			const thinking = record.thinking ? ` · ${record.thinking}` : "";
-			return `${indent}${icon} ${record.name} ${this.theme.fg("dim", `${model}${thinking} · ${activity}${adopted}`)}`;
+			return `${prefixFor(record)}${icon} ${record.name} ${this.theme.fg("dim", `${model}${thinking} · ${activity}${adopted}`)}`;
 		});
 	}
 
