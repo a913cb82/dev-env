@@ -62,9 +62,11 @@ Verifiability BLOCK. Simplicity AMEND (no interface, no seam, kept).
    weeks: transport 52% fix-only, 41% full ledger — extend the window
    before pricing on this leg). Pass if mesh/PID/lock/sweep defects
    dominate (>50%) or a recurrence no incremental fix closes.
-3. Standing cost: probe-days per pi bump times release cadence (~2.6 days)
-   versus ledger cost per quarter. Pass only if staying migrated costs
-   less than the transport it replaces.
+3. Standing cost: probe-days per adopted pi bump times your real update
+   rate (you update rarely, not per release) versus ledger cost per
+   quarter. Pass only if staying migrated costs less than the transport
+   it replaces. Cadence arguments in this plan key on bumps you adopt,
+   never on the ~2.6-day release train.
 
 Any leg failing stops the migration with nothing rewritten. Revisit when
 SDK cadence drops below one breaking change per quarter or the ledger
@@ -85,10 +87,11 @@ The pin splits in two. Dev pin (types and probes, in a real manifest —
 none exists in this repo today). Runtime guard (the extension reads the
 host version at load and refuses loudly outside the tested range, ceiling
 included). A pin that cannot fail loud at runtime is decoration. Re-probe
-tiers by changelog surface: patch or no SDK surface means smoke (probes 1,
-6); minor with settle/session/event entries means targeted (1, 2, 3, 6,
-7); session-version bump or agent/turn/disposition change means full
-suite plus freeze review. A fast timing canary (prompt, steer, abort,
+tiers by changelog surface between your adopted versions (skipped
+releases fold into one tier assessment): patch or no SDK surface means
+smoke (probes 1, 6); minor with settle/session/event entries means
+targeted (1, 2, 3, 6, 7); session-version bump or agent/turn/disposition
+change means full suite plus freeze review. A fast timing canary (prompt, steer, abort,
 settle ordering plus `aborted` presence plus `waitForIdle`-vs-settle)
 runs per host version so silent timing drift is caught without the full
 battery. Rollback needs pre-flag-day session backup: sessions migrate
