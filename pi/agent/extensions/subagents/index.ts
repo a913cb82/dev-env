@@ -219,12 +219,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	 * order when the session idles. Bounded: beyond the cap the oldest goes. */
 	const meshParked: Array<{ from: string; mode: SubagentMessageMode; text: string }> = [];
 	const MESH_PARK_CAP = 50;
-	/** Inject mesh text into this session as a native steer/followUp message. */
-	const injectMeshNow = async (from: string, mode: SubagentMessageMode, text: string) => {
+	/** Inject mesh text into this session as a native followUp message.
+	 * triggerTurn wakes an idle session; it must never fire into a busy one
+	 * (kicked mid-turn targets die), so parked flushes queue silently and let
+	 * the host drain the queue after the current work. */
+	const injectMeshNow = async (from: string, mode: SubagentMessageMode, text: string, triggerTurn = true) => {
 		try {
 			await pi.sendMessage(
 				{ content: `[${senderName(from)}] ${text}` },
-				{ triggerTurn: true, deliverAs: mode },
+				{ triggerTurn, deliverAs: mode },
 			);
 		} catch {
 			// Session ending or host rejection: the message is dropped.
@@ -256,7 +259,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	const flushMeshParked = async () => {
 		while (meshParked.length > 0 && !shuttingDown && runtime && (!isIdle || isIdle())) {
 			const next = meshParked.shift()!;
-			await injectMeshNow(next.from, next.mode === "steer" ? "followUp" : next.mode, next.text);
+			await injectMeshNow(next.from, next.mode === "steer" ? "followUp" : next.mode, next.text, false);
 		}
 	};
 	// Recently seen inbound mesh envelope ids. The sender retries after any

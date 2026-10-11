@@ -1282,6 +1282,7 @@ function check(name, cond, extra) {
 		// passed while it waited, and a late steer aborts the target's turn.
 		const parkedFlush = parkSends.find((s) => String(s.message.content).includes("parked hello"));
 		check("parked steer flushes as follow-up", parkedFlush?.options?.deliverAs === "followUp", JSON.stringify(parkedFlush?.options));
+		check("parked flush never force-triggers", parkedFlush?.options?.triggerTurn !== true, JSON.stringify(parkedFlush?.options));
 		// A mesh steer that finds the target idle downgrades too: mesh senders
 		// never know the target state, so only the live channel may redirect.
 		const idleFrame = `${JSON.stringify({ v: 1, type: "steer", from: "park-sender", to: "park-me", id: "park-probe-2", seq: 2, payload: { text: "idle hello" } })}\n`;
@@ -1294,6 +1295,7 @@ function check(name, cond, extra) {
 		const idleArrived = await until(() => parkSends.some((s) => String(s.message.content).includes("idle hello")));
 		const idleSend = parkSends.find((s) => String(s.message.content).includes("idle hello"));
 		check("idle mesh steer injects as follow-up", idleArrived && idleSend?.options?.deliverAs === "followUp", JSON.stringify(idleSend?.options));
+		check("idle inject still triggers the turn", idleArrived && idleSend?.options?.triggerTurn === true, JSON.stringify(idleSend?.options));
 		// Failed binds leave a parent-visible marker, back off across tool
 		// executes (attempts observable in the marker), and clear on recovery.
 		const offlineDir = path.join(sandbox, "offline-agent");
