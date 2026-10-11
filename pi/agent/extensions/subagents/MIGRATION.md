@@ -10,7 +10,23 @@ Simplicity is a hard constraint on the path, not just the end state. One
 transport per tree. Thin adapter or it fails review. Delete, do not port.
 No phase may add lasting complexity to serve the transition.
 
-## 0. Round-1 review verdicts (4 reviewers, all read the code)
+## 0. Review verdicts (8 reviewers, all read the code)
+
+Round 2: trust-knob NO-GO (no per-prompt trust primitive exists on SDK
+1.0.0; probe 7 needs an SDK change or a downgrade to per-session-at-spawn
+trust). Orphan-sweeper BLOCK (seven-state fan at new-host start, no
+liveness oracle, five of six sweeper primitives missing from
+SessionManager). Ledger CONDITIONAL PASS (transport 22/42 fixes = 52% on
+fix-only counting, 41% on the full ledger; 3-week window, not 3-month).
+Wildcard BLOCK (PI_SUBAGENT_* env is an unnamed second transport: depth
+bypass plus cross-tree contamination in-process; config.ts must be
+rewritten, not unchanged; new kill-gate probe added).
+
+Round 1: correctness 2x BLOCK + AMEND (orphan sweeper, trust/UI carriers,
+cancel contract). Value BLOCK (unpriced payoff, capability downgrade,
+adapter tax; answered by Gate 0). Verifiability BLOCK (untestable probe
+5, vacuous suite gates). Simplicity AMEND (no interface, no seam, no
+split suites; kept).
 
 - Correctness: 2x BLOCK + AMEND. Orphan resume needs a specified sweeper
   before any deletion. Approval/UI carriers must pin to the pinned SDK
@@ -72,12 +88,18 @@ probes outrank prose docs and d.ts examples (the shipped example uses a
 
 ## 3. Target semantics (frozen before any refactor)
 
-- Orphan survival becomes resume with a specified sweeper: `session_start`
-  re-queues non-terminal runs with no `reloadInterrupted` marker via
-  `SessionManager` instead of synthesizing `failed`. Liveness without PIDs
-  is session reachability, never a dummy pid. Test 21 asserts
-  resume-and-collect. `spareLiveTree` and `self-report.ts` stay until the
-  sweeper is green.
+- Orphan survival becomes resume with a triaged sweeper. A dead host
+  leaves seven states, not one: mid-LLM turn (resume with new
+  executionId), mid-tool turn (inspect pending tool calls first, never
+  blind re-prompt), never-started (fresh start from task, not
+  transcript), self-reported terminal (collect, never re-queue),
+  cancelled or delivered corpse (hands off), parked messages (drain
+  then resume exactly once), stale sessionFile (resolve via
+  SessionManager or fail loud). Liveness without PIDs is an open design
+  problem: SessionManager answers disk-state, not live-handle ownership,
+  so live-elsewhere versus true-orphan needs a claim generation before
+  any adoption. Test 21 asserts resume-and-collect. `spareLiveTree` and
+  `self-report.ts` stay until the sweeper is green.
 - Interrupt stays send-first-then-abort as one serialized unit on the live
   handle only, replicating the current `messageQueue` chain; elsewhere it
   degrades to `followUp`. Abort-then-steer ordering is proven per probe 3,
@@ -86,16 +108,27 @@ probes outrank prose docs and d.ts examples (the shipped example uses a
   generation under lock; cancel re-checks generation after abort and loops
   if the run re-queued beneath it. Supersede uses a monotonic generation
   sequence, never wall-clock equality.
-- Approval inheritance is preserved with per-prompt trust: symlink
-  re-resolution at every prompt and resume, not at session create, scoped
-  through the pinned per-session mechanism or the migration stops.
-  Silent always-approve is escalation; silent never-approve is a hang.
+- Approval trust is per-session-at-spawn until the SDK grows a knob:
+  no per-prompt trust primitive exists on 1.0.0 (createAgentSession and
+  prompt have no trust field; setProjectTrusted plus reload plus prompt
+  are three non-atomic caller steps). Resolve once via ensureDirectory
+  plus containment, pin the child's SettingsManager, re-resolve only by
+  building a fresh runtime at resume. The symlink-swap-between-check-
+  and-prompt leg is dropped and recorded here as an explicit downgrade
+  from today's TOCTOU-safe --approve-per-spawn. Silent always-approve
+  is escalation; silent never-approve is a hang; either kills the
+  migration. An SDK-side atomic trust input reopens the stronger form.
 - UI requests keep forward-or-cancel with exactly-once delivery per
   request; headless auto-cancel stays until a designed replacement ships
   with its own probe.
 - Concurrency gates and queued/starting lifecycles stay explicit.
 - Unreachable children stay visible with error text, not a boolean.
 - Usage reporting keeps the full 6-field summary the cost math needs.
+- Identity travels in closures, never env: PI_SUBAGENT_* reads and writes
+  are transport and die with it. `config.ts` moves from unchanged to
+  rewritten as pure functions of explicit args (runId, rootRunId, depth,
+  settings, flag overrides). Per-process env collapses in-process: depth
+  limits stop firing and concurrent trees contaminate budgets.
 
 ## 4. Probes: kill gates with numbers (time-boxed, days)
 
@@ -121,15 +154,20 @@ migration with nothing rewritten.
 6. Settle payload and timing on the pinned version: `aborted` flag
    presence, settle vs `waitForIdle` ordering, sends during settle
    emission. Kill on skew the adapter cannot absorb.
-7. Approval matrix: trusted/untrusted x inside/outside x
-   symlink-swap-between-check-and-prompt. Kill on silent always-approve
-   or silent never-approve hang.
+7. Approval matrix: trusted/untrusted x inside/outside, with the
+   per-session-at-spawn downgrade recorded. Kill on silent
+   always-approve or silent never-approve hang.
 8. UI matrix: headless parent, UI parent, two concurrent child requests.
    Pass is exactly-once forward-or-cancel per request with dismissal
    normalized at the boundary. Deadlock, vanish, or double-prompt kills.
 9. Orphan probe: kill the host with a live grandchild, start a new host,
    collect via `check_subagents`. Kill if the result is `failed` instead
-   of resume-and-collect.
+   of resume-and-collect. The sweeper must first answer live-elsewhere
+   versus true-orphan without opening a second writer on a live session.
+10. Env-identity probe, one process: root maxDepth=1 allows the child
+    and rejects the grandchild with the depth-limit error; two
+    concurrent roots with maxDepth 1 versus 5 keep their own budgets.
+    Kill on any cross-talk.
 
 ## 5. Suite: parity corpus, no new harness
 
@@ -174,8 +212,12 @@ abort, turn backstop on subscribe events, settle via `waitForIdle`);
 keep records, execution-scoped markers with generation sequence, claim
 logic, audit schema).
 
-Unchanged: `config.ts`, `types.ts`, `cost.ts`, `widget.ts`, addressing,
+Unchanged: `types.ts`, `cost.ts`, `widget.ts`, addressing,
 tool descriptions, receipts, README behavior sections.
+
+Rewritten (was unchanged): `config.ts` becomes env-free pure functions
+of explicit args; every PI_SUBAGENT_* read and write is deleted as
+transport.
 
 Explicitly retained in adapted form: cancelled/closed markers on
 execution ids, reload-interrupt markers, adoption suffixing, symlink
