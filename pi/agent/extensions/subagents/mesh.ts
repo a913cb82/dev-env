@@ -2,7 +2,7 @@
 // Any session sends text (steer/followUp) and settle notifications directly
 // to any other session by runId. Node builtins only.
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { mkdirSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const MESH_PROTOCOL_VERSION = 1;
@@ -51,6 +51,8 @@ export interface MeshSendOptions {
 
 let messageCounter = 0;
 
+let ownerTokenCounter = 0;
+
 export function sanitizeRunId(runId: string): string {
 	return runId.replace(/[^A-Za-z0-9_-]/g, "_");
 }
@@ -84,16 +86,30 @@ export async function sweepStaleSockets(socketDir: string, isProtected: (socketF
 	} catch {
 		return [];
 	}
-	const stale = entries.filter((entry) => entry.endsWith(".sock") && !isProtected(entry));
+	const stale = entries.filter((entry) => entry.endsWith(".sock") && !entry.endsWith(".sock.owner") && !isProtected(entry));
 	const removed: string[] = [];
+	const dropOwner = (entry: string) => {
+		try { rmSync(join(socketDir, `${entry}.owner`), { force: true }); } catch { /* already gone */ }
+	};
 	await Promise.all(stale.map(async (entry) => {
 		const target = join(socketDir, entry);
 		if (await isSocketConnectable(target, 300)) return;
 		try {
 			rmSync(target, { force: true });
+			dropOwner(entry);
 			removed.push(entry);
 		} catch { /* raced unlink */ }
 	}));
+	// Owner sidecars whose socket is gone (crash leftovers) go too; a future
+	// bind overwrites the token, so nothing valid is lost.
+	for (const entry of entries) {
+		if (!entry.endsWith(".sock.owner")) continue;
+		const socketFile = entry.slice(0, -".owner".length);
+		if (removed.includes(socketFile)) continue;
+		try {
+			if (!existsSync(join(socketDir, socketFile))) rmSync(join(socketDir, entry), { force: true });
+		} catch { /* raced */ }
+	}
 	return removed;
 }
 
@@ -237,6 +253,30 @@ export function startMeshServer(options: MeshServerOptions): Promise<MeshServer>
 		server.listen(socketPath, () => {
 			server.removeListener("error", reject);
 			let closed = false;
+			// Owner token sidecar: `<socket>.owner` holds this bind's unique token.
+			// close() unlinks the socket only while the token still matches, so
+			// a rebind (same copy, reloaded copy, or racing predecessor) is
+			// never unlinked by the previous owner's late close. Inode
+			// comparison cannot do this: the kernel reuses freed inode
+			// numbers, so a rebound file can test identical to the deleted one.
+			const ownerToken = `${process.pid}:${++ownerTokenCounter}:${Date.now()}`;
+			const ownerPath = `${socketPath}.owner`;
+			try {
+				writeFileSync(ownerPath, `${ownerToken}\n`, { encoding: "utf8", mode: 0o600 });
+			} catch {
+				// Best effort: without a token the close below stays conservative.
+			}
+			// Kernel-stamped creation time of the file this bind created. The
+			// token alone has a split-write hole (socket exists before the
+			// token lands); the birthtime alone has a coarse-clock hole on
+			// exotic filesystems. Together they are sound: a rebound file is
+			// always strictly newer, and a token always differs.
+			let boundBirthMs: number | undefined;
+			try {
+				boundBirthMs = statSync(socketPath).birthtimeMs;
+			} catch {
+				// Vanished already; token-only check below.
+			}
 			resolve({
 				runId: options.runId,
 				socketPath,
@@ -249,9 +289,30 @@ export function startMeshServer(options: MeshServerOptions): Promise<MeshServer>
 						try { open.destroy(); } catch { /* already gone */ }
 					}
 					return new Promise<void>((done) => {
-						server.close(() => { removeFile(socketPath); done(); });
-						// close() without connections still calls back; force unlink either way.
-						setImmediate(() => { removeFile(socketPath); });
+						// server.close always calls back (even with zero open
+						// connections), so this check strictly precedes done().
+						// A rebound token means a newer owner holds the name:
+						// unlinking would deafen it (ghost bind).
+						server.close(() => {
+							try {
+								const tokenMatch = readFileSync(ownerPath, "utf8").trim() === ownerToken;
+								let birthMatch = boundBirthMs === undefined;
+								if (!birthMatch) {
+									try {
+										birthMatch = statSync(socketPath).birthtimeMs === boundBirthMs;
+									} catch {
+										birthMatch = false;
+									}
+								}
+								if (tokenMatch && birthMatch) {
+									removeFile(socketPath);
+									removeFile(ownerPath);
+								}
+							} catch {
+								// Absent or unreadable: leave it (the sweep reaps strays).
+							}
+							done();
+						});
 					});
 				},
 			});

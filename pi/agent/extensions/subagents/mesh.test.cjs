@@ -220,6 +220,26 @@ const until = async (seen) => { for (let i = 0; i < 200 && !seen(); i++) await s
 	await sweepLive.close();
 	const missing = await mesh.sweepStaleSockets(path.join(sandbox, "no-such-dir"), () => false);
 	check("sweep on a missing dir removes nothing", Array.isArray(missing) && missing.length === 0);
+	// Rebind after close recreates the socket file (stale-handle recovery).
+	const rebind = await mesh.startMeshServer({ socketDir, runId: "run-rebind", onMessage: () => {} });
+	check("first bind creates the file", fs.existsSync(rebind.socketPath));
+	await rebind.close();
+	check("close removes the file", !fs.existsSync(rebind.socketPath));
+	const rebind2 = await mesh.startMeshServer({ socketDir, runId: "run-rebind", onMessage: () => {} });
+	check("rebind recreates the file", fs.existsSync(rebind2.socketPath));
+	await rebind2.close();
+	// Interleaved close then rebind (stale-handle healing): the old close
+	// must not unlink the fresh socket after listen recreated it. The
+	// timer drain orders after the check phase, so any trailing unlink
+	// from close() has fired before this assert runs.
+	const raced = await mesh.startMeshServer({ socketDir, runId: "run-raced", onMessage: () => {} });
+	check("race fixture bound", fs.existsSync(raced.socketPath));
+	const closing = raced.close();
+	const raced2 = await mesh.startMeshServer({ socketDir, runId: "run-raced", onMessage: () => {} });
+	await closing;
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	check("interleaved rebind keeps its file", fs.existsSync(raced2.socketPath));
+	await raced2.close();
 	for (const server of waitServers) await server.close();
 	// --- close is idempotent, remaining server still works ---
 	await serverA.close();

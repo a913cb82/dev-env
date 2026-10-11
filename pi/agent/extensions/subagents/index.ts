@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	getAgentDir,
@@ -170,9 +170,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		} catch { /* notification is best effort */ }
 	};
 	const ensureMeshBound = async (ui?: { notify?: (message: string, type?: string) => void }) => {
-		const diagSock = (() => { try { return meshSocketPath(meshSocketDir(getAgentDir()), runtime?.runId ?? "?"); } catch { return "?"; } })();
-		const diagExists = (() => { try { return existsSync(diagSock); } catch { return "throw"; } })();
-		try { appendFileSync("/tmp/mesh-live.log", `${new Date().toISOString()} ensure runId=${runtime?.runId} shuttingDown=${shuttingDown} haveServer=${!!meshServer} failures=${meshBindFailures} cooldown=${meshBindCooldown} sock=${diagSock} exists=${diagExists}\n`); } catch { /* diag */ }
 		if (!runtime || shuttingDown) return;
 		// A stale handle (server object set, socket file gone - killed racing
 		// predecessor, external unlink) must rebind, not early-return deaf.
@@ -190,11 +187,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			return;
 		}
 		noteMeshBindOutcome(await bindMeshServer(), ui);
-		try {
-			const s2 = (() => { try { return meshSocketPath(meshSocketDir(getAgentDir()), runtime?.runId ?? "?"); } catch { return "?"; } })();
-			const e2 = (() => { try { return existsSync(s2); } catch { return "throw"; } })();
-			appendFileSync("/tmp/mesh-live.log", `${new Date().toISOString()} ensure-exit haveServer=${!!meshServer} failures=${meshBindFailures} sock=${s2} exists=${e2}\n`);
-		} catch { /* diag */ }
 	};
 	const deliveredResults = new Set<string>();
 	const notifiedResults = new Set<string>();
