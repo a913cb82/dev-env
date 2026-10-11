@@ -205,6 +205,21 @@ const until = async (seen) => { for (let i = 0; i < 200 && !seen(); i++) await s
 	await until(() => reReceived.length === 1);
 	check("rebound server receives exactly once", reReceived.length === 1 && reReceived[0].payload.text === "rebound", JSON.stringify(reReceived));
 	await reServer2.close();
+	// --- stale socket sweep ---
+	const sweepLive = await mesh.startMeshServer({ socketDir, runId: "run-sweep-live", onMessage: () => {} });
+	fs.writeFileSync(path.join(socketDir, "stale-dead.sock"), "");
+	fs.writeFileSync(path.join(socketDir, "stale-terminal.sock"), "");
+	fs.writeFileSync(path.join(socketDir, "notes.txt"), "not a socket");
+	const swept = await mesh.sweepStaleSockets(socketDir, (file) => file === "run-sweep-live.sock");
+	check("sweep removes unconnectable unprotected sockets", swept.includes("stale-dead.sock") && swept.includes("stale-terminal.sock"), JSON.stringify(swept));
+	check("swept files are unlinked", !fs.existsSync(path.join(socketDir, "stale-dead.sock")) && !fs.existsSync(path.join(socketDir, "stale-terminal.sock")));
+	check("sweep keeps the live socket", fs.existsSync(sweepLive.socketPath));
+	check("sweep ignores non-socket files", fs.existsSync(path.join(socketDir, "notes.txt")));
+	const resweep = await mesh.sweepStaleSockets(socketDir, () => false);
+	check("sweep keeps connectable sockets even when unprotected", fs.existsSync(sweepLive.socketPath) && !resweep.includes("run-sweep-live.sock"), JSON.stringify(resweep));
+	await sweepLive.close();
+	const missing = await mesh.sweepStaleSockets(path.join(sandbox, "no-such-dir"), () => false);
+	check("sweep on a missing dir removes nothing", Array.isArray(missing) && missing.length === 0);
 	for (const server of waitServers) await server.close();
 	// --- close is idempotent, remaining server still works ---
 	await serverA.close();

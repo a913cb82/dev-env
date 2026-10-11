@@ -11,7 +11,7 @@ import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
 import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, markMeshOffline, clearMeshOffline, readMeshOffline, type ReloadInterruptMarker } from "./registry.ts";
-import { deliverMeshMessage, startMeshServer, meshSocketDir, meshSocketPath, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
+import { deliverMeshMessage, startMeshServer, meshSocketDir, meshSocketPath, sanitizeRunId, sendMeshMessage, sweepStaleSockets, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
@@ -515,6 +515,21 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			noteMeshBindOutcome(await bindMeshServer(), ctx.hasUI ? ctx.ui : undefined);
 		} catch {
 			meshServer = undefined;
+		}
+		// Stale socket sweep: files no live run claims and nothing listens
+		// on are unlinked (senders would otherwise pay wait timeouts on
+		// dead names). Runs after the bind so this session's own fresh
+		// socket is connectable and therefore never swept.
+		try {
+			const liveNames = new Set(
+				getCachedRecords(meshAgentDir)
+					.filter((record) => !isTerminalStatus(record.status))
+					.map((record) => `${sanitizeRunId(record.runId)}.sock`),
+			);
+			liveNames.add(`${sanitizeRunId(runtime!.runId)}.sock`);
+			await sweepStaleSockets(meshSocketDir(meshAgentDir), (file) => liveNames.has(file));
+		} catch {
+		// Sweep is hygiene; a failure must not break startup.
 		}
 		// Parked messages (queued while this run had no session) drain in order.
 		try {

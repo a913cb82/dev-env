@@ -2,7 +2,8 @@
 // Any session sends text (steer/followUp) and settle notifications directly
 // to any other session by runId. Node builtins only.
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { mkdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 
 export const MESH_PROTOCOL_VERSION = 1;
 export const DEFAULT_MESH_MAX_LINE_CHARS = 64 * 1024 * 1024;
@@ -50,8 +51,50 @@ export interface MeshSendOptions {
 
 let messageCounter = 0;
 
-function sanitizeRunId(runId: string): string {
+export function sanitizeRunId(runId: string): string {
 	return runId.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+/** Probe whether anything listens on a socket path (fast fail for dead files). */
+function isSocketConnectable(socketPath: string, timeoutMs: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		let done = false;
+		const finish = (value: boolean) => {
+			if (done) return;
+			done = true;
+			resolve(value);
+		};
+		const timer = setTimeout(() => {
+			finish(false);
+			try { socket.destroy(); } catch { /* already gone */ }
+		}, timeoutMs);
+		const socket = createConnection(socketPath);
+		socket.on("connect", () => { clearTimeout(timer); finish(true); try { socket.destroy(); } catch { /* closing */ } });
+		socket.on("error", () => { clearTimeout(timer); finish(false); });
+	});
+}
+
+/** Remove stale socket files: unprotected (no live run claims the name)
+ * and unconnectable (nothing listens). Never touches a connectable socket
+ * or a live-claimed name. Returns the removed file names. */
+export async function sweepStaleSockets(socketDir: string, isProtected: (socketFile: string) => boolean): Promise<string[]> {
+	let entries: string[];
+	try {
+		entries = readdirSync(socketDir);
+	} catch {
+		return [];
+	}
+	const stale = entries.filter((entry) => entry.endsWith(".sock") && !isProtected(entry));
+	const removed: string[] = [];
+	await Promise.all(stale.map(async (entry) => {
+		const target = join(socketDir, entry);
+		if (await isSocketConnectable(target, 300)) return;
+		try {
+			rmSync(target, { force: true });
+			removed.push(entry);
+		} catch { /* raced unlink */ }
+	}));
+	return removed;
 }
 
 export function meshSocketPath(socketDir: string, runId: string): string {
