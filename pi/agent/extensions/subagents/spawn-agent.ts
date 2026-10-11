@@ -111,6 +111,18 @@ const startingChildren = new Map<string, StartingChild>();
 const ownedChildren = new Map<string, OwnedChild>();
 const childRuns = new Map<string, Promise<void>>();
 const runAbortControllers = new Map<string, AbortController>();
+/** Removable spawner-turn listeners: released when the run commits (slot held).
+ * After release only the session end or an explicit cancel ends the run. */
+const runTethers = new Map<string, () => void>();
+
+/** Release the spawner-turn tether: the run is committed, its lifetime
+ * belongs to the session now. Idempotent. */
+export function releaseRunTether(runId: string): void {
+	const release = runTethers.get(runId);
+	if (!release) return;
+	runTethers.delete(runId);
+	release();
+}
 
 export interface MeshSender {
 	runId: string;
@@ -233,6 +245,9 @@ export interface SpawnContext {
 	parentCwd: string;
 	projectTrusted: boolean;
 	signal?: AbortSignal;
+	/** Session lifetime. The gate wait uses this, never the spawner turn's
+	 * signal: an acknowledged run must outlive the turn that spawned it. */
+	sessionSignal?: AbortSignal;
 	onRecord?: (record: AgentRecord) => void;
 	onUiRequest?: (record: AgentRecord, request: any) => Promise<Record<string, unknown> | void>;
 	/** Fired once per child when it reaches a terminal state. */
@@ -697,10 +712,16 @@ export async function startSubagent(input: SpawnAgentInput, context: SpawnContex
 	if (context.signal) {
 		const abortRun = () => runAbort.abort();
 		if (context.signal.aborted) runAbort.abort();
-		else context.signal.addEventListener("abort", abortRun, { once: true });
+		else {
+			context.signal.addEventListener("abort", abortRun, { once: true });
+			runTethers.set(record.runId, () => context.signal?.removeEventListener("abort", abortRun));
+		}
 	}
 	const run = runSubagentProcess(input, context, record, runAbort.signal)
 		.catch((error) => {
+			// Session teardown owns every record from here: the shutdown
+			// cancel loop marks them, so a gate rejection writes nothing.
+			if (context.sessionSignal?.aborted) return;
 			if (isRecordCancelled(context.agentDir, record.runId)) {
 				const onDisk = readRecords(context.agentDir).find((candidate) => candidate.runId === record.runId);
 				if (onDisk) Object.assign(record, onDisk);
@@ -721,12 +742,16 @@ export async function startSubagent(input: SpawnAgentInput, context: SpawnContex
 		})
 		.finally(() => {
 			if (runAbortControllers.get(record.runId) === runAbort) runAbortControllers.delete(record.runId);
+			releaseRunTether(record.runId);
 			startingChildren.delete(record.runId);
 		});
 	childRuns.set(record.runId, run);
 	void run.finally(() => {
 		if (childRuns.get(record.runId) === run) childRuns.delete(record.runId);
 	});
+	// Acknowledged: the record is published, so the spawner turn no longer
+	// owns this run even while it still waits for a slot or launches.
+	releaseRunTether(record.runId);
 	return record;
 }
 
@@ -792,10 +817,16 @@ export async function resumeSubagent(
 	if (context.signal) {
 		const abortRun = () => runAbort.abort();
 		if (context.signal.aborted) runAbort.abort();
-		else context.signal.addEventListener("abort", abortRun, { once: true });
+		else {
+			context.signal.addEventListener("abort", abortRun, { once: true });
+			runTethers.set(record.runId, () => context.signal?.removeEventListener("abort", abortRun));
+		}
 	}
 	const run = runSubagentProcess({ task: message }, context, record, runAbort.signal, true)
 		.catch((error) => {
+			// Session teardown owns every record from here: the shutdown
+			// cancel loop marks them, so a gate rejection writes nothing.
+			if (context.sessionSignal?.aborted) return;
 			if (isRecordCancelled(context.agentDir, record.runId)) {
 				const onDisk = readRecords(context.agentDir).find((candidate) => candidate.runId === record.runId);
 				if (onDisk) Object.assign(record, onDisk);
@@ -814,12 +845,16 @@ export async function resumeSubagent(
 		})
 		.finally(() => {
 			if (runAbortControllers.get(record.runId) === runAbort) runAbortControllers.delete(record.runId);
+			releaseRunTether(record.runId);
 			startingChildren.delete(record.runId);
 		});
 	childRuns.set(record.runId, run);
 	void run.finally(() => {
 		if (childRuns.get(record.runId) === run) childRuns.delete(record.runId);
 	});
+	// Acknowledged: the record is published, so the resumer turn no longer
+	// owns this run even while it still waits for a slot or launches.
+	releaseRunTether(record.runId);
 	return record;
 }
 
@@ -872,7 +907,11 @@ async function runSubagentProcess(
 	};
 
 	try {
-		release = await gate.acquire(context.settings.maxConcurrency, runSignal);
+		// The gate wait outlives the spawner turn: the spawn already
+		// returned, so only the session end may cancel the queue.
+		release = await gate.acquire(context.settings.maxConcurrency, context.sessionSignal ?? runSignal);
+		// Slot held: the run is committed. The spawner turn no longer owns it.
+		releaseRunTether(record.runId);
 		if (record.status === "cancelled" || diskCancelled()) return;
 
 		const systemPrompt = `You are subagent "${record.name}" at depth ${record.depth}/${record.maxDepth}. Complete delegated tasks and return concise, self-contained results.`;

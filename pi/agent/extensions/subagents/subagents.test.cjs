@@ -2185,6 +2185,8 @@ function check(name, cond, extra) {
 	check("interrupt receipt promises immediate delivery", intReceipt.content[0].text.includes("Interrupted") && intReceipt.content[0].text.includes("at once"), intReceipt.content[0].text);
 	check("interrupted run continues to completion", intDone?.status === "completed", intDone && `${intDone.status} ${intDone.latestText}`);
 	check("interrupted run processes the message", (intDone?.latestText ?? "").includes("stop that"), intDone && `${intDone.status} ${intDone.latestText}`);
+	// The follow-up pair runs before the slow queue test below: followRow's
+	// turn lasts 3s, and anything slower lets it complete first.
 	const followAccepted = await spawn.sendSubagentMessage(followRow, "after your work", undefined, "followUp");
 	delete process.env.FAKE_DELAY_MS;
 	check("followUp to a running child is accepted", followAccepted === "live", String(followAccepted));
@@ -2195,6 +2197,60 @@ function check(name, cond, extra) {
 		await new Promise((r) => setTimeout(r, 50));
 	}
 	check("followUp executes as its own turn", followDone?.latestText === "steered: after your work", followDone && `${followDone.status} ${followDone.latestText}`);
+	const queueTools = new Map();
+	const queueHandlers = new Map();
+	const queueAgentDir = path.join(sandbox, "queue-abort-agent");
+	fs.mkdirSync(queueAgentDir, { recursive: true });
+	fs.writeFileSync(path.join(queueAgentDir, "subagents.json"), JSON.stringify({ maxConcurrency: 1 }));
+	const savedQueueRun = process.env.PI_SUBAGENT_RUN_ID;
+	const savedQueueRoot = process.env.PI_SUBAGENT_ROOT_ID;
+	const savedQueueDir = process.env.PI_CODING_AGENT_DIR;
+	const savedQueueCmd = process.env.PI_SUBAGENT_COMMAND;
+	const savedQueueDelay = process.env.FAKE_DELAY_MS;
+	process.env.PI_SUBAGENT_RUN_ID = "queue-parent";
+	process.env.PI_SUBAGENT_ROOT_ID = "queue-parent";
+	process.env.PI_CODING_AGENT_DIR = queueAgentDir;
+	process.env.PI_SUBAGENT_COMMAND = path.join(HERE, "fake-pi.cjs");
+	process.env.FAKE_DELAY_MS = "30000";
+	subagentsExtension({ ...checkPi, on: (event, handler) => queueHandlers.set(event, handler), registerTool: (tool) => queueTools.set(tool.name, tool), sendMessage: async () => {} });
+	await queueHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "queue-parent" }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+	const queueSpawnCtx = { cwd: sandbox, scopedModels: [], ui: {}, model: { provider: "fake", id: "probe" } };
+	const readQueue = (name) => registry.readRecords(queueAgentDir).find((r) => r.name === name);
+	await queueTools.get("spawn_agent").execute("queue-spawn-a", { task: "hang", name: "queue-a" }, undefined, undefined, queueSpawnCtx);
+	for (let i = 0; i < 200; i++) {
+		const row = readQueue("queue-a");
+		if (row && ["thinking", "running_tool"].includes(row.status)) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	const spawnerAbort = new AbortController();
+	await queueTools.get("spawn_agent").execute("queue-spawn-b", { task: "quick", name: "queue-b" }, spawnerAbort.signal, undefined, queueSpawnCtx);
+	for (let i = 0; i < 200; i++) {
+		if (readQueue("queue-b")?.activity === "waiting for a concurrency slot") break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	spawnerAbort.abort();
+	await new Promise((r) => setTimeout(r, 250));
+	const queueSurvivor = readQueue("queue-b");
+	check("queued run survives its spawner-signal abort", queueSurvivor && !registry.isTerminalStatus(queueSurvivor.status), queueSurvivor && `${queueSurvivor.status} ${queueSurvivor.error}`);
+	delete process.env.FAKE_DELAY_MS;
+	await queueTools.get("cancel_subagent").execute("queue-cancel-a", { target: "queue-a" }, undefined, undefined, queueSpawnCtx);
+	let queueDone;
+	for (let i = 0; i < 300; i++) {
+		queueDone = readQueue("queue-b");
+		if (queueDone && registry.isTerminalStatus(queueDone.status)) break;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	if (savedQueueRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+	else process.env.PI_SUBAGENT_RUN_ID = savedQueueRun;
+	if (savedQueueRoot === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
+	else process.env.PI_SUBAGENT_ROOT_ID = savedQueueRoot;
+	if (savedQueueDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = savedQueueDir;
+	if (savedQueueCmd === undefined) delete process.env.PI_SUBAGENT_COMMAND;
+	else process.env.PI_SUBAGENT_COMMAND = savedQueueCmd;
+	if (savedQueueDelay === undefined) delete process.env.FAKE_DELAY_MS;
+	else process.env.FAKE_DELAY_MS = savedQueueDelay;
+	check("freed queued run still starts and completes", queueDone?.status === "completed", queueDone && `${queueDone.status} ${queueDone.error}`);
 
 	// Turn backstop: one wrap-up steer at maxTurns, cancel past maxTurns+grace.
 	const turnCtx = (maxTurns, graceTurns) => ({ ...baseCtx(), settings: { ...baseCtx().settings, maxTurns, graceTurns } });
@@ -2563,23 +2619,43 @@ function check(name, cond, extra) {
 	const heldForAbort = await spawn.gate.acquire(1);
 	const abortQueuedCtl = new AbortController();
 	const abortQueued = await spawn.startSubagent(
-		{ task: "must not launch", name: "abort-queued" },
+		{ task: "launches after abort", name: "abort-queued" },
 		{ ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 }, signal: abortQueuedCtl.signal },
 	);
 	check("abort target starts queued", abortQueued.status === "queued", abortQueued.status);
 	abortQueuedCtl.abort();
 	await new Promise((r) => setTimeout(r, 20));
+	// Post-acknowledge abort no longer kills: the spawn already returned, so
+	// the run waits out the abort and launches when the slot frees.
+	const abortQueuedMid = registry.readRecords(spawnAgentDir).find((r) => r.runId === abortQueued.runId);
+	check("acknowledged queued run survives spawner abort", abortQueuedMid && !registry.isTerminalStatus(abortQueuedMid.status), abortQueuedMid && `${abortQueuedMid.status} ${abortQueuedMid.error}`);
 	heldForAbort();
 	let abortQueuedFinal;
-	for (let i = 0; i < 50; i++) {
+	for (let i = 0; i < 100; i++) {
 		abortQueuedFinal = registry.readRecords(spawnAgentDir).find((r) => r.runId === abortQueued.runId);
-		if (abortQueuedFinal && ["failed", "cancelled"].includes(abortQueuedFinal.status)) break;
+		if (abortQueuedFinal && abortQueuedFinal.status === "completed") break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
 	check(
-		"queued spawn abort does not launch a child",
-		abortQueuedFinal?.pid === undefined && !abortQueuedFinal?.latestText && String(abortQueuedFinal?.error || "").includes("aborted"),
+		"freed run launches and completes after the abort",
+		abortQueuedFinal?.status === "completed" && abortQueuedFinal?.latestText === "fake done",
 		JSON.stringify(abortQueuedFinal),
+	);
+	// Pre-acknowledge abort still refuses: an already-aborted signal fails
+	// fast before any record exists.
+	const preAbortCtl = new AbortController();
+	preAbortCtl.abort();
+	let preAbortError;
+	try {
+		await spawn.startSubagent(
+			{ task: "never spawns", name: "abort-pre" },
+			{ ...baseCtx(), settings: { maxDepth: 2, maxConcurrency: 1 }, signal: preAbortCtl.signal },
+		);
+	} catch (error) { preAbortError = error; }
+	check(
+		"aborted signal fails fast without a record",
+		preAbortError?.message.includes("aborted") && !registry.readRecords(spawnAgentDir).find((r) => r.name === "abort-pre"),
+		preAbortError?.message,
 	);
 
 	const heldForCancel = await spawn.gate.acquire(1);
