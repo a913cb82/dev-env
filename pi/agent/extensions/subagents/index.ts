@@ -136,6 +136,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		return lastError;
 	};
 	const warnMeshOffline = (lastError: unknown, ui?: { notify?: (message: string, type?: string) => void }) => {
+		try { appendFileSync("/tmp/mesh-bind.log", `${new Date().toISOString()} bind result haveServer=${!!meshServer} error=${lastError instanceof Error ? `${lastError.message} | ${lastError.stack?.split("\n").slice(0, 3).join(" / ")}` : String(lastError)}\n`); } catch { /* diag */ }
 		if (meshServer || meshWarned) return;
 		meshWarned = true;
 		try {
