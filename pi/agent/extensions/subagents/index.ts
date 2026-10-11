@@ -15,7 +15,6 @@ import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
 	cancelSubagent,
-	diag,
 	gate,
 	killPidTree,
 	reapOwnedIfDrained,
@@ -753,8 +752,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		const own = ownId ? readRecords(agentDir).find((candidate) => candidate.runId === runtime.runId) : undefined;
 		const spareLiveTree = (event as { reason?: string } | undefined)?.reason !== "reload" && !!own && isTerminalStatus(own.status);
 		const records = descendantsOf(getCachedRecords(agentDir), runtime.runId);
-		// TEMPORARY live-debug (remove after the grandchild-death hunt).
-		diag(`shutdown reason=${(event as { reason?: string } | undefined)?.reason} ownId=${ownId} ownStatus=${own?.status} spare=${spareLiveTree} tree=[${records.map((r) => `${r.name}:${r.status}`).join(",")}]`);
 		for (const record of records.slice().reverse()) {
 			try {
 				if (isTerminalStatus(record.status)) {
