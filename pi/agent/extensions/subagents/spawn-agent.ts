@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -13,6 +13,7 @@ import {
 	clearRecordPid,
 	clearReloadInterrupted,
 	descendantsOf,
+	getCachedRecords,
 	isProcessAlive,
 	isRecordCancelled,
 	isTerminalStatus,
@@ -29,6 +30,16 @@ const STDERR_LIMIT = 4000;
 const TERMINATION_WAIT_MS = 5000;
 const RPC_REQUEST_TIMEOUT_MS = 15_000;
 const RPC_STARTUP_TIMEOUT_MS = 30_000;
+
+// TEMPORARY live-debug logging (remove after the grandchild-death hunt).
+// Set SUBAGENTS_DIAG_FILE to capture shutdown/terminate decisions.
+const DIAG_TARGET = "/tmp/subagents-diag.log";
+export function diag(message: string): void {
+	const target = DIAG_TARGET;
+	try {
+		appendFileSync(target, `${new Date().toISOString()} pid=${process.pid} ${message}\n`);
+	} catch { /* never break prod paths */ }
+}
 
 export class ConcurrencyGate {
 	private running = 0;
@@ -448,6 +459,7 @@ function ownChild(runId: string, child: ChildProcessWithoutNullStreams): OwnedCh
 		closed: closedPromise,
 		terminate() {
 			if (terminating) return terminating;
+			diag(`owned.terminate runId=${runId} pid=${pid}`);
 			terminating = (async () => {
 				if (process.platform === "win32") {
 					spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
@@ -539,9 +551,39 @@ export async function cancelSubagent(agentDir: string, record: AgentRecord): Pro
 	return cancelOne(agentDir, record, "Cancelled");
 }
 
+/** True when no live descendant needs this run's pipes. */
+export function subtreeDrained(agentDir: string, runId: string): boolean {
+	try {
+		return !descendantsOf(getCachedRecords(agentDir), runId).some((child) => !isTerminalStatus(child.status));
+	} catch {
+		// Unreadable registry: keep pipes open rather than orphan.
+		return false;
+	}
+}
+
+/** Reap owned processes of terminal runs whose subtree fully drained.
+ * Runs with live descendants linger with pipes open (see the settle site).
+ * Idempotent: owned.terminate memoizes, and closed handles leave the map. */
+export function reapOwnedIfDrained(agentDir: string): void {
+	let all: AgentRecord[];
+	try {
+		all = getCachedRecords(agentDir);
+	} catch {
+		return;
+	}
+	for (const record of all) {
+		if (!isTerminalStatus(record.status) || !ownedChildren.has(record.runId)) continue;
+		if (descendantsOf(all, record.runId).some((child) => !isTerminalStatus(child.status))) continue;
+		liveChildren.delete(record.runId);
+		diag(`drain-reap runId=${record.runId} name=${record.name}`);
+		void ownedChildren.get(record.runId)?.terminate();
+	}
+}
+
 /** Stop and await children owned by this process. Queued run loops also drain. */
 export async function terminateOwnedSubagents(runIds: readonly string[]): Promise<void> {
 	const ids = new Set(runIds);
+	diag(`terminateOwnedSubagents ids=[${[...ids].join(",")}]`);
 	const terminations: Promise<void>[] = [];
 	for (const runId of ids) {
 		runAbortControllers.get(runId)?.abort();
@@ -1060,17 +1102,23 @@ async function runSubagentProcess(
 					initialSettled = true;
 					resolveInitial();
 				}
-				// Settle always reaps: settle() above already cancelled any live
-				// descendants, so no idle process lingers and nothing orphans.
-				// Explicit follow-ups still resume via a fresh process from the
-				// transcript (see resumeSubagent).
+				// Reap on drain, not on settle: a settled run with live descendants
+				// lingers with pipes open, because an orphaned pi child exits(1)
+			// on its first stdout write (host output-guard) and no wake chain
+			// can survive that. reapOwnedIfDrained reaps it once the subtree
+				// drains; shutdown still terminates everything at quit.
 				liveChildren.delete(record.runId);
-				try {
-					launchedChild.stdin.end();
-				} catch {
-					// Already gone; terminate() below still reaps the PID.
+				if (subtreeDrained(context.agentDir, record.runId)) {
+					try {
+						launchedChild.stdin.end();
+					} catch {
+						// Already gone; terminate() below still reaps the PID.
+					}
+					void ownedChildren.get(record.runId)?.terminate();
+					diag(`settle-reap runId=${record.runId} name=${record.name}`);
+				} else {
+					diag(`settle-linger runId=${record.runId} name=${record.name}`);
 				}
-				void ownedChildren.get(record.runId)?.terminate();
 				return;
 			}
 			schedulePublish(important);

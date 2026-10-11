@@ -1719,6 +1719,35 @@ function check(name, cond, extra) {
 	const previousResult = registry.readRecords(spawnAgentDir).find((r) => r.runId === rec1.runId);
 	const prevExecutionId = previousResult?.executionId;
 	check("finished child process is reaped", previousResult?.pid === undefined, String(previousResult?.pid));
+	// Settle lingers while a live descendant needs its pipes: an orphaned pi
+	// child exits(1) on its first stdout write (host output-guard), so reaping
+	// a settled parent with live children murders the subtree. Isolated dir:
+	// lingering fixtures must not pollute the shared spawn-agent counts.
+	{
+		const lingerDir = path.join(sandbox, "linger");
+		const lingerCtx = { ...baseCtx(), agentDir: lingerDir };
+		const lingerParent = await spawn.startSubagent({ task: "linger", name: "linger-parent" }, lingerCtx);
+		registry.saveRecord(lingerDir, mk("linger-child", lingerParent.runId, { rootRunId: "parent", status: "running", depth: 2 }));
+		let lingering;
+		for (let i = 0; i < 100; i++) {
+			lingering = registry.readRecords(lingerDir).find((r) => r.runId === lingerParent.runId);
+			if (lingering?.status === "completed") break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		check("settle lingers with live descendants", lingering?.status === "completed" && lingering?.pid !== undefined && registry.isProcessAlive(lingering?.pid),
+			JSON.stringify({ status: lingering?.status, pid: lingering?.pid }));
+		// Draining the subtree reaps the idler via the exported helper.
+		registry.saveRecord(lingerDir, mk("linger-child", lingerParent.runId, { rootRunId: "parent", status: "completed", depth: 2 }));
+		spawn.reapOwnedIfDrained(lingerDir);
+		let reaped;
+		for (let i = 0; i < 100; i++) {
+			reaped = registry.readRecords(lingerDir).find((r) => r.runId === lingerParent.runId);
+			if (reaped?.pid === undefined || !registry.isProcessAlive(reaped?.pid)) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		check("drained idle parent reaped", reaped?.pid === undefined || !registry.isProcessAlive(reaped?.pid),
+			JSON.stringify({ pid: reaped?.pid }));
+	}
 	const terminalSend = await spawn.sendSubagentMessage(previousResult, "next result");
 	check("terminal send returns false (resume via fresh process)", terminalSend === false, String(terminalSend));
 	registry.markRecordResultState(spawnAgentDir, previousResult, "resultsDelivered");

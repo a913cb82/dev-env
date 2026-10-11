@@ -15,8 +15,10 @@ import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
 	cancelSubagent,
+	diag,
 	gate,
 	killPidTree,
+	reapOwnedIfDrained,
 	meshSenderFor,
 	resumeSubagent,
 	sendSubagentMessage,
@@ -265,6 +267,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				{ triggerTurn: true, deliverAs: "steer" },
 			);
 			rememberNotified(pending);
+			reapOwnedIfDrained(agentDir);
 		} finally {
 			delivering = false;
 		}
@@ -750,6 +753,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		const own = ownId ? readRecords(agentDir).find((candidate) => candidate.runId === runtime.runId) : undefined;
 		const spareLiveTree = (event as { reason?: string } | undefined)?.reason !== "reload" && !!own && isTerminalStatus(own.status);
 		const records = descendantsOf(getCachedRecords(agentDir), runtime.runId);
+		// TEMPORARY live-debug (remove after the grandchild-death hunt).
+		diag(`shutdown reason=${(event as { reason?: string } | undefined)?.reason} ownId=${ownId} ownStatus=${own?.status} spare=${spareLiveTree} tree=[${records.map((r) => `${r.name}:${r.status}`).join(",")}]`);
 		for (const record of records.slice().reverse()) {
 			try {
 				if (isTerminalStatus(record.status)) {
@@ -892,6 +897,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			// results remain visible, but their direct parent must claim them.
 			const newlyFinished = undelivered(rows.filter((record) => record.parentRunId === runtime!.runId));
 			rememberDelivered(newlyFinished);
+			reapOwnedIfDrained(agentDir);
 			if (rows.length === 0) {
 				return { content: [{ type: "text", text: "No subagents have been spawned by this session." }], details: { records: [] } };
 			}
