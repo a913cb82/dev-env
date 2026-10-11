@@ -106,6 +106,44 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	let deliveryPaused = false;
 	let activeSignal: AbortSignal | undefined;
 	let meshServer: MeshServer | undefined;
+	let meshWarned = false;
+	// Bind with retries: a resumed session can race its own dying predecessor
+	// for the socket name, and a reload may never re-fire session_start at all.
+	// Without this socket no tree message can reach this session, so every
+	// tool execute ensures it (lazy path, extension scope so tools can call it).
+	const bindMeshServer = async (): Promise<unknown> => {
+		if (!runtime || shuttingDown || meshServer) return undefined;
+		const agentDir = getAgentDir();
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 3 && !meshServer; attempt++) {
+			if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+			try {
+				meshServer = await startMeshServer({
+					socketDir: meshSocketDir(agentDir),
+					runId: runtime.runId,
+					maxLineChars: runtime.settings.rpcMaxLineChars,
+					isKnownRunId: (id) =>
+						id === runtime!.rootRunId ||
+						getCachedRecords(agentDir).some((record) => record.runId === id && record.rootRunId === runtime!.rootRunId),
+					onMessage: handleMeshMessage,
+				});
+			} catch (error) {
+				lastError = error;
+			}
+		}
+		return lastError;
+	};
+	const warnMeshOffline = (lastError: unknown, ui?: { notify?: (message: string, type?: string) => void }) => {
+		if (meshServer || meshWarned) return;
+		meshWarned = true;
+		try {
+			ui?.notify?.(`Subagent mesh offline (${lastError instanceof Error ? lastError.message : String(lastError)}): this session cannot receive tree messages.`, "error");
+		} catch { /* notification is best effort */ }
+	};
+	const ensureMeshBound = async (ui?: { notify?: (message: string, type?: string) => void }) => {
+		if (!runtime || shuttingDown || meshServer) return;
+		warnMeshOffline(await bindMeshServer(), ui);
+	};
 	const deliveredResults = new Set<string>();
 	const notifiedResults = new Set<string>();
 	const seenDescendantResults = new Set<string>();
@@ -417,31 +455,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				try { await meshServer.close(); } catch { /* replaced */ }
 				meshServer = undefined;
 			}
-			// A resumed session can race its own dying predecessor for the
-			// socket name: retry the bind instead of going deaf silently.
-			// Without this socket no tree message can reach this session.
-			let lastError: unknown;
-			for (let attempt = 0; attempt < 3 && !meshServer; attempt++) {
-				if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-				try {
-					meshServer = await startMeshServer({
-						socketDir: meshSocketDir(meshAgentDir),
-						runId: runtime!.runId,
-						maxLineChars: runtime!.settings.rpcMaxLineChars,
-						isKnownRunId: (id) =>
-							id === runtime!.rootRunId ||
-							getCachedRecords(meshAgentDir).some((record) => record.runId === id && record.rootRunId === runtime!.rootRunId),
-						onMessage: handleMeshMessage,
-					});
-				} catch (error) {
-					lastError = error;
-				}
-			}
-			if (!meshServer) {
-				try {
-					if (ctx.hasUI) ctx.ui.notify(`Subagent mesh offline (${lastError instanceof Error ? lastError.message : String(lastError)}): this session cannot receive tree messages.`, "error");
-				} catch { /* notification is best effort */ }
-			}
+			warnMeshOffline(await bindMeshServer(), ctx.hasUI ? ctx.ui : undefined);
 		} catch {
 			meshServer = undefined;
 		}
@@ -828,6 +842,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		parameters: SpawnAgentSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (!runtime) throw new Error("Subagent extension settings failed to initialize");
+			await ensureMeshBound(ctx?.ui);
 			const parentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 			const record = await startSubagent(
 				{
@@ -895,6 +910,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		parameters: CheckSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (!runtime) throw new Error("Subagent extension settings failed to initialize");
+			await ensureMeshBound(ctx?.ui);
 			const agentDir = getAgentDir();
 			// Resolve the optional target list once; targets address any tree node
 			// (unknown or ambiguous targets fail before waiting).
@@ -993,6 +1009,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		promptSnippet: "Message any subagent by tree path (running, finished, queued, or cancelled)",
 		parameters: SendSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			await ensureMeshBound(ctx?.ui);
 			const mode = normalizeMessageMode(params.mode);
 			const resolved = resolveAgentPath(getCachedRecords(getAgentDir()), { anchorRunId: runtime!.runId, rootRunId: runtime!.rootRunId, target: params.target });
 			if (!resolved.record) {
@@ -1038,6 +1055,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		promptSnippet: "Stop a running subagent",
 		parameters: CancelSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			await ensureMeshBound(_ctx?.ui);
 			const agentDir = getAgentDir();
 			const record = resolveRecord(params.target);
 			// An explicit cancellation supersedes any reload-interrupt intent:
