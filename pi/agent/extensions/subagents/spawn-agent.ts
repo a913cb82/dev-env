@@ -5,7 +5,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SETTINGS, depth, validateRpcMaxLineChars, validateThinkingLevel } from "./config.ts";
-import { meshSocketDir, sendMeshMessage, waitForMeshSocket } from "./mesh.ts";
+import { deliverMeshMessage, meshSocketDir, sendMeshMessage } from "./mesh.ts";
 import { applyChildEvent, type ParsedChildState } from "./events.ts";
 import {
 	clearRecordCancellation,
@@ -168,22 +168,16 @@ export async function sendSubagentMessage(record: AgentRecord, message: string, 
 		return true;
 	}
 	if (!sender) return false;
-	const send = () => sendMeshMessage({
-		socketDir: sender.socketDir,
-		toRunId: record.runId,
-		fromRunId: sender.runId,
-		type: mode,
-		payload: { text: message },
-	});
 	try {
-		await send();
-		return true;
-	} catch {
-		// The target may be starting: wait for its socket, then retry once.
-	}
-	try {
-		await waitForMeshSocket(sender.socketDir, record.runId, { timeoutMs: sender.waitMs ?? 5000, signal });
-		await send();
+		await deliverMeshMessage({
+			socketDir: sender.socketDir,
+			toRunId: record.runId,
+			fromRunId: sender.runId,
+			type: mode,
+			text: message,
+			waitMs: sender.waitMs,
+			signal,
+		});
 		return true;
 	} catch {
 		return false;

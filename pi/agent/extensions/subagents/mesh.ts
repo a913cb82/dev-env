@@ -216,6 +216,45 @@ export function startMeshServer(options: MeshServerOptions): Promise<MeshServer>
 	});
 }
 
+export interface MeshDeliverOptions {
+	socketDir: string;
+	toRunId: string;
+	fromRunId: string;
+	/** steer redirects the target turn; followUp queues behind it. */
+	type: "steer" | "followUp";
+	text: string;
+	/** How long to wait for a starting target's socket before giving up. */
+	waitMs?: number;
+	signal?: AbortSignal;
+	maxLineChars?: number;
+	timeoutMs?: number;
+}
+
+/** Direct socket-mesh delivery with one wait-and-retry for a starting peer.
+ * Resolves when the peer acks; rejects when it stays offline (or refuses).
+ * Recordless by design, so the root session itself is addressable even
+ * though it has no subagent record. */
+export async function deliverMeshMessage(options: MeshDeliverOptions): Promise<void> {
+	const send = () =>
+		sendMeshMessage({
+			socketDir: options.socketDir,
+			toRunId: options.toRunId,
+			fromRunId: options.fromRunId,
+			type: options.type,
+			payload: { text: options.text },
+			...(options.maxLineChars !== undefined ? { maxLineChars: options.maxLineChars } : {}),
+			...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+		});
+	try {
+		await send();
+		return;
+	} catch {
+		// The target may be starting: wait for its socket, then retry once.
+	}
+	await waitForMeshSocket(options.socketDir, options.toRunId, { timeoutMs: options.waitMs ?? 5000, signal: options.signal });
+	await send();
+}
+
 export function sendMeshMessage(options: MeshSendOptions): Promise<void> {
 	const maxLineChars = Math.max(1, options.maxLineChars ?? DEFAULT_MESH_MAX_LINE_CHARS);
 	const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_MESH_ACK_TIMEOUT_MS);

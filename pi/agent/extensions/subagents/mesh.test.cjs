@@ -56,6 +56,18 @@ const until = async (seen) => { for (let i = 0; i < 200 && !seen(); i++) await s
 	check("b receives followUp from a", receivedB.length === 1 && receivedB[0].type === "followUp" && receivedB[0].payload.text === "hello b" && receivedB[0].from === "run-aaa");
 	check("a receives steer from b", receivedA.length === 1 && receivedA[0].type === "steer" && receivedA[0].payload.text === "hello a");
 
+	// --- deliverMeshMessage: recordless direct delivery with one retry ---
+	receivedB.length = 0;
+	await mesh.deliverMeshMessage({ socketDir, toRunId: "run-bbb", fromRunId: "run-aaa", type: "steer", text: "direct" });
+	check("deliver resolves to a live peer", receivedB.length === 1 && receivedB[0].payload.text === "direct" && receivedB[0].from === "run-aaa", receivedB.length);
+	let offlineThrew = false;
+	try {
+		await mesh.deliverMeshMessage({ socketDir, toRunId: "run-gone", fromRunId: "run-aaa", type: "followUp", text: "lost", waitMs: 150 });
+	} catch (error) {
+		offlineThrew = true;
+	}
+	check("deliver rejects when the peer stays offline", offlineThrew);
+
 	// --- back-to-back frames stay separate and ordered (per-sender FIFO) ---
 	receivedB.length = 0;
 	const burst = [];

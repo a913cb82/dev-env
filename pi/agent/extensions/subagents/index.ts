@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
 import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
-import { startMeshServer, meshSocketDir, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
+import { deliverMeshMessage, startMeshServer, meshSocketDir, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
@@ -949,12 +949,40 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "send_to_subagent",
 		label: "Send to Subagent",
-		description: "Message any subagent in the tree except this session: /a/b absolute from root, me/child, ../sibling, or a name/run id/session id. Running sessions receive it in place (steer redirects, followUp queues); finished ones resume from transcript without changing owner; queued ones park until start.",
+		description: "Message anyone in the tree except this session: /a/b absolute from root, me/child, ../sibling, or a name/run id/session id. `..` from a direct child and `/` from anywhere reach the root session itself. Running sessions receive it in place (steer redirects, followUp queues); finished ones resume from transcript without changing owner; queued ones park until start.",
 		promptSnippet: "Message any subagent by tree path (running, finished, queued, or cancelled)",
 		parameters: SendSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const mode = normalizeMessageMode(params.mode);
-			const record = resolveRecord(params.target);
+			const resolved = resolveAgentPath(getCachedRecords(getAgentDir()), { anchorRunId: runtime!.runId, rootRunId: runtime!.rootRunId, target: params.target });
+			if (!resolved.record) {
+				// The root session itself: direct mesh delivery, no claim,
+				// no resume. Reachable as `..` from a direct child, `/`
+				// from anywhere below. Self-targeting still throws above.
+				const agentDir = getAgentDir();
+				try {
+					await deliverMeshMessage({
+						socketDir: meshSocketDir(agentDir),
+					toRunId: resolved.runId,
+					fromRunId: runtime!.runId,
+					type: mode,
+					text: params.message,
+					signal: signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal,
+					});
+				} catch (error) {
+					throw new Error(`The root session is offline: ${error instanceof Error ? error.message : String(error)}`);
+				}
+				try {
+					await appendAgentMessage(agentDir, resolved.runId, { from: senderName(runtime!.runId), mode, text: params.message });
+				} catch {
+					// Audit is best effort; delivery already succeeded.
+				}
+				return {
+					content: [{ type: "text", text: `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to the root session.` }],
+					details: {},
+				};
+			}
+			const record = resolved.record;
 			const { resumed, queued } = await sendToRecord(record, params.message, signal, mode, ctx);
 			return {
 				content: [{ type: "text", text: resumed ? `Resumed ${record.name} from its transcript with a new execution.` : queued ? `Queued message for ${record.name} (not running yet; delivers when its session starts).` : `Sent ${mode === "followUp" ? "follow-up" : "steering"} message to ${record.name}.` }],
