@@ -10,7 +10,16 @@ Simplicity is a hard constraint on the path, not just the end state. One
 transport per tree. Thin adapter or it fails review. Delete, do not port.
 No phase may add lasting complexity to serve the transition.
 
-## 0. Review verdicts (16 reviewers, all read the code, rounds 4-5 with Codex source)
+## 0. Review verdicts (20 reviewers, all read the code, rounds 4-5 with Codex source)
+
+Round 5: receipts AMEND (7 of 11 send receipts name dead transports
+or unkeepable timings; reword table below; mesh legs collapse;
+disposition-only rule frozen). Capacity AMEND (no budget, no ceiling
+behavior, no compaction rule; five-item story added). Flagday BLOCK
+(no idle definition, no drain runbook, no backup artifact, no
+never-mixed enforcement, no rollback rehearsal; five pre-cutover
+requirements). Surface AMEND (full fate table; rpcMaxLineChars
+deleted-key UX and prune-settings owner still open).
 
 Round 4: low-interrupt AMEND (abort-first-then-send replaces
 send-first-then-abort; messageQueue does not port; probe 3 gains an
@@ -135,6 +144,17 @@ docs and d.ts examples.
   needs its mechanism named (SDK affordance or keyed rendezvous) with a
   race analysis before any refactor; `runtime` becomes a per-session map
   with settle and shutdown gates rekeyed to it.
+- Capacity is frozen before flag day: per-child budget in observable
+  units (sessionFile bytes, stats tokens, context tokens; warn near 70%
+  context, refuse-or-compact near 100MB); heap ceiling with refusal
+  behavior (queue behind the gate, abort-then-dispose the worst
+  offender, never silent drop); concurrent-compaction cap of 1-2 with
+  spawn-time budget inheritance and null-window-tolerant flush;
+sane-count formula from measured per-child cost with default 4 until
+probes fill it; standing sampler (turn end plus slow tick) feeding
+widget rows and a check-visible capacity line. Probe 4 asserts
+queryability plus heap high-water; probe 5 names heap and settle
+ceilings as kill lines plus a concurrent-compaction leg.
 
 ## 4. Probes: kill gates with numbers (time-boxed, days)
 
@@ -189,10 +209,17 @@ the pinned live SDK with ceilings and content checks.
 1. Gate 0 (section 1). Price or stop.
 2. Probes (section 4). Kill gates. No refactor yet.
 3. Freeze section 3 on paper. One page equivalent, no code.
-4. Flag day on idle trees: rewrite `spawn-agent.ts` against the SDK
-   directly. Same release delete `mesh.ts`, `self-report.ts`, locks,
-   sweeps, parks, PID fields, sidecars, PI_SUBAGENT_* plumbing. Drain
-   and restart in-flight trees; never mixed trees. Session backup first.
+4. Flag day on idle trees, executable only after five pre-cutover
+   requirements land: idle-tree definition plus inventory command plus
+   post-wait predicate re-check; drain runbook with ceiling (wait, then
+   cancel subtree, then verify terminal; mark/resume wired to the
+   upgrade reason, not only reload); real backup artifact covering
+   sessions, registry, queues, and markers with atomicity and a restore
+   command; never-mixed enforcement in code (per-record transport tag
+   plus load-time refuse-loud); written rollback rehearsal with
+   assertions, run once pre-cutover. Then rewrite `spawn-agent.ts`
+   against the SDK directly, same-release delete the transport, drain
+   and restart in-flight trees, never mixed trees.
 5. Rollback is whole-tree restart on the old release against backed-up
    sessions, tested once before cutover.
 
@@ -215,7 +242,24 @@ generation sequence, claim logic, audit schema); `config.ts` (env-free
 pure functions, root-inherit for operator ambient).
 
 Unchanged: `types.ts`, `cost.ts`, `widget.ts`, addressing, tool
-descriptions, receipts, README behavior sections.
+descriptions (except the send mode text, reworded below), README
+behavior sections.
+
+Receipts are reworded, not frozen. Send receipts state disposition
+and next observable state only: never a transport name, never
+"received", never precise timing beyond steer-before-next-call and
+followUp-after-drain. Mesh legs collapse into handle-disposition
+receipts: `Sent follow-up to X. It runs after X's current work
+drains.` / `Sent steering to X. It applies before X's next model
+call.` / `Interrupted X. Steering applies before X's next model call.`
+/ `Interrupted X, but it settled first; the message was not delivered.`
+/ `X is busy and cannot be interrupted mid-tool; queued as follow-up
+instead.` / `Queued message for X. It delivers when X's turn starts.`
+`The root session is offline` dies with the socket (handle errors
+surface directly). `Cannot resume` and finished-with-context errors
+keep. Deleted keys (`rpcMaxLineChars`) fail loud on load, never
+silent-ignore; prune settings keep file rotation until the store move
+names a new owner.
 
 Retained until proven replaced: cancelled/closed markers on execution
 ids, reload-interrupt markers, adoption suffixing, symlink trust
