@@ -75,7 +75,7 @@ const SendSchema = Type.Object({
 	message: Type.String({ description: "Message for the subagent" }),
 	mode: Type.Optional(Type.String({
 		description: "Message mode. steer applies after the current tool call. followUp waits for the agent to settle. interrupt stops the current tool call and applies at once. Default steer. The receipt states the delivery.",
-		enum: ["steer", "followUp"],
+		enum: ["steer", "followUp", "interrupt"],
 	})),
 });
 

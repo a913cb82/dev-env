@@ -2295,6 +2295,10 @@ function check(name, cond, extra) {
 		await spawn.sendSubagentMessage(followRow, "x", undefined, "bogus");
 	} catch (error) { directModeError = error; }
 	check("invalid direct send mode rejected", directModeError?.message.includes('"followUp", or "interrupt"'), directModeError?.message);
+	// The tool schema must accept every mode the code accepts: validation
+	// runs before execute, so a missing enum entry blocks the mode live.
+	const sendModes = checkTools.get("send_to_subagent")?.parameters?.properties?.mode?.enum;
+	check("send schema accepts all modes", ["steer", "followUp", "interrupt"].every((m) => sendModes?.includes(m)), JSON.stringify(sendModes));
 
 	process.env.FAKE_DELAY_MS = "100";
 	const immediateRec = await spawn.startSubagent({ task: "initial", name: "immediate-child" }, baseCtx());
