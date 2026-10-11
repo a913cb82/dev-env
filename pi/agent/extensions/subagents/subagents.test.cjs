@@ -351,6 +351,30 @@ function check(name, cond, extra) {
 		const rem4 = registry.readRecords(ydir).map((r) => r.runId).sort();
 		check("cap never reaps young records", JSON.stringify(rem4) === JSON.stringify(["y-hour", "y-min"]), rem4.join(","));
 	}
+	// --- prune keep-minimums apply per root tree ---
+	{
+		const day = 24 * 3600 * 1000;
+		const t0 = Date.now();
+		const stamp = (daysAgo) => new Date(t0 - daysAgo * day).toISOString();
+		const tdir = path.join(sandbox, "prune-trees");
+		for (const tree of ["tree-a", "tree-b"]) {
+			for (const [id, age] of [[`${tree}-old`, 60], [`${tree}-new`, 30]]) {
+				registry.saveRecord(tdir, mk(id, tree, { rootRunId: tree, status: "completed", resultsDelivered: true, updatedAt: stamp(age), finishedAt: stamp(age) }));
+			}
+		}
+		registry.pruneRecords(tdir, { olderThanMs: 14 * day, keepMinimum: 1, undeliveredAfterMs: 90 * day, undeliveredKeep: 500, now: t0 });
+		const trem = registry.readRecords(tdir).map((r) => r.runId).sort();
+		check("per-tree keepMinimum retains each tree's newest", JSON.stringify(trem) === JSON.stringify(["tree-a-new", "tree-b-new"]), trem.join(","));
+		const udir2 = path.join(sandbox, "prune-trees-u");
+		for (const tree of ["tree-a", "tree-b"]) {
+			for (const [id, age] of [[`${tree}-u3`, 30], [`${tree}-u2`, 20], [`${tree}-u1`, 10]]) {
+				registry.saveRecord(udir2, mk(id, tree, { rootRunId: tree, status: "completed", updatedAt: stamp(age), finishedAt: stamp(age) }));
+			}
+		}
+		registry.pruneRecords(udir2, { olderThanMs: 14 * day, keepMinimum: 50, undeliveredAfterMs: 90 * day, undeliveredKeep: 2, capGraceMs: 7 * day, now: t0 });
+		const urem = registry.readRecords(udir2).map((r) => r.runId).sort();
+		check("per-tree undelivered cap retains each tree's newest", JSON.stringify(urem) === JSON.stringify(["tree-a-u1", "tree-a-u2", "tree-b-u1", "tree-b-u2"]), urem.join(","));
+	}
 
 	// --- async record lock (perf: lock wait must not freeze the event loop) ---
 	check("record lock is async", registry.withRecordLock.constructor.name === "AsyncFunction", registry.withRecordLock.constructor.name);

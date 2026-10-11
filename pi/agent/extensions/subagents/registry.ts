@@ -745,25 +745,46 @@ export function pruneRecords(agentDir: string, options: PruneOptions = {}): Prun
 	} catch {
 		return { pruned: [], kept: 0 };
 	}
+	// Keep-minimums apply per root tree: several sessions share one registry
+	// (this box runs a lab session beside the dev session), and one busy
+	// tree must not evict another tree's newest runs. Age thresholds stay
+	// global (age never competes).
+	const groupByRoot = (rows: AgentRecord[]): Map<string, AgentRecord[]> => {
+		const groups = new Map<string, AgentRecord[]>();
+		for (const record of rows) {
+			const list = groups.get(record.rootRunId) ?? [];
+			list.push(record);
+			groups.set(record.rootRunId, list);
+		}
+		return groups;
+	};
+	const byAge = (a: AgentRecord, b: AgentRecord) => recordAgeStamp(a) - recordAgeStamp(b);
 	const candidates = records
-		.filter((record) => isTerminalStatus(record.status) && record.resultsDelivered === true)
-		.sort((a, b) => recordAgeStamp(a) - recordAgeStamp(b));
-	const keepFrom = Math.max(0, candidates.length - keepMinimum);
-	const doomed = candidates
-		.slice(0, keepFrom)
-		.filter((record) => now - recordAgeStamp(record) > olderThanMs);
+		.filter((record) => isTerminalStatus(record.status) && record.resultsDelivered === true);
+	const doomed: AgentRecord[] = [];
+	for (const [, group] of groupByRoot(candidates)) {
+		const sorted = [...group].sort(byAge);
+		const keepFrom = Math.max(0, sorted.length - keepMinimum);
+		for (const record of sorted.slice(0, keepFrom)) {
+			if (now - recordAgeStamp(record) > olderThanMs) doomed.push(record);
+		}
+	}
 	const undelivered = records
-		.filter((record) => isTerminalStatus(record.status) && record.resultsDelivered !== true)
-		.sort((a, b) => recordAgeStamp(a) - recordAgeStamp(b));
+		.filter((record) => isTerminalStatus(record.status) && record.resultsDelivered !== true);
 	const doomedIds = new Set(doomed.map((record) => record.runId));
 	if (undeliveredAfterMs > 0) {
 		for (const record of undelivered) {
 			if (now - recordAgeStamp(record) > undeliveredAfterMs) doomedIds.add(record.runId);
 		}
 	}
-	if (undeliveredKeep > 0 && undelivered.length > undeliveredKeep) {
-		for (const record of undelivered.slice(0, undelivered.length - undeliveredKeep)) {
-			if (now - recordAgeStamp(record) > capGraceMs) doomedIds.add(record.runId);
+	if (undeliveredKeep > 0) {
+		for (const [, group] of groupByRoot(undelivered)) {
+			const sorted = [...group].sort(byAge);
+			if (sorted.length > undeliveredKeep) {
+				for (const record of sorted.slice(0, sorted.length - undeliveredKeep)) {
+					if (now - recordAgeStamp(record) > capGraceMs) doomedIds.add(record.runId);
+				}
+			}
 		}
 	}
 	// A terminal parent with live descendants keeps its record: grandchildren
