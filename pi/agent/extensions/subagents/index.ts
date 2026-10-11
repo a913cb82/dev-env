@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	getAgentDir,
@@ -10,7 +11,7 @@ import { Type } from "typebox";
 import { currentDepth, loadSettings, THINKING_LEVEL_VALUES } from "./config.ts";
 import { computeFlush, restoreCostFloor, type AttributedUsage, type CostFloor } from "./cost.ts";
 import { appendAgentMessage, drainPendingMessages, executionResultKey, getCachedRecords, isProcessAlive, isTerminalStatus, listFooterDismissed, markFooterDismissed, markRecordResultState, pruneRecords, queuePendingMessage, readRecords, saveRecord, withRecordLock, markReloadInterrupted, readReloadInterrupted, listReloadInterrupted, clearReloadInterrupted, type ReloadInterruptMarker } from "./registry.ts";
-import { deliverMeshMessage, startMeshServer, meshSocketDir, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
+import { deliverMeshMessage, startMeshServer, meshSocketDir, meshSocketPath, sendMeshMessage, type MeshEnvelope, type MeshServer } from "./mesh.ts";
 import { notifyWaiters, waitUntilSubagentsIdle } from "./wait.ts";
 import { SubagentStatusWidget } from "./widget.ts";
 import {
@@ -141,7 +142,18 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		} catch { /* notification is best effort */ }
 	};
 	const ensureMeshBound = async (ui?: { notify?: (message: string, type?: string) => void }) => {
-		if (!runtime || shuttingDown || meshServer) return;
+		if (!runtime || shuttingDown) return;
+		// A stale handle (server object set, socket file gone - killed racing
+		// predecessor, external unlink) must rebind, not early-return deaf.
+		if (meshServer) {
+			try {
+				if (!existsSync(meshSocketPath(meshSocketDir(getAgentDir()), runtime.runId))) {
+					try { await meshServer.close(); } catch { /* already gone */ }
+					meshServer = undefined;
+				}
+			} catch { /* on doubt keep the existing handle */ }
+		}
+		if (meshServer) return;
 		warnMeshOffline(await bindMeshServer(), ui);
 	};
 	const deliveredResults = new Set<string>();
