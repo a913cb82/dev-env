@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	getAgentDir,
@@ -113,7 +113,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	// Without this socket no tree message can reach this session, so every
 	// tool execute ensures it (lazy path, extension scope so tools can call it).
 	const bindMeshServer = async (): Promise<unknown> => {
-		try { appendFileSync("/tmp/mesh-bind.log", `${new Date().toISOString()} bind attempt runtime=${runtime?.runId} shuttingDown=${shuttingDown} haveServer=${!!meshServer}\n`); } catch { /* diag */ }
 		if (!runtime || shuttingDown || meshServer) return undefined;
 		const agentDir = getAgentDir();
 		let lastError: unknown;
@@ -136,7 +135,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		return lastError;
 	};
 	const warnMeshOffline = (lastError: unknown, ui?: { notify?: (message: string, type?: string) => void }) => {
-		try { appendFileSync("/tmp/mesh-bind.log", `${new Date().toISOString()} bind result haveServer=${!!meshServer} error=${lastError instanceof Error ? `${lastError.message} | ${lastError.stack?.split("\n").slice(0, 3).join(" / ")}` : String(lastError)}\n`); } catch { /* diag */ }
 		if (meshServer || meshWarned) return;
 		meshWarned = true;
 		try {
