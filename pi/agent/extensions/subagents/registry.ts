@@ -1,4 +1,5 @@
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -914,8 +915,10 @@ function messagesPath(agentDir: string, runId: string): string {
 	return join(registryDir(agentDir), `${safeRunId(runId)}.messages.json`);
 }
 
-/** Append-only audit of cross messages received by a run. Never touches the
- * record JSON (owned by the parent process), so logging cannot regress it. */
+/** Append-only audit of cross messages received by a run. Lock-free: one
+ * JSON line per message (O_APPEND, atomic for small writes), so a busy
+ * session's own record writes can never starve or time out a receipt.
+ * Never touches the record JSON (owned by the parent process). */
 export async function appendAgentMessage(
 	agentDir: string,
 	runId: string,
@@ -927,30 +930,42 @@ export async function appendAgentMessage(
 		text: message.text.length <= MESSAGE_LOG_TEXT_CAP ? message.text : `${message.text.slice(0, MESSAGE_LOG_TEXT_CAP - 1)}…`,
 		createdAt: new Date().toISOString(),
 	};
-	await withRecordLock(agentDir, runId, () => {
-		mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
-		const target = messagesPath(agentDir, runId);
-		let logged: AgentMessageLog[] = [];
-		try {
-			const existing = JSON.parse(readFileSync(target, "utf8"));
-		if (Array.isArray(existing)) logged = existing.filter(isValidMessageLog);
-		} catch {
-		// Absent or corrupt: a corrupt log is replaced, never merged.
-		}
-		logged.push(entry);
-		atomicWrite(target, `${JSON.stringify(logged)}\n`);
-	});
+	mkdirSync(registryDir(agentDir), { recursive: true, mode: 0o700 });
+	appendFileSync(messagesPath(agentDir, runId), `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-/** Read a run's cross-message audit log (absent or corrupt reads as empty). */
+/** Read a run's cross-message audit log. Accepts the legacy whole-array
+ * format, JSON-lines, and mixes of the two; corrupt lines are skipped
+ * while valid entries are kept. Absent reads as empty. */
 export function readAgentMessages(agentDir: string, runId: string): AgentMessageLog[] {
+	let raw: string;
 	try {
-		const existing = JSON.parse(readFileSync(messagesPath(agentDir, runId), "utf8"));
-		if (Array.isArray(existing)) return existing.filter(isValidMessageLog);
+		raw = readFileSync(messagesPath(agentDir, runId), "utf8");
 	} catch {
-		// Absent or corrupt.
+		return [];
 	}
-	return [];
+	const out: AgentMessageLog[] = [];
+	const pushValue = (value: unknown) => {
+		if (Array.isArray(value)) {
+			for (const entry of value) if (isValidMessageLog(entry)) out.push(entry);
+		} else if (isValidMessageLog(value)) out.push(value);
+	};
+	try {
+		pushValue(JSON.parse(raw));
+		if (out.length > 0 || raw.trimStart().startsWith("[")) return out;
+	} catch {
+		// Not a single blob: fall through to line parsing.
+	}
+	for (const line of raw.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			pushValue(JSON.parse(trimmed));
+		} catch {
+			// Corrupt line: skipped, valid entries kept.
+		}
+	}
+	return out;
 }
 
 export function relativeDepths(records: readonly AgentRecord[], parentRunId: string): Map<string, number> {

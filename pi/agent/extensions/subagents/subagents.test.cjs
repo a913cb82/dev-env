@@ -7,6 +7,13 @@ const os = require("node:os");
 const path = require("node:path");
 
 // Install before jiti imports node:fs, which captures named function exports.
+let countLockMkdirs = false;
+let lockMkdirCount = 0;
+const realMkdirSync = fs.mkdirSync;
+fs.mkdirSync = (target, options) => {
+	if (countLockMkdirs && String(target).endsWith(".lock")) lockMkdirCount++;
+	return realMkdirSync(target, options);
+};
 let failMarkerWritesFor;
 let injectedMarkerFailures = 0;
 const realRenameSync = fs.renameSync;
@@ -376,6 +383,36 @@ function check(name, cond, extra) {
 		releaseA();
 		await Promise.all([contendedA, contendedB]);
 		check("async lock serializes critical sections", JSON.stringify(order) === JSON.stringify(["a-start", "a-end", "b-start", "b-end"]), order.join(","));
+	}
+
+	// --- lock-free message audit ---
+	{
+		const auditDir = path.join(sandbox, "audit-agent");
+		fs.mkdirSync(auditDir, { recursive: true });
+		// Occupant holds the record lock; the audit must land anyway (a busy
+		// session's own record writes must not starve mesh receipts).
+		let releaseHolder;
+		const holderGate = new Promise((resolveGate) => { releaseHolder = resolveGate; });
+		const holder = registry.withRecordLock(auditDir, "audit-run", async () => { await holderGate; return "holder"; });
+		await tick();
+		lockMkdirCount = 0;
+		countLockMkdirs = true;
+		let auditError;
+		try {
+			await registry.appendAgentMessage(auditDir, "audit-run", { from: "x", mode: "steer", text: "under contention" });
+		} catch (error) { auditError = error; }
+		countLockMkdirs = false;
+		releaseHolder();
+		await holder;
+		check("audit never takes the record lock", lockMkdirCount === 0, `lock attempts=${lockMkdirCount}`);
+		check("audit appends under contention", !auditError && registry.readAgentMessages(auditDir, "audit-run").some((m) => m.text === "under contention"), String(auditError));
+		// Legacy array format, JSONL, mixed, and corrupt lines all read.
+		const legacyPath = path.join(auditDir, "subagents", "runs", "legacy-run.messages.json");
+		fs.writeFileSync(legacyPath, `${JSON.stringify([{ from: "a", mode: "steer", text: "old", createdAt: "t" }, { junk: true }])}\n`);
+		check("legacy array log reads", registry.readAgentMessages(auditDir, "legacy-run").length === 1, JSON.stringify(registry.readAgentMessages(auditDir, "legacy-run")));
+		fs.appendFileSync(legacyPath, `${JSON.stringify({ from: "b", mode: "followUp", text: "new", createdAt: "t" })}\nnot json\n`);
+		const mixed = registry.readAgentMessages(auditDir, "legacy-run");
+		check("mixed array plus JSONL reads", mixed.length === 2 && mixed[1].text === "new", JSON.stringify(mixed));
 	}
 
 	// --- actionable run IDs ---
