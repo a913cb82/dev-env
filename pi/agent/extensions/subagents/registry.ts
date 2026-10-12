@@ -260,20 +260,16 @@ export function clearMeshOffline(agentDir: string, runId: string): void {
 }
 
 /** Display-only hide gate for uncollected terminal rows: hide once the row
- * has been terminal for hideAfterMinutes AND this session has completed
- * hideAfterParentTurns turns since first seeing it terminal. Collected rows
- * vanish through the claim path; this covers the rest. Records, audits, and
- * sidecars stay untouched; explicit targets bypass. firstSeenTurn undefined
- * (never observed terminal yet) never hides; a corrupt or missing timestamp
- * never hides (conservative). */
+ * has been terminal for hideAfterMinutes. Collected rows vanish through
+ * the claim path; this covers the rest. Age comes from the record alone,
+ * so every session (including a fresh one after reload) decides the same.
+ * Records, audits, and sidecars stay untouched; explicit targets bypass.
+ * A corrupt or missing timestamp never hides (conservative). */
 export interface UncollectedHideGate {
 	hideAfterMinutes: number;
-	hideAfterParentTurns: number;
 }
-export function hideUncollectedRow(record: Pick<AgentRecord, "finishedAt" | "updatedAt">, firstSeenTurn: number | undefined, currentTurn: number, nowMs: number, gate: UncollectedHideGate): boolean {
-	if (firstSeenTurn === undefined) return false;
-	if (!(gate.hideAfterMinutes >= 0) || !(gate.hideAfterParentTurns >= 0)) return false;
-	if (currentTurn - firstSeenTurn < gate.hideAfterParentTurns) return false;
+export function hideUncollectedRow(record: Pick<AgentRecord, "finishedAt" | "updatedAt">, nowMs: number, gate: UncollectedHideGate): boolean {
+	if (!(gate.hideAfterMinutes >= 0)) return false;
 	const finishedMs = Date.parse(record.finishedAt ?? record.updatedAt);
 	if (Number.isNaN(finishedMs)) return false;
 	return nowMs - finishedMs >= gate.hideAfterMinutes * 60_000;
@@ -487,6 +483,7 @@ export function readRecords(agentDir: string): AgentRecord[] {
 					status: "failed",
 					activity: "process exited unexpectedly",
 					error: marked.error ?? "Subagent process is no longer running",
+					finishedAt: marked.finishedAt ?? new Date().toISOString(),
 				});
 			} else {
 				records.push(marked);
@@ -591,6 +588,7 @@ function refreshLiveness(records: AgentRecord[]): AgentRecord[] {
 			status: "failed" as AgentRecord["status"],
 			activity: "process exited unexpectedly",
 			error: record.error ?? "Subagent process is no longer running",
+			finishedAt: record.finishedAt ?? new Date().toISOString(),
 		};
 	});
 	return changed ? out : records;

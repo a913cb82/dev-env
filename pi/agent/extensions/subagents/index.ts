@@ -103,10 +103,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	let sessionAbort = new AbortController();
 	let shuttingDown = false;
 	let agentActive = false;
-	/** Parent turns this session has completed (drives uncollected-row hiding). */
-	let completedParentTurns = 0;
-	/** First-seen-terminal stamps (this session's turn count) for hide aging. */
-	const firstSeenTerminal = new Map<string, number>();
+	
 	let isIdle: (() => boolean) | undefined;
 	let delivering = false;
 	let deliveryPaused = false;
@@ -438,7 +435,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	});
 	pi.on("agent_settled", () => {
 		agentActive = false;
-		completedParentTurns++;
 		if (activeSignal?.aborted) deliveryPaused = true;
 		if (!deliveryPaused) scheduleDelivery(0);
 		void flushMeshParked();
@@ -610,8 +606,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				widget?.dispose();
 				widget = new SubagentStatusWidget(tui, theme, getAgentDir(), runtime!.runId, {
 				hideAfterMinutes: runtime!.settings.hideUncollectedAfterMinutes ?? 10,
-				hideAfterTurns: runtime!.settings.hideUncollectedAfterParentTurns ?? 5,
-				parentTurns: () => completedParentTurns,
 			});
 				return widget;
 			},
@@ -1104,12 +1098,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			// only invite dead-end actions. Records and audits are untouched.
 			const hideGate: UncollectedHideGate = {
 				hideAfterMinutes: runtime!.settings.hideUncollectedAfterMinutes ?? 10,
-				hideAfterParentTurns: runtime!.settings.hideUncollectedAfterParentTurns ?? 5,
 			};
 			const rows = targetIds ? snapshot() : snapshot().filter((record) => {
 				if (!isTerminalStatus(record.status) || record.resultsDelivered) return true;
-				if (!firstSeenTerminal.has(record.runId)) firstSeenTerminal.set(record.runId, completedParentTurns);
-				return !hideUncollectedRow(record, firstSeenTerminal.get(record.runId), completedParentTurns, Date.now(), hideGate);
+				return !hideUncollectedRow(record, Date.now(), hideGate);
 			});
 			// This session owns delivery only for its direct children. Descendant
 			// results remain visible, but their direct parent must claim them.

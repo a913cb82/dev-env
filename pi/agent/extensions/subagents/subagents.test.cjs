@@ -454,18 +454,26 @@ function check(name, cond, extra) {
 		check("clearing an absent offline marker is safe", registry.readMeshOffline(markerDir, "never-existed") === undefined);
 	}
 
-	// --- uncollected-row hide gate: 10min terminal AND 5 parent turns ---
+	// --- uncollected-row hide gate: terminal for over 10 minutes ---
 	{
-		const gate = { hideAfterMinutes: 10, hideAfterParentTurns: 5 };
+		const gate = { hideAfterMinutes: 10 };
 		const oldStamp = new Date(Date.now() - 11 * 60000).toISOString();
 		const freshStamp = new Date().toISOString();
-		const hide = (finishedAt, seen, now) => registry.hideUncollectedRow({ finishedAt, updatedAt: finishedAt }, seen, now, Date.now(), gate);
-		check("old row with enough turns hides", hide(oldStamp, 0, 5) === true);
-		check("old row with few turns shows", hide(oldStamp, 0, 4) === false);
-		check("fresh row with many turns shows", hide(freshStamp, 0, 99) === false);
-		check("never-observed row shows", registry.hideUncollectedRow({ finishedAt: oldStamp, updatedAt: oldStamp }, undefined, 99, Date.now(), gate) === false);
-		check("corrupt timestamp never hides", registry.hideUncollectedRow({ finishedAt: "not-a-date", updatedAt: "not-a-date" }, 0, 99, Date.now(), gate) === false);
-		check("zero thresholds hide at once", registry.hideUncollectedRow({ finishedAt: freshStamp, updatedAt: freshStamp }, 7, 7, Date.now(), { hideAfterMinutes: 0, hideAfterParentTurns: 0 }) === true);
+		const hide = (record) => registry.hideUncollectedRow(record, Date.now(), gate);
+		check("old row hides", hide({ finishedAt: oldStamp, updatedAt: oldStamp }) === true);
+		check("fresh row shows", hide({ finishedAt: freshStamp, updatedAt: freshStamp }) === false);
+		check("missing finishedAt falls back to updatedAt", hide({ updatedAt: oldStamp }) === true);
+		check("corrupt timestamp never hides", hide({ finishedAt: "not-a-date", updatedAt: "not-a-date" }) === false);
+		check("zero threshold hides at once", registry.hideUncollectedRow({ finishedAt: freshStamp, updatedAt: freshStamp }, Date.now(), { hideAfterMinutes: 0 }) === true);
+	}
+
+	// --- dead-process discovery stamps finishedAt (reload sees true age) ---
+	{
+		const liveDir = path.join(sandbox, "liveness-agent");
+		registry.saveRecord(liveDir, mk("dead-run", "", { name: "dead", status: "running", pid: 1 << 30 }));
+		const found = registry.readRecords(liveDir).find((record) => record.runId === "dead-run");
+		check("dead process reads as failed", found?.status === "failed", found?.status);
+		check("discovery stamps finishedAt", typeof found?.finishedAt === "string" && Math.abs(Date.now() - Date.parse(found.finishedAt)) < 60000, found?.finishedAt);
 	}
 
 	// --- actionable run IDs ---
@@ -1384,10 +1392,10 @@ function check(name, cond, extra) {
 		else process.env.PI_SUBAGENT_ROOT_ID = savedOfflineRoot;
 		if (savedOfflineDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = savedOfflineDir;
-		// Uncollected terminal rows older than the hide gate (10min terminal AND
-		// 5 parent turns since) stay out of untargeted checks; explicit targets
-		// bypass. Stamps land on the first check, so one check shows the old
-		// row, five settled turns hide it on the next, the fresh row stays.
+		// Uncollected terminal rows terminal over 10 minutes stay out of
+		// untargeted checks; explicit targets bypass. Age comes from the
+		// record, so the first check after a fresh start hides old rows at
+		// once; the fresh row stays.
 		const corpseDir = path.join(sandbox, "corpse-agent");
 		const corpseOld = new Date(Date.now() - 11 * 60000).toISOString();
 		registry.saveRecord(corpseDir, meshMk("corpse-mid", "corpse-anchor", { name: "mid", status: "completed", rootRunId: "corpse-anchor", updatedAt: corpseOld }));
@@ -1405,11 +1413,8 @@ function check(name, cond, extra) {
 		await corpseHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "corpse-anchor" }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
 		const rowNames = (result) => (result.details?.records ?? []).map((record) => record.name);
 		const corpseFirst = await corpseTools.get("check_subagents").execute("corpse-first", {}, undefined, undefined, {});
-		check("first check stamps but still shows the old row", rowNames(corpseFirst).includes("old-kid"), JSON.stringify(rowNames(corpseFirst)));
-		for (let turn = 0; turn < 5; turn++) await corpseHandlers.get("agent_settled")({});
-		const corpseCheck = await corpseTools.get("check_subagents").execute("corpse-check", {}, undefined, undefined, {});
-		check("untargeted check hides the old row after five turns", !rowNames(corpseCheck).includes("old-kid"), JSON.stringify(rowNames(corpseCheck)));
-		check("untargeted check keeps the fresh orphan", rowNames(corpseCheck).includes("fresh-kid"), JSON.stringify(rowNames(corpseCheck)));
+		check("first check hides the old row", !rowNames(corpseFirst).includes("old-kid"), JSON.stringify(rowNames(corpseFirst)));
+		check("first check keeps the fresh orphan", rowNames(corpseFirst).includes("fresh-kid"), JSON.stringify(rowNames(corpseFirst)));
 		const corpseTargeted = await corpseTools.get("check_subagents").execute("corpse-targeted", { targets: ["old-kid"] }, undefined, undefined, {});
 		check("explicit targets bypass corpse hiding", rowNames(corpseTargeted).includes("old-kid"), JSON.stringify(rowNames(corpseTargeted)));
 		if (savedCorpseRun === undefined) delete process.env.PI_SUBAGENT_RUN_ID;

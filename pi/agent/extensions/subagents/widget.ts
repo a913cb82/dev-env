@@ -52,8 +52,6 @@ export class SubagentStatusWidget implements Component {
 		private readonly currentRunId: string,
 		private readonly hide: {
 			hideAfterMinutes?: number;
-			hideAfterTurns?: number;
-			parentTurns?: () => number;
 		} = {},
 	) {
 		this.refresh();
@@ -87,19 +85,14 @@ export class SubagentStatusWidget implements Component {
 		return this.dismissedCache.keys;
 	}
 
-	/** First-seen-terminal stamps (this session's turn count) for hide aging. */
-	private readonly firstSeenTerminal = new Map<string, number>();
 	/** True once an uncollected terminal row passes the hide gate. Delivered
 	 * rows vanish through the claim path; this covers the rest. */
 	private agedOut(record: AgentRecord): boolean {
 		if (!isTerminalStatus(record.status)) return false;
-		const parentTurns = this.hide.parentTurns?.() ?? 0;
-		if (!this.firstSeenTerminal.has(record.runId)) this.firstSeenTerminal.set(record.runId, parentTurns);
 		const gate: UncollectedHideGate = {
 			hideAfterMinutes: this.hide.hideAfterMinutes ?? 10,
-			hideAfterParentTurns: this.hide.hideAfterTurns ?? 5,
 		};
-		return hideUncollectedRow(record, this.firstSeenTerminal.get(record.runId), parentTurns, Date.now(), gate);
+		return hideUncollectedRow(record, Date.now(), gate);
 	}
 	private outstanding(): AgentRecord[] {
 		// Runs I dismissed (viewed read-only) stay hidden across reloads, like

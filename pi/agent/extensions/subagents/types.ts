@@ -73,10 +73,8 @@ export interface SubagentSettings {
 	maxTurns?: number;
 	/** Turns past maxTurns before abort: at maxTurns the run gets one wrap-up steer, past maxTurns+graceTurns it is cancelled. Default 5. */
 	graceTurns?: number;
-	/** Hide uncollected terminal rows once they have been terminal for this many minutes AND this session has completed hideUncollectedAfterParentTurns turns since (default 10). Display only; records and audits are untouched. */
+	/** Hide uncollected terminal rows once they have been terminal for this many minutes (default 10). Display only; records and audits are untouched. */
 	hideUncollectedAfterMinutes?: number;
-	/** Parent turns completed since first seeing the row terminal before it hides (default 5). */
-	hideUncollectedAfterParentTurns?: number;
 }
 
 export interface SpawnAgentInput {

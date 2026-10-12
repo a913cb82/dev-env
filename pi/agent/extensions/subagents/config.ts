@@ -12,7 +12,6 @@ export const DEFAULT_SETTINGS: SubagentSettings = {
 	pruneUndeliveredAfterDays: 30,
 	pruneUndeliveredKeep: 500,
 	hideUncollectedAfterMinutes: 10,
-	hideUncollectedAfterParentTurns: 5,
 	maxTurns: 0,
 	graceTurns: 5,
 };
@@ -124,9 +123,6 @@ function validate(raw: RawSettings, source: string): RawSettings {
 	}
 	if (raw.hideUncollectedAfterMinutes !== undefined) {
 		result.hideUncollectedAfterMinutes = hideAmount(raw.hideUncollectedAfterMinutes, `${source}.hideUncollectedAfterMinutes`);
-	}
-	if (raw.hideUncollectedAfterParentTurns !== undefined) {
-		result.hideUncollectedAfterParentTurns = hideAmount(raw.hideUncollectedAfterParentTurns, `${source}.hideUncollectedAfterParentTurns`);
 	}
 	if (raw.maxTurns !== undefined) {
 		result.maxTurns = turnLimit(raw.maxTurns, `${source}.maxTurns`);
