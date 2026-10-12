@@ -161,8 +161,9 @@ function fireSettled(context: SpawnContext, record: AgentRecord): void {
 /** Send to any live session: owned children use the direct RPC channel,
  * everything else goes over the socket mesh. `steer` (default) applies after
  * the current tool call, `followUp` waits for settle, `interrupt` stops the
- * tool call first. `interrupt` works only over the live channel: elsewhere it
- * behaves as `followUp`. Terminal children always return false so the caller
+ * tool call first. A mesh interrupt travels as its own envelope: the
+ * receiver aborts its own turn. Scope (ancestor senders only) is checked
+ * by the caller. Terminal children always return false so the caller
  * resumes them via a fresh process from the saved transcript; unreachable
  * non-terminal children also return false after a bounded socket wait so
  * the caller can park (queued/starting) or fail (running) explicitly. */
@@ -197,7 +198,29 @@ export async function sendSubagentMessage(record: AgentRecord, message: string, 
 			await live.sendMessage(message, signal, "steer");
 			return "live";
 		}
-		return sendSubagentMessage(record, message, signal, "followUp", sender);
+		// No live handle: the mesh carries interrupt as its own envelope and
+		// the receiver stops its own turn. A starting target runs nothing
+		// yet, so it queues a steer for launch. Scope is the caller's job.
+		const startup = startingChildren.get(record.runId);
+		if (startup) {
+			startup.messages.push({ text: message, mode: "steer" });
+			return "starting";
+		}
+		if (!sender) return false;
+		try {
+			await deliverMeshMessage({
+				socketDir: sender.socketDir,
+				toRunId: record.runId,
+				fromRunId: sender.runId,
+				type: "interrupt",
+				text: message,
+				waitMs: sender.waitMs,
+				signal,
+			});
+			return "mesh";
+		} catch {
+			return false;
+		}
 	}
 	const live = liveChildren.get(record.runId);
 	if (live) {

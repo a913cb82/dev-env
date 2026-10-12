@@ -1,5 +1,5 @@
 // Socket mesh: one Unix socket per live session, owned by the extension.
-// Any session sends text (steer/followUp) and settle notifications directly
+// Any session sends text (steer/followUp/interrupt) and settle notifications directly
 // to any other session by runId. Node builtins only.
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ export const MESH_PROTOCOL_VERSION = 1;
 export const DEFAULT_MESH_MAX_LINE_CHARS = 64 * 1024 * 1024;
 export const DEFAULT_MESH_ACK_TIMEOUT_MS = 5000;
 
-export type MeshMessageType = "steer" | "followUp" | "settled";
+export type MeshMessageType = "steer" | "followUp" | "interrupt" | "settled";
 
 export interface MeshEnvelope {
 	v: 1;
@@ -167,7 +167,7 @@ function isValidEnvelope(value: unknown): value is MeshEnvelope {
 	const frame = value as Record<string, unknown>;
 	return (
 		frame.v === MESH_PROTOCOL_VERSION &&
-		(frame.type === "steer" || frame.type === "followUp" || frame.type === "settled") &&
+		(frame.type === "steer" || frame.type === "followUp" || frame.type === "interrupt" || frame.type === "settled") &&
 		typeof frame.from === "string" && frame.from.length > 0 &&
 		typeof frame.to === "string" && frame.to.length > 0 &&
 		typeof frame.id === "string" && frame.id.length > 0 &&
@@ -324,8 +324,9 @@ export interface MeshDeliverOptions {
 	socketDir: string;
 	toRunId: string;
 	fromRunId: string;
-	/** steer redirects the target turn; followUp queues behind it. */
-	type: "steer" | "followUp";
+	/** steer applies after the tool call; followUp waits for settle;
+	 * interrupt stops the tool call on arrival (ancestor senders only). */
+	type: "steer" | "followUp" | "interrupt";
 	text: string;
 	/** How long to wait for a starting target's socket before giving up. */
 	waitMs?: number;

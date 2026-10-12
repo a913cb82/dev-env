@@ -74,7 +74,7 @@ const SendSchema = Type.Object({
 	target: Type.String({ description: "Tree path, name, run id, or session id. A path can be /a/b, me/child, or ../sibling." }),
 	message: Type.String({ description: "Message for the subagent" }),
 	mode: Type.Optional(Type.String({
-		description: "Message mode. steer applies after the current tool call. followUp waits for the agent to settle. interrupt stops the current tool call and applies at once. Default steer. The receipt states the delivery.",
+		description: "Message mode. steer applies after the current tool call. followUp waits for the agent to settle. interrupt stops a descendant's current tool call and applies on arrival. Default steer. Interrupt runs down the supervision line only. The receipt states the delivery.",
 		enum: ["steer", "followUp", "interrupt"],
 	})),
 });
@@ -111,6 +111,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	let delivering = false;
 	let deliveryPaused = false;
 	let activeSignal: AbortSignal | undefined;
+	/** Abort this session's own turn. Armed per turn; mesh interrupts call it. */
+	let abortOwn: (() => void) | undefined;
 	let meshServer: MeshServer | undefined;
 	let meshWarned = false;
 	// Bind with retries: a resumed session can race its own dying predecessor
@@ -247,13 +249,27 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		} catch {
 			// Audit never blocks delivery.
 		}
+		if (mode === "interrupt") {
+			// Ancestor interrupt: stop this turn first, then deliver. Queue
+			// first so the message survives even if the abort lands late:
+			// an idle target starts at once, a busy one drains after the
+			// abort. Interrupts never park; waiting would defeat them.
+			const idle = !isIdle || isIdle();
+			await injectMeshNow(from, "steer", text, idle);
+			if (!idle) {
+				try {
+					abortOwn?.();
+				} catch {
+					// Session ending: the queued steer still applies at the boundary.
+				}
+			}
+			return;
+		}
 		if (isIdle && !isIdle()) {
 			if (meshParked.length >= MESH_PARK_CAP) meshParked.shift();
 			meshParked.push({ from, mode, text });
 			return;
 		}
-		// Mesh senders never see the target state across the socket hop, so
-		// this funnel never aborts. Aborts use the live channel only.
 		await injectMeshNow(from, mode, text);
 	};
 	/** Flush parked inbound mesh texts in order. Modes pass through: the host
@@ -410,6 +426,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		agentActive = true;
 		deliveryPaused = false;
 		activeSignal = ctx.signal;
+		// Own-turn abort for mesh interrupts: every turn arms a fresh
+		// handle, and a handle only matters while a turn runs (a fresh
+		// session has no turn to stop, so no handle is needed yet).
+		if (ctx && typeof ctx.abort === "function") abortOwn = () => ctx.abort();
 		void flushMeshParked();
 	});
 	pi.on("message_end", (event) => {
@@ -701,28 +721,55 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 	};
 
+	/** Interrupt runs down the supervision line: the sender must stand above
+	 * the target in the tree (parent, grandparent, root). Siblings,
+	 * children, and the root itself never qualify. */
+	const isAncestorScope = (records: AgentRecord[], senderRunId: string, target: AgentRecord): boolean => {
+		// Roots keep no record, so a walk alone never reaches a root sender:
+		// the tree root stands above every node in it.
+		if (target.rootRunId === senderRunId) return true;
+		let id: string | undefined = target.parentRunId;
+		while (id) {
+			if (id === senderRunId) return true;
+			id = records.find((candidate) => candidate.runId === id)?.parentRunId;
+		}
+		return false;
+	};
+
 	const sendToRecord = async (
 		record: AgentRecord,
 		text: string,
 		signal?: AbortSignal,
 		mode: SubagentMessageMode = "steer",
 		ctx?: { cwd: string; scopedModels: Array<{ model: { provider: string; id: string }; thinkingLevel?: string }>; ui: any },
-	): Promise<{ resumed: boolean; queued?: boolean; channel?: SubagentSendChannel }> => {
+	): Promise<{ resumed: boolean; queued?: boolean; channel?: SubagentSendChannel | "stopped" }> => {
 		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
 		mode = normalizeMessageMode(mode);
 		signal = signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal;
 		const agentDir = getAgentDir();
 		const sender = meshSenderFor(agentDir, runtime.runId);
+		// Interrupt outside the supervision line refuses: the message still
+		// steers, then the refusal throws. Delivery errors win over the
+		// refusal (a message that never left needs no downgrade note).
+		const refused = mode === "interrupt" && !isAncestorScope(getCachedRecords(agentDir), runtime.runId, record);
+		const effectiveMode = refused ? "steer" : mode;
+		const refuse = (): never => {
+			throw new Error(`Cannot interrupt ${record.name}. Interrupt runs down the supervision line only. Sent as steering instead.`);
+		};
 		let current = latestRecord(record);
 		// Any tree node except this session is addressable: owned children
 		// use the direct RPC channel, everything else the socket mesh.
 		if (!isTerminalStatus(current.status)) {
-			const channel = await sendSubagentMessage(current, text, signal, mode, sender);
-			if (channel) return { resumed: false, channel };
+			const channel = await sendSubagentMessage(current, text, signal, effectiveMode, sender);
+			if (channel) {
+				if (refused) refuse();
+				return { resumed: false, channel };
+			}
 			current = latestRecord(record);
 			if (!isTerminalStatus(current.status)) {
 				if (current.status === "queued" || current.status === "starting") {
-					await queuePendingMessage(agentDir, current.runId, { from: runtime.runId, mode, text });
+					await queuePendingMessage(agentDir, current.runId, { from: runtime.runId, mode: effectiveMode, text });
+					if (refused) refuse();
 					return { resumed: false, queued: true };
 				}
 				throw new Error(`${current.name} is no longer reachable`);
@@ -740,6 +787,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			throw new Error(`Cannot resume ${current.name}. Its parent ${resumerParent.name} already ${resumerParent.status}. Spawn a fresh subagent.`);
 		}
 		if (!ctx?.scopedModels || !ctx?.cwd) throw new Error(`${current.name} finished (${current.status}); retry with session context to resume it`);
+		// A resumed run starts fresh: nothing runs to stop, so interrupt rides as steer.
 		await resumeSubagent(
 			current,
 			text,
@@ -759,8 +807,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				onUiRequest: makeUiHandler(ctx.ui),
 				onSettled: trackChild,
 			},
-			mode,
+			effectiveMode === "interrupt" ? "steer" : effectiveMode,
 		);
+		if (refused) refuse();
 		return { resumed: true };
 	};
 
@@ -1113,7 +1162,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "send_to_subagent",
 		label: "Send to Subagent",
-		description: "Send a message to any subagent except your own session. Address it by path, name, run id, or session id. Steer applies after the target's current tool call. followUp waits for the target to settle. interrupt stops the target's tool call and applies at once. It needs the live channel. A finished session resumes from its transcript. A queued session gets the message at start.",
+		description: "Send a message to any subagent except your own session. Address it by path, name, run id, or session id. Steer applies after the target's current tool call. followUp waits for the target to settle. interrupt stops a descendant's tool call and applies on arrival. Interrupt runs down the supervision line only. Other interrupts arrive as steering. A finished session resumes from its transcript. A queued session gets the message at start.",
 		promptSnippet: "Message any subagent",
 		parameters: SendSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -1130,13 +1179,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 						socketDir: meshSocketDir(agentDir),
 					toRunId: resolved.runId,
 					fromRunId: runtime!.runId,
-					type: mode,
+					// Nobody stands above the root: its interrupts always steer.
+					type: mode === "interrupt" ? "steer" : mode,
 					text: params.message,
 					signal: signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal,
 					});
 				} catch (error) {
 					throw new Error(`The root session is offline: ${error instanceof Error ? error.message : String(error)}`);
 				}
+				if (mode === "interrupt") throw new Error(`Cannot interrupt the root session. Interrupt runs down the supervision line only. Sent as steering instead.`);
 				try {
 					await appendAgentMessage(agentDir, resolved.runId, { from: senderName(runtime!.runId), mode, text: params.message });
 				} catch {
@@ -1160,7 +1211,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			const receipt = resumed ? `Resumed ${record.name} from its transcript with a new execution.`
 				: channel === "stopped" ? `Interrupted ${record.name}, but it stopped before the message landed.`
 				: mode === "interrupt" && channel === "live" ? `Interrupted ${record.name}. The message applies at once.`
-				: mode === "interrupt" ? `Queued for ${record.name} as follow-up. Interrupt needs the live channel.`
+				: mode === "interrupt" && channel === "mesh" ? `Interrupt sent to ${record.name}. It applies on arrival.`
 				: queued || channel === "starting" ? `Queued message for ${record.name}. It is not running yet. It delivers when its session starts.`
 				: channel === "live" ? liveDelivery
 				: meshDelivery;

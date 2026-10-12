@@ -1229,9 +1229,30 @@ function check(name, cond, extra) {
 		check("mesh steer receipt names the tool-call boundary", meshReceipt.content[0].text.includes("received") && meshReceipt.content[0].text.includes("tool call"), meshReceipt.content[0].text);
 		const meshFollowReceipt = await meshSend.execute("mesh-receipt-follow", { target: "mesh-aunt", mode: "followUp", message: "receipt follow" }, undefined, undefined, {});
 		check("mesh follow-up receipt keeps the mode word", meshFollowReceipt.content[0].text.includes("follow-up") && meshFollowReceipt.content[0].text.includes("received"), meshFollowReceipt.content[0].text);
-		// Interrupt without the live channel downgrades to follow-up, honestly.
+		// Ancestor interrupt travels the mesh and stops the tool call on arrival.
 		const meshInterruptReceipt = await meshSend.execute("mesh-receipt-interrupt", { target: "mesh-grand", mode: "interrupt", message: "receipt interrupt" }, undefined, undefined, {});
-		check("mesh interrupt downgrades with an honest receipt", meshInterruptReceipt.content[0].text.includes("as follow-up") && meshInterruptReceipt.content[0].text.includes("live channel"), meshInterruptReceipt.content[0].text);
+		check("mesh interrupt receipt promises arrival, not delay", meshInterruptReceipt.content[0].text.includes("Interrupt sent") && meshInterruptReceipt.content[0].text.includes("on arrival"), meshInterruptReceipt.content[0].text);
+		// Lateral interrupt (sibling) refuses and still steers.
+		let siblingInterruptError;
+		try {
+			await grandSend.execute("mesh-sibling-interrupt", { target: "../mesh-aunt", mode: "interrupt", message: "stop that" }, undefined, undefined, {});
+		} catch (error) { siblingInterruptError = error; }
+		check("sibling interrupt refuses with the line rule", siblingInterruptError?.message.includes("supervision line"), siblingInterruptError?.message);
+		check("refused interrupt still steers", await until(() => meshSends.aunt.some((s) => String(s.message.content).includes("stop that") && s.options && s.options.deliverAs === "steer")), JSON.stringify(meshSends.aunt.length));
+		// Upward interrupt (child to parent) refuses the same way.
+		await startMeshInstance("child", "mesh-child");
+		let upwardInterruptError;
+		try {
+			await grandSend.execute("mesh-upward-interrupt", { target: "..", mode: "interrupt", message: "stop up" }, undefined, undefined, {});
+		} catch (error) { upwardInterruptError = error; }
+		check("upward interrupt refuses with the line rule", upwardInterruptError?.message.includes("supervision line"), upwardInterruptError?.message);
+		check("refused upward interrupt still steers", await until(() => meshSends.child.some((s) => String(s.message.content).includes("stop up") && s.options && s.options.deliverAs === "steer")), JSON.stringify(meshSends.child.length));
+		// Interrupt to the root refuses: nobody stands above the root.
+		let rootInterruptError;
+		try {
+			await grandSend.execute("mesh-root-interrupt", { target: "/", mode: "interrupt", message: "stop root" }, undefined, undefined, {});
+		} catch (error) { rootInterruptError = error; }
+		check("root interrupt refuses with the line rule", rootInterruptError?.message.includes("supervision line"), rootInterruptError?.message);
 		// Duplicate envelope ids inject once (failover retry must not double-deliver).
 		const dupeFrame = `${JSON.stringify({ v: 1, type: "steer", from: "mesh-aunt", to: "mesh-grand", id: "dupe-probe-1", seq: 4242, payload: { text: "dupe hello" } })}\n`;
 		const dupeSendsBase = meshSends.grand.length;
@@ -1299,6 +1320,30 @@ function check(name, cond, extra) {
 		const idleSend = parkSends.find((s) => String(s.message.content).includes("idle hello"));
 		check("idle mesh steer injects as steer", idleArrived && idleSend?.options?.deliverAs === "steer", JSON.stringify(idleSend?.options));
 		check("idle inject still triggers the turn", idleArrived && idleSend?.options?.triggerTurn === true, JSON.stringify(idleSend?.options));
+		// Interrupt over the mesh stops the tool call on arrival: no park,
+		// no trigger into busy work, abort from the target's own handle.
+		// Proven on the live park instance (its socket already flows).
+		const intRecvAborts = [];
+		parkHandlers.get("agent_start")({}, { signal: new AbortController().signal, abort: () => { intRecvAborts.push(true); } });
+		const intFrame = (id, text) => `${JSON.stringify({ v: 1, type: "interrupt", from: "park-sender", to: "park-me", id, seq: 1, payload: { text } })}\n`;
+		const sendIntFrame = (frame) => new Promise((resolveInt, rejectInt) => {
+			const sock = net.createConnection(mesh.meshSocketPath(mesh.meshSocketDir(meshAgentDir), "park-me"));
+			sock.on("error", rejectInt);
+			sock.on("data", () => { sock.end(); resolveInt(true); });
+			sock.on("connect", () => { sock.write(frame); });
+		});
+		parkIdle = false;
+		const intBusyBase = parkSends.length;
+		await sendIntFrame(intFrame("int-probe-1", "stop now"));
+		check("busy interrupt queues without forcing", await until(() => parkSends.slice(intBusyBase).some((s) => String(s.message.content).includes("stop now") && s.options && s.options.triggerTurn !== true)), JSON.stringify(parkSends.length));
+		check("busy interrupt injects as steer", parkSends.slice(intBusyBase).some((s) => String(s.message.content).includes("stop now") && s.options && s.options.deliverAs === "steer"), JSON.stringify(parkSends.slice(intBusyBase).map((s) => s.options)));
+		check("busy interrupt aborts the tool call", intRecvAborts.length === 1, JSON.stringify(intRecvAborts.length));
+		check("interrupt audited as applied", await until(() => registry.readAgentMessages(meshAgentDir, "park-me").some((m) => m.text === "stop now")), "audit");
+		parkIdle = true;
+		const intIdleBase = parkSends.length;
+		await sendIntFrame(intFrame("int-probe-2", "start now"));
+		check("idle interrupt starts the turn", await until(() => parkSends.slice(intIdleBase).some((s) => String(s.message.content).includes("start now") && s.options && s.options.triggerTurn === true)), JSON.stringify(parkSends.length));
+		check("idle interrupt never aborts", intRecvAborts.length === 1, JSON.stringify(intRecvAborts.length));
 		// Failed binds leave a parent-visible marker, back off across tool
 		// executes (attempts observable in the marker), and clear on recovery.
 		const offlineDir = path.join(sandbox, "offline-agent");
