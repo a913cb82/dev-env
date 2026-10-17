@@ -52,8 +52,14 @@ if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
 fi
 
 section "pi"
-if ! command -v pi >/dev/null; then
-  echo "TODO: install pi (requires Node, kept outside this env)"
+# The official installer provisions its own Node and prefers a bin dir that is
+# already on PATH: ~/.local/bin qualifies, and shell/bashrc.d/10-env.sh keeps
+# it there. Pi's package and runtime land under ~/.pi/agent/install.
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v pi >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/pi" ]; then
+  if [ -z "$CHECK_ONLY" ]; then
+    curl -fsSL https://pi.dev/install.sh | sh
+  fi
 fi
 mkdir -p "$PI/skills" "$PI/extensions"
 link "$REPO/pi/agent/AGENTS.md" "$PI/AGENTS.md"

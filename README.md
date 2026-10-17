@@ -21,7 +21,7 @@ This section is for PCs that run the environment. It makes no changes to this re
 2. Link new files and prune stale links: `./bootstrap.sh --check-only`
 3. Confirm the state: `./sync.sh --check`
 
-Use `./bootstrap.sh` without flags only when you also want system packages. It calls `apt-get` and can ask for `sudo`.
+Use `./bootstrap.sh` without flags only when you also want new tools. It calls `apt-get`, installs uv and Pi if missing, and can ask for `sudo`.
 
 ### After you move the clone
 
@@ -48,7 +48,7 @@ Edit repo files first when possible. Avoid direct edits under `~/.pi`. Run `./sy
 
 ### Contents
 
-- `bootstrap.sh`: installs packages and uv, then links live files. It is safe to run more than once.
+- `bootstrap.sh`: installs packages, uv, and Pi, then links live files. It is safe to run more than once.
 - `sync.sh`: adopts live files into the repo. `--check` reports drift without writing.
 - `hooks/pre-commit`: blocks commits with drift. Enable it with `core.hooksPath`.
 - `shell/`: `tmux.conf` for WSL and `bashrc.d/` shell defaults.
