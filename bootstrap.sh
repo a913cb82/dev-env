@@ -4,6 +4,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="$HOME/.pi/agent"
+PI_VERSION="1.0.0" # pinned Pi release; bump deliberately
 CHECK_ONLY="${1:-}"
 
 link() { # link <source> <dest>: symlink file/dir, creating parents.
@@ -52,13 +53,25 @@ if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
 fi
 
 section "pi"
-# The official installer provisions its own Node and prefers a bin dir that is
-# already on PATH: ~/.local/bin qualifies, and shell/bashrc.d/10-env.sh keeps
-# it there. Pi's package and runtime land under ~/.pi/agent/install.
+# The installer provisions Node and prefers a bin dir already on PATH, so the
+# launcher lands in ~/.local/bin. It always installs the latest release, so
+# when that differs from PI_VERSION, fill the managed release directory with
+# the pinned build and point the launcher at it.
 export PATH="$HOME/.local/bin:$PATH"
 if ! command -v pi >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/pi" ]; then
   if [ -z "$CHECK_ONLY" ]; then
     curl -fsSL https://pi.dev/install.sh | sh
+    if [ "$(pi --version 2>/dev/null)" != "$PI_VERSION" ]; then
+      echo "Pinning Pi to $PI_VERSION"
+      export PATH="$HOME/.local/share/pi-node/current/bin:$PATH"
+      release="$PI/install/releases/$PI_VERSION"
+      mkdir -p "$release"
+      npm --prefix "$release" install --ignore-scripts --min-release-age=0 \
+        --omit=dev --include=optional --no-fund --no-audit \
+        "@earendil-works/pi-coding-agent@$PI_VERSION"
+      printf '%s' "$PI_VERSION" > "$PI/install/current-version"
+      find "$PI/install/releases" -mindepth 1 -maxdepth 1 ! -name "$PI_VERSION" -exec rm -rf {} +
+    fi
   fi
 fi
 mkdir -p "$PI/skills" "$PI/extensions"
