@@ -1006,6 +1006,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					scopedModels: ctx.scopedModels.map(({ model, thinkingLevel }) => ({ provider: model.provider, id: model.id, thinkingLevel })),
 					parentCwd: ctx.cwd,
 					projectTrusted: runtime.projectTrusted,
+					rpcRequestTimeoutMs: runtime.settings.rpcRequestTimeoutMs,
+					rpcStartupTimeoutMs: runtime.settings.rpcStartupTimeoutMs,
 					signal,
 					sessionSignal: sessionAbort.signal,
 					onRecord: trackChild,

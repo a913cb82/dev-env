@@ -1075,10 +1075,12 @@ async function runSubagentProcess(
 		): Promise<any> => {
 			const id = `subagent-${++requestId}`;
 			const commandName = typeof command.type === "string" ? command.type : "RPC command";
-			const timeoutMs = Math.min(
-				requestTimeoutMs,
-				options.deadline === undefined ? requestTimeoutMs : Math.max(0, options.deadline - Date.now()),
-			);
+			// A startup call is bounded by the startup deadline alone. Clamping it
+			// with the per-request timeout used to cut the handshake short and kill
+			// healthy children whose boot simply outlasted 15s on a frozen box.
+			const timeoutMs = options.deadline === undefined
+				? requestTimeoutMs
+				: Math.max(0, options.deadline - Date.now());
 			if (options.signal?.aborted) return Promise.reject(new Error(`${commandName} was aborted`));
 			if (timeoutMs <= 0) return Promise.reject(new Error(`Subagent RPC startup timed out: deadline already exceeded before the ${commandName} send ran`));
 			return new Promise((resolveCommand, rejectCommand) => {

@@ -61,6 +61,10 @@ export interface SubagentSettings {
 	maxConcurrency: number;
 	/** Maximum UTF-16 code units per child RPC stdout record (default 64 Mi). */
 	rpcMaxLineChars?: number;
+	/** Bound on a single control RPC call to a running child, ms (default 15000). */
+	rpcRequestTimeoutMs?: number;
+	/** Bound on child RPC startup, spawn to first acknowledged command, ms (default 30000). */
+	rpcStartupTimeoutMs?: number;
 	/** Prune delivered terminal runs older than this many days (default 14). */
 	pruneDeliveredAfterDays?: number;
 	/** Always keep this many newest delivered candidates (default 50). */

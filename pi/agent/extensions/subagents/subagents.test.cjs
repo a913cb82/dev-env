@@ -89,6 +89,8 @@ function check(name, cond, extra) {
 	fs.mkdirSync(agentDir, { recursive: true });
 	let s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} });
 	check("default RPC bound is 64 Mi characters", s.rpcMaxLineChars === 64 * 1024 * 1024);
+	check("default RPC request timeout is 15s", s.rpcRequestTimeoutMs === 15_000, s.rpcRequestTimeoutMs);
+	check("default RPC startup timeout is 30s", s.rpcStartupTimeoutMs === 30_000, s.rpcStartupTimeoutMs);
 	for (const value of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1, "1024", null]) {
 		let threw = false;
 		try { config.validateRpcMaxLineChars(value, "test"); } catch { threw = true; }
@@ -96,6 +98,16 @@ function check(name, cond, extra) {
 	}
 	fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ rpcMaxLineChars: 12345 }));
 	check("RPC bound loads from configuration", config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} }).rpcMaxLineChars === 12345);
+	fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ rpcRequestTimeoutMs: 111, rpcStartupTimeoutMs: 222 }));
+	const rpcTimed = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} });
+	check("RPC timeouts load from configuration", rpcTimed.rpcRequestTimeoutMs === 111 && rpcTimed.rpcStartupTimeoutMs === 222, JSON.stringify({ request: rpcTimed.rpcRequestTimeoutMs, startup: rpcTimed.rpcStartupTimeoutMs }));
+	for (const [field, value] of [["rpcRequestTimeoutMs", 0], ["rpcStartupTimeoutMs", -5], ["rpcRequestTimeoutMs", "100"], ["rpcStartupTimeoutMs", 1.5]]) {
+		fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ [field]: value }));
+		let rejected = false;
+		try { config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} }); } catch { rejected = true; }
+		check(`invalid ${field} ${String(value)} rejected`, rejected);
+	}
+	fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ rpcMaxLineChars: 12345 }));
 	check("defaults maxDepth=2", s.maxDepth === 2, s.maxDepth);
 	check("defaults maxConcurrency=4", s.maxConcurrency === 4, s.maxConcurrency);
 
@@ -2401,6 +2413,24 @@ function check(name, cond, extra) {
 		await new Promise((r) => setTimeout(r, 25));
 	}
 	check("RPC startup has a deadline", timeoutDone?.error?.includes("startup timed out"), timeoutDone && `${timeoutDone.status} ${timeoutDone.error}`);
+
+	// A slow child boot must ride the startup deadline, not the per-request
+	// timeout: the 15s request bound used to clamp the handshake and kill
+	// healthy children on a frozen box (live incident: "startup timed out
+	// after 15000ms" while the child was still booting).
+	process.env.FAKE_STATE_DELAY_MS = "200";
+	const slowBootRec = await spawn.startSubagent(
+		{ task: "slow boot", name: "slow-boot-child" },
+		{ ...baseCtx(), rpcRequestTimeoutMs: 100, rpcStartupTimeoutMs: 1000 },
+	);
+	delete process.env.FAKE_STATE_DELAY_MS;
+	let slowBootDone;
+	for (let i = 0; i < 100; i++) {
+		slowBootDone = registry.readRecords(spawnAgentDir).find((r) => r.runId === slowBootRec.runId);
+		if (slowBootDone?.status === "completed") break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("slow RPC startup rides the startup deadline", slowBootDone?.status === "completed", slowBootDone && `${slowBootDone.status} ${slowBootDone.error}`);
 
 	// Timeouts/aborts apply to a running child's in-flight RPC (hang = no response).
 	process.env.FAKE_DELAY_MS = "5000";

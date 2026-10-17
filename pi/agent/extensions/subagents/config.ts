@@ -7,6 +7,8 @@ export const DEFAULT_SETTINGS: SubagentSettings = {
 	maxDepth: 2,
 	maxConcurrency: 4,
 	rpcMaxLineChars: 64 * 1024 * 1024,
+	rpcRequestTimeoutMs: 15_000,
+	rpcStartupTimeoutMs: 30_000,
 	pruneDeliveredAfterDays: 14,
 	pruneDeliveredKeep: 50,
 	pruneUndeliveredAfterDays: 30,
@@ -62,6 +64,14 @@ export function validateRpcMaxLineChars(value: unknown, field: string): number {
 	return value;
 }
 
+/** Positive whole milliseconds, common for both RPC timeouts. */
+function rpcTimeout(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+		throw new Error(`${field} must be a positive safe integer of milliseconds`);
+	}
+	return value;
+}
+
 export function validateThinkingLevel(value: unknown, field: string): string {
 	const level = optionalString(value, field)!;
 	if (!THINKING_LEVELS.has(level)) throw new Error(`${field} is not a valid thinking level`);
@@ -104,6 +114,12 @@ function validate(raw: RawSettings, source: string): RawSettings {
 	}
 	if (raw.rpcMaxLineChars !== undefined) {
 		result.rpcMaxLineChars = validateRpcMaxLineChars(raw.rpcMaxLineChars, `${source}.rpcMaxLineChars`);
+	}
+	if (raw.rpcRequestTimeoutMs !== undefined) {
+		result.rpcRequestTimeoutMs = rpcTimeout(raw.rpcRequestTimeoutMs, `${source}.rpcRequestTimeoutMs`);
+	}
+	if (raw.rpcStartupTimeoutMs !== undefined) {
+		result.rpcStartupTimeoutMs = rpcTimeout(raw.rpcStartupTimeoutMs, `${source}.rpcStartupTimeoutMs`);
 	}
 	if (raw.maxDepth !== undefined) result.maxDepth = depth(raw.maxDepth, `${source}.maxDepth`);
 	if (raw.maxConcurrency !== undefined) {

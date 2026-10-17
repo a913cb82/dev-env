@@ -149,11 +149,15 @@ process.stdin.on("data", (chunk) => {
 		try { command = JSON.parse(raw); } catch { continue; }
 		if (command.type === "get_state") {
 			if (mode === "ignore-state") continue;
-			line({ type: "response", id: command.id, command: "get_state", success: true, data: {
+			const stateDelay = Number(process.env.FAKE_STATE_DELAY_MS ?? 0);
+			const respondState = () => line({ type: "response", id: command.id, command: "get_state", success: true, data: {
 				sessionId, thinkingLevel: "off", isStreaming: false, isCompacting: false,
 				steeringMode: "one-at-a-time", followUpMode: "one-at-a-time",
 				autoCompactionEnabled: true, messageCount: 0, pendingMessageCount: 0,
 			} });
+			// Simulates a child whose boot drags (frozen/saturated box).
+			if (stateDelay > 0) setTimeout(respondState, stateDelay);
+			else respondState();
 			if (mode === "close-stdin") {
 				require("node:fs").closeSync(0);
 				process.stdin.destroy();
