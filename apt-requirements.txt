@@ -1,9 +1,8 @@
-git
-gh
-tmux
-ripgrep
 curl
+gh
+git
 jq
 python3
-python3-pip
+ripgrep
+tmux
 wl-clipboard
