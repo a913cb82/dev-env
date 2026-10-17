@@ -48,7 +48,7 @@ Edit repo files first when possible. Avoid direct edits under `~/.pi`. Run `./sy
 
 ### Contents
 
-- `bootstrap.sh`: installs packages and links live files. It is safe to run more than once.
+- `bootstrap.sh`: installs packages and uv, then links live files. It is safe to run more than once.
 - `sync.sh`: adopts live files into the repo. `--check` reports drift without writing.
 - `hooks/pre-commit`: blocks commits with drift. Enable it with `core.hooksPath`.
 - `shell/`: `tmux.conf` for WSL and `bashrc.d/` shell defaults.

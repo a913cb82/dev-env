@@ -22,6 +22,16 @@ if [ -z "$CHECK_ONLY" ]; then
   xargs -a "$REPO/apt-requirements.txt" sudo apt-get install -y -qq
 fi
 
+section "uv"
+# Official standalone install. UV_NO_MODIFY_PATH keeps this repo the
+# single owner of PATH additions (shell/bashrc.d/10-env.sh).
+if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
+  if [ -z "$CHECK_ONLY" ]; then
+    curl -LsSf https://astral.sh/uv/install.sh \
+      | UV_INSTALL_DIR="$HOME/.local/bin" UV_NO_MODIFY_PATH=1 sh
+  fi
+fi
+
 section "shell"
 LOADER="for f in \"$REPO\"/shell/bashrc.d/*.sh; do . \"\$f\"; done"
 if ! grep -qF 'shell/bashrc.d/*.sh' "$HOME/.bashrc" 2>/dev/null; then
@@ -72,7 +82,7 @@ link_area() { # link_area <repo-dir> <live-dir>: link every repo entry live.
 for s in skills extensions; do link_area "$REPO/pi/agent/$s" "$PI/$s"; done
 
 section "verify"
-if command -v git >/dev/null && command -v gh >/dev/null && command -v rg >/dev/null && command -v tmux >/dev/null && command -v python3 >/dev/null && command -v pi >/dev/null; then echo "tools present"; fi
+if command -v git >/dev/null && command -v gh >/dev/null && command -v rg >/dev/null && command -v tmux >/dev/null && command -v python3 >/dev/null && command -v uv >/dev/null && command -v pi >/dev/null; then echo "tools present"; fi
 if [ -L "$HOME/.gitconfig" ]; then echo "gitconfig linked"; fi
 if [ -f "$HOME/.ssh/id_ed25519" ]; then echo "ssh key present"; fi
 gh auth status >/dev/null 2>&1 && echo "gh authed" || echo "TODO: gh auth login"
