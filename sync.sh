@@ -28,7 +28,7 @@ copy_dir() { # copy_dir <live> <repo>: exact mirror minus git/node debris
 in_repo() { [[ "$(readlink -f "$1")" == "$REPO"* ]]; }
 
 note "pi files"
-for f in AGENTS.md keybindings.json settings.json; do
+for f in AGENTS.md keybindings.json settings.json subagents.json; do
   if [ -L "$PI/$f" ] && in_repo "$PI/$f"; then continue; fi
   if [ -n "$CHECK" ]; then
     cmp -s "$PI/$f" "$REPO/pi/agent/$f" || drift "$f"

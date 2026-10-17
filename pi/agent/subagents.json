@@ -1,0 +1,4 @@
+{
+  "rpcRequestTimeoutMs": 60000,
+  "rpcStartupTimeoutMs": 120000
+}
