@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Regression test: bootstrap must install the ketch CLI behind the
+# web-search/web-fetch skills. Stubs network; no real downloads.
+set -euo pipefail
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+export HOME="$TMP/home"
+BIN="$TMP/bin"
+mkdir -p "$HOME" "$BIN"
+# Hermetic PATH: system ketch (if any) must not satisfy the check.
+export PATH="$BIN:/usr/bin:/bin"
+
+cat > "$BIN/sudo" <<'S'
+#!/bin/sh
+exec "$@"
+S
+cat > "$BIN/apt-get" <<'S'
+#!/bin/sh
+exit 0
+S
+cat > "$BIN/uv" <<'S'
+#!/bin/sh
+exit 0
+S
+cat > "$BIN/node" <<'S'
+#!/bin/sh
+[ "$1" = "--version" ] && echo v22.22.1
+exit 0
+S
+cat > "$BIN/npm" <<'S'
+#!/bin/sh
+# Only the bootstrap pin call is expected: npm --prefix <dir> install ...
+prefix=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix) prefix=$2; shift 2 ;;
+    install) shift; break ;;
+    *) shift ;;
+  esac
+done
+[ -n "$prefix" ] || exit 1
+mkdir -p "$prefix/node_modules/.bin"
+cat > "$prefix/node_modules/.bin/pi" <<'P'
+#!/bin/sh
+cat "$HOME/.pi/agent/install/current-version"
+P
+chmod +x "$prefix/node_modules/.bin/pi"
+S
+cat > "$BIN/curl" <<'S'
+#!/bin/sh
+out=
+url=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+case "$url" in
+  https://pi.dev/install.sh)
+    [ -n "$out" ] || exit 1
+    cat > "$out" <<'I'
+#!/bin/sh
+if ( : <>/dev/tty ) 2>/dev/null; then echo has-tty > "$HOME/installer-tty"
+else echo no-tty > "$HOME/installer-tty"; fi
+mkdir -p "$HOME/.local/bin" "$HOME/.pi/agent/bin" "$HOME/.pi/agent/install/releases/latest"
+cat > "$HOME/.local/bin/pi" <<'P'
+#!/bin/sh
+v=$(cat "$HOME/.pi/agent/install/current-version" 2>/dev/null || echo latest)
+exec "$HOME/.pi/agent/install/releases/$v/node_modules/.bin/pi" "$@"
+P
+chmod +x "$HOME/.local/bin/pi"
+ln -s "$HOME/.local/bin/pi" "$HOME/.pi/agent/bin/pi"
+I
+    ;;
+  https://ketch.run/install)
+    # Piped to `sh -s -- --version X --bin-dir Y`; emit a fake installer
+    # that honours --bin-dir and drops an executable ketch.
+    [ -z "$out" ] || exit 1
+    cat <<'I'
+#!/bin/sh
+BIN_DIR="$HOME/.local/bin"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bin-dir) BIN_DIR="$2"; shift 2 ;;
+    --bin-dir=*) BIN_DIR="${1#*=}"; shift ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$BIN_DIR"
+printf '#!/bin/sh\necho "ketch stub"\n' > "$BIN_DIR/ketch"
+chmod +x "$BIN_DIR/ketch"
+echo "installed $BIN_DIR/ketch"
+I
+    ;;
+  *) exit 1 ;;
+esac
+S
+chmod +x "$BIN"/*
+
+"$REPO/bootstrap.sh" >"$TMP/bootstrap.log" 2>&1 || { cat "$TMP/bootstrap.log" >&2; fail "bootstrap failed"; }
+
+[ -x "$HOME/.local/bin/ketch" ] || fail "ketch was not installed to ~/.local/bin"
+"$HOME/.local/bin/ketch" version >/dev/null 2>&1 || fail "installed ketch is not executable"
+
+# Second run must succeed (idempotent) and keep the binary.
+"$REPO/bootstrap.sh" >"$TMP/bootstrap2.log" 2>&1 || { cat "$TMP/bootstrap2.log" >&2; fail "bootstrap rerun failed"; }
+[ -x "$HOME/.local/bin/ketch" ] || fail "ketch missing after bootstrap rerun"
+
+echo "PASS: ketch install"

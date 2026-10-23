@@ -59,8 +59,10 @@ while [ $# -gt 0 ]; do
     *) url=$1; shift ;;
   esac
 done
-[ "$url" = "https://pi.dev/install.sh" ] || exit 1
-cat > "$out" <<'I'
+case "$url" in
+  https://pi.dev/install.sh)
+    [ -n "$out" ] || exit 1
+    cat > "$out" <<'I'
 #!/bin/sh
 if ( : <>/dev/tty ) 2>/dev/null; then echo has-tty > "$HOME/installer-tty"
 else echo no-tty > "$HOME/installer-tty"; fi
@@ -73,6 +75,26 @@ P
 chmod +x "$HOME/.local/bin/pi"
 ln -s "$HOME/.local/bin/pi" "$HOME/.pi/agent/bin/pi"
 I
+    ;;
+  https://ketch.run/install)
+    # Piped to `sh -s -- --version X --bin-dir Y`.
+    [ -z "$out" ] || exit 1
+    cat <<'I'
+#!/bin/sh
+BIN_DIR="$HOME/.local/bin"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bin-dir) BIN_DIR="$2"; shift 2 ;;
+    --bin-dir=*) BIN_DIR="${1#*=}"; shift ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$BIN_DIR"
+printf '#!/bin/sh\necho "ketch stub"\n' > "$BIN_DIR/ketch"
+chmod +x "$BIN_DIR/ketch"
+I
+    ;;
+esac
 S
 chmod +x "$BIN"/*
 

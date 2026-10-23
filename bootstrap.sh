@@ -5,6 +5,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="$HOME/.pi/agent"
 PI_VERSION="1.0.0" # pinned Pi release; bump deliberately
+KETCH_VERSION="v0.20.0" # pinned ketch release; bump deliberately
 CHECK_ONLY="${1:-}"
 
 link() { # link <source> <dest>: symlink file/dir, creating parents.
@@ -30,6 +31,16 @@ if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
   if [ -z "$CHECK_ONLY" ]; then
     curl -LsSf https://astral.sh/uv/install.sh \
       | UV_INSTALL_DIR="$HOME/.local/bin" UV_NO_MODIFY_PATH=1 sh
+  fi
+fi
+
+section "ketch"
+# CLI behind the web-search/web-fetch skills. The install script verifies
+# checksums and drops the binary in ~/.local/bin (already on PATH via
+# shell/bashrc.d/10-env.sh). Pinned like PI_VERSION; bump deliberately.
+if [ ! -x "$HOME/.local/bin/ketch" ] && ! command -v ketch >/dev/null 2>&1; then
+  if [ -z "$CHECK_ONLY" ]; then
+    curl -fsSL https://ketch.run/install | sh -s -- --version "$KETCH_VERSION" --bin-dir "$HOME/.local/bin"
   fi
 fi
 
@@ -146,6 +157,7 @@ section "verify"
 if command -v git >/dev/null && command -v gh >/dev/null && command -v rg >/dev/null && command -v tmux >/dev/null && command -v python3 >/dev/null && command -v uv >/dev/null && command -v pi >/dev/null; then echo "tools present"; fi
 if [ -L "$HOME/.gitconfig" ]; then echo "gitconfig linked"; fi
 if [ -f "$HOME/.ssh/id_ed25519" ]; then echo "ssh key present"; fi
+if [ -x "$HOME/.local/bin/ketch" ] || command -v ketch >/dev/null 2>&1; then echo "ketch present"; else echo "TODO: run ./bootstrap.sh to install ketch"; fi
 gh auth status >/dev/null 2>&1 && echo "gh authed" || echo "TODO: gh auth login"
 test -f "$PI/auth.json" && echo "pi authed" || echo "TODO: pi auth"
 echo "DONE"
