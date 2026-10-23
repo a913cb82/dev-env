@@ -1268,6 +1268,57 @@ function textResult(chars) {
     check("opened name-only row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
   }
 
+  // 25. post-reload history merges contiguous groups: the rebuild renders
+  // one run per tool, then session_start merges each group so repaints cost
+  // one blank line per group instead of per tool. Positions never move.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piH = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piH);
+    // History pass: phase armed, one run per tool (the pre-reload layout).
+    const read = tools.get("read");
+    const bash = tools.get("bash");
+    const ctxFor = (id, args) => ({
+      args, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    });
+    const h1 = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" }));
+    const h2 = read.renderCall({ path: "/b" }, theme, ctxFor("h2", { path: "/b" }));
+    const h3 = bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" }));
+    check("history pass renders separately",
+      h1.render(80).length === 1 && h2.render(80).length === 1 && h3.render(80).length === 1,
+      `${h1.render(80).length}/${h2.render(80).length}/${h3.render(80).length}`);
+    // session_start sees the transcript: h1+h2 contiguous, h3 after prose.
+    const entries = [
+      { type: "message", message: { role: "assistant", content: [
+        { type: "thinking", thinking: "plan" },
+        { type: "toolCall", id: "h1", name: "read", arguments: {} },
+        { type: "toolCall", id: "h2", name: "read", arguments: {} },
+      ] } },
+      { type: "message", message: { role: "assistant", content: [
+        { type: "text", text: "a note" },
+        { type: "toolCall", id: "h3", name: "bash", arguments: {} },
+      ] } },
+    ];
+    await handlers.get("session_start")[0](
+      {}, { hasUI: false, sessionManager: { getEntries: () => entries } });
+    const merged = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
+    check("contiguous history merges", merged.length === 2, JSON.stringify(merged));
+    check("merged history keeps order",
+      merged[0].includes("<b>a</b>") && merged[1].includes("<b>b</b>"), JSON.stringify(merged));
+    const alone = bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })).render(80);
+    check("prose-split history stays separate", alone.length === 1 && alone[0].includes("ls"), JSON.stringify(alone));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

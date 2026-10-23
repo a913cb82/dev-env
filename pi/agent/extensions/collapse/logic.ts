@@ -228,3 +228,75 @@ export function genericToolSummary(args: unknown): string {
   }
   return "";
 }
+
+/** Group history tool calls into shared runs, mirroring the live layout:
+ *  contiguous own tools with no visible content between them share a run,
+ *  so the rebuild renders them gapless. Anything visible (prose, thinking,
+ *  foreign stock blocks, other roles) splits — merging across it would lift
+ *  rows above their own context. toolResult entries are skipped: they render
+ *  inside the tool component, never between rows. Returns toolCallId groups
+ *  in transcript order; entries the planner cannot place keep single runs. */
+export function planToolRuns(
+  entries: Array<{ type?: unknown; message?: unknown }> | undefined | null,
+  isOwnTool: (name: string) => boolean,
+): string[][] {
+  const groups: string[][] = [];
+  let current: string[] = [];
+  const boundary = () => {
+    if (current.length > 0) groups.push(current);
+    current = [];
+  };
+  const visible = (part: unknown): boolean => {
+    if (!part || typeof part !== "object") return false;
+    const block = part as { type?: unknown; text?: unknown; thinking?: unknown };
+    if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0;
+    if (block.type === "thinking") return typeof block.thinking === "string" && block.thinking.trim().length > 0;
+    return false;
+  };
+  if (!Array.isArray(entries)) return groups;
+  for (const entry of entries) {
+    if (!entry || entry.type !== "message") continue;
+    const message = entry.message as { role?: unknown; content?: unknown } | undefined;
+    if (!message || typeof message !== "object") continue;
+    if (message.role === "toolResult") continue;
+    if (message.role !== "assistant" || !Array.isArray(message.content)) {
+      boundary();
+      continue;
+    }
+    // Visible content before the last tool call of this message splits;
+    // trailing content renders below the rows and changes nothing.
+    const parts = message.content;
+    let lastTool = -1;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i] as { type?: unknown } | undefined;
+      if (part?.type === "toolCall") lastTool = i;
+    }
+    let seenTool = false;
+    let splitBeforeNextTool = false;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i] as { type?: unknown; id?: unknown; name?: unknown } | undefined;
+      if (part?.type === "toolCall") {
+        if (splitBeforeNextTool) {
+          boundary();
+          splitBeforeNextTool = false;
+        }
+        const id = typeof part.id === "string" && part.id ? part.id : undefined;
+        const name = typeof part.name === "string" ? part.name : "";
+        if (id && isOwnTool(name)) {
+          current.push(id);
+          seenTool = true;
+        } else if (id) {
+          // Foreign tools render their own stock block: rows never span it.
+          boundary();
+        }
+        continue;
+      }
+      if (visible(part) && i < lastTool) {
+        if (seenTool) splitBeforeNextTool = true;
+        else boundary();
+      }
+    }
+  }
+  boundary();
+  return groups;
+}

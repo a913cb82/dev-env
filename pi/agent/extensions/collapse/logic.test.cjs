@@ -294,6 +294,41 @@ function check(name, cond, extra) {
     check("generic collapses whitespace", g({ description: "a\n\n  b" }) === "a b", g({ description: "a\n\n  b" }));
   }
 
+  // planToolRuns: group contiguous history tools so the rebuild layout
+  // matches live runs (no teleporting: never span visible content).
+  {
+    const msg = (role, content) => ({ type: "message", message: { role, content } });
+    const call = (id, name) => ({ type: "toolCall", id, name, arguments: {} });
+    const text = (t) => ({ type: "text", text: t });
+    const think = (t) => ({ type: "thinking", thinking: t });
+    const own = (name) => ["read", "bash"].includes(name);
+    const plan = (entries) => logic.planToolRuns(entries, own);
+    check("contiguous tools group",
+      JSON.stringify(plan([msg("assistant", [call("a", "read"), call("b", "bash")])])) === '[["a","b"]]');
+    check("tool-only turns merge",
+      JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("assistant", [call("b", "bash")])])) === '[["a","b"]]');
+    check("prose between splits",
+      JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("user", [text("hi")]), msg("assistant", [call("b", "bash")])])) === '[["a"],["b"]]');
+    check("leading thinking splits",
+      JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("assistant", [think("hmm"), call("b", "bash")])])) === '[["a"],["b"]]');
+    check("thinking between tools splits",
+      JSON.stringify(plan([msg("assistant", [call("a", "read"), think("hmm"), call("b", "bash")])])) === '[["a"],["b"]]');
+    check("trailing text does not split",
+      JSON.stringify(plan([msg("assistant", [call("a", "read"), text("done")]), msg("assistant", [call("b", "bash")])])) === '[["a","b"]]');
+    check("tool results do not split",
+      JSON.stringify(plan([
+        msg("assistant", [call("a", "read")]),
+        { type: "message", message: { role: "toolResult", toolCallId: "a", content: [{ type: "text", text: "x" }] } },
+        msg("assistant", [call("b", "bash")]),
+      ])) === '[["a","b"]]');
+    check("foreign tools split",
+      JSON.stringify(plan([msg("assistant", [call("a", "read"), call("f", "mcp_x")]), msg("assistant", [call("b", "bash")])])) === '[["a"],["b"]]');
+    check("empty thinking is invisible",
+      JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("assistant", [think("  "), call("b", "bash")])])) === '[["a","b"]]');
+    check("missing ids are skipped",
+      JSON.stringify(plan([msg("assistant", [call("a", "read"), { type: "toolCall", name: "bash" }])])) === '[["a"]]');
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

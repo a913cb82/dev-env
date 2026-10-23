@@ -113,9 +113,47 @@ export function resetTraceState(): void {
   traceEntries.clear();
   traceRuns.clear();
   traceOwnerPoke.clear();
+  plannedRunById.clear();
   boundaryReasons.length = 0;
   traceRunId++;
   traceHistoryPhase = false;
+}
+
+/** History runs planned at session_start (see planToolRuns in logic): the
+ *  rebuild rendered one run per tool before this event, so merge each
+ *  contiguous group into one run here. Every component repaints from this
+ *  registry, so the next frame shows the same gapless layout live turns
+ *  get. Groups never span visible content, so no row moves above its own
+ *  context. Entries the planner could not place keep single-row runs. */
+const plannedRunById = new Map<string, number>();
+
+export function applyPlannedRuns(groups: string[][]): void {
+  plannedRunById.clear();
+  const byId = new Map(traceEntries);
+  const planned = new Set<string>();
+  traceRuns.clear();
+  traceOwnerPoke.clear();
+  for (const group of groups) {
+    const ids = group.filter((id) => byId.has(id));
+    if (ids.length === 0) continue;
+    traceRunId++;
+    const runId = traceRunId;
+    for (const id of ids) {
+      byId.get(id)!.runId = runId;
+      planned.add(id);
+      plannedRunById.set(id, runId);
+    }
+    traceRuns.set(runId, [...ids]);
+  }
+  for (const [id, entry] of byId) {
+    if (planned.has(id)) continue;
+    traceRunId++;
+    entry.runId = traceRunId;
+    traceRuns.set(entry.runId, [id]);
+  }
+  // traceRunId always names the run the next tool joins: leave it on a fresh
+  // run, or the first live tool would collide into the last history run.
+  traceRunId++;
 }
 
 export function traceOwnerId(runId: number): string | undefined {
@@ -140,7 +178,9 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
   if (!entry) {
     entry = {
       id: toolCallId,
-      runId: traceRunId,
+      // Late render of a planned history tool (or a live tool reusing an
+      // id): rejoin its run instead of starting a new one.
+      runId: plannedRunById.get(toolCallId) ?? traceRunId,
       toolName,
       original,
       args: undefined,

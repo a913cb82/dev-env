@@ -50,6 +50,7 @@ import {
 import {
   extractThinkingText,
   findLatestThinkingText,
+  planToolRuns,
   thinkingLabelForWidth,
 } from "./logic.js";
 import {
@@ -62,6 +63,7 @@ import {
 } from "./rows.js";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
+  applyPlannedRuns,
   armHistoryPhase,
   boundaryReasons,
   endHistoryPhase,
@@ -76,7 +78,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 22;
+const COLLAPSE_REVISION = 24;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -285,6 +287,10 @@ export default function (pi: ExtensionAPI) {
       const sm = ctx.sessionManager as any;
       const entries =
         typeof sm?.getBranch === "function" ? sm.getBranch() : (sm?.getEntries?.() ?? []);
+      // The rebuild rendered one run per history tool (anti-teleport while
+      // positions were unknown). Merge contiguous groups now: rows stay
+      // where they are, but share one component, so one blank line total.
+      applyPlannedRuns(planToolRuns(entries, isOwnTool));
       applyThinkingLabel(
         findLatestThinkingText(entries),
         ctx,
@@ -300,10 +306,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_start", (event) => traceOnMessageStart(event));
   pi.on("message_update", (event) => traceOnMessageUpdate(event));
+  // Tools that opted into collapsing (the global wrap slot) render their
+  // own rows, so they merge like the built-ins; anything else still splits.
+  const isOwnTool = (name: string): boolean =>
+    !!makeLeftByName[name] || wrappedToolNames().includes(name);
   pi.on("tool_execution_start", (event) =>
-    // Tools that opted into collapsing (the global wrap slot) render their
-    // own rows, so they merge like the built-ins; anything else still splits.
-    traceOnToolExecutionStart(event, (name) => !!makeLeftByName[name] || wrappedToolNames().includes(name)),
+    traceOnToolExecutionStart(event, isOwnTool),
   );
   pi.on("user_bash", () => traceBoundary("user-bash"));
   // Anything that rebuilds the transcript from history arms the history pass.
