@@ -41,6 +41,9 @@ const jiti = createJiti(__filename, {
   },
 });
 
+// Reset hook of the newest activation (each jiti import is its own module
+// instance, so the registry under test is the one last activated).
+let resetTrace = () => {};
 let failures = 0;
 function check(name, cond, extra) {
   if (cond) console.log(`ok - ${name}`);
@@ -87,7 +90,7 @@ function createMockPi() {
 function callContext(overrides = {}) {
   // Each render test starts a fresh tool run (production runs are bounded
   // by message/turn events; the linear suite has none between tests).
-  globalThis.__collapseTraceReset?.();
+  resetTrace();
   let invalidated = 0;
   const ctx = {
     args: {},
@@ -115,6 +118,7 @@ function textResult(chars) {
 
 (async () => {
   const mod = await jiti.import(path.join(HERE, "index.ts"));
+  resetTrace = mod.resetTraceState ?? resetTrace;
   const factory = mod.default ?? mod;
   const pi = createMockPi();
   factory(pi);
@@ -241,7 +245,7 @@ function textResult(chars) {
 
   // 7c. expanded is one continuous box, stable across updates (no reuse poisoning)
   {
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const agent = await jiti.import("@earendil-works/pi-coding-agent");
     const tui = await jiti.import("@earendil-works/pi-tui");
     agent.initTheme("light");
@@ -566,7 +570,7 @@ function textResult(chars) {
     const b1 = bash.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-b2" }).render(80);
     check("user turn renders alone", b1.length === 1 && b1[0].includes("echo"), JSON.stringify(b1));
     // click the bash row inside the read-owned trace from test 13's run? fresh run:
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const { ctx: rctx } = callContext({ args: { path: "/p" }, state: {} });
     read.renderCall(rctx.args, theme, rctx);
     const bState = {};
@@ -583,7 +587,7 @@ function textResult(chars) {
 
   // 13c. Pi-level expand at rest still shows one-line rows in one trace
   {
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const read = pi.tools.get("read");
     const bash = pi.tools.get("bash");
     const { ctx: rctx } = callContext({ args: { path: "/p" }, state: {}, expanded: true });
@@ -597,7 +601,7 @@ function textResult(chars) {
 
   // 13d. foreign tools split runs
   {
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const read = pi.tools.get("read");
     const ls = pi.tools.get("ls");
     const { ctx: actx } = callContext({ args: { path: "/a" }, state: {} });
@@ -611,7 +615,7 @@ function textResult(chars) {
   // 12. visibility toggle pokes settled rows into the other mode
   {
     factory(pi); // reclaim slots with the primary mock (8c used a fresh one)
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const poll = globalThis.__collapsePollTick;
     check("poll slot installed", !!poll?.tick && !!poll?.timer, typeof poll);
     const read = pi.tools.get("read");
@@ -647,6 +651,7 @@ function textResult(chars) {
   // (Requires importing the module fresh for each scenario: trace state is
   // module-global, and these tests drive renderCall directly without events.)
     const mod2 = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod2.resetTraceState ?? resetTrace;
     const factory2 = mod2.default ?? mod2;
     const agent = await jiti.import("@earendil-works/pi-coding-agent");
     agent.initTheme("light");
@@ -663,7 +668,7 @@ function textResult(chars) {
       _hidden: true,
     };
     factory2(pi2);
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
 
     const bash = tools.get("bash");
     const render = (id, cmd, extra = {}) => {
@@ -685,7 +690,7 @@ function textResult(chars) {
     check("merged keeps both rows", merged[0].includes("one") && merged[1].includes("two"), JSON.stringify(merged));
 
     // 14b. visible text between turns still splits the run
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     render("y1", "echo one");
     await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: false });
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
@@ -697,7 +702,7 @@ function textResult(chars) {
     check("visible text splits runs", split.length === 1 && split[0].includes("two"), JSON.stringify(split));
 
     // 14c. a leading-content turn (text before its tool call) also splits
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     render("z1", "echo one");
     await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: false });
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
@@ -712,7 +717,7 @@ function textResult(chars) {
     check("leading content splits runs", lead.length === 1 && lead[0].includes("two"), JSON.stringify(lead));
 
     // 14d. empty/whitespace-only thinking is not visible content
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     render("w1", "echo one");
     await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: false });
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
@@ -738,6 +743,7 @@ function textResult(chars) {
     };
     // Fresh module = fresh activation state (history phase armed), like a start.
     const mod3 = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod3.resetTraceState ?? resetTrace;
     (mod3.default ?? mod3)(pi3);
     const hist = tools.get("bash");
     const ctxFor = (id, cmd) => ({
@@ -787,6 +793,7 @@ function textResult(chars) {
         on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
         getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
       };
+      resetTrace = mod.resetTraceState ?? resetTrace;
       (mod.default ?? mod)(piX);
       await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
       return tools.get("read");
@@ -850,7 +857,7 @@ function textResult(chars) {
 
   // 16. /collapse reports WHY runs split (live diagnostics)
   {
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const report = [];
     const ctx = { hasUI: true, ui: { notify: (m) => report.push(m) } };
     await pi.commands.get("collapse").handler("", ctx);
@@ -867,7 +874,7 @@ function textResult(chars) {
 
   // 16b. /collapse reports the newest run's row count (gap forensics)
   {
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const read = pi.tools.get("read");
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { path: "/a" }, state: {} });
@@ -880,7 +887,7 @@ function textResult(chars) {
 
   // 14f. toolResult messages arrive as message_start too and must NOT split
   {
-    globalThis.__collapseTraceReset?.();
+    resetTrace();
     const bash = pi.tools.get("bash");
     const mk = (id, cmd) => {
       const ctx = {
@@ -903,6 +910,153 @@ function textResult(chars) {
     mk("tr3", "echo three");
     const split = mk("tr3", "echo three").render(90);
     check("user still splits after toolResult", split.length === 1, JSON.stringify(split));
+  }
+
+  // 17. switching/forking sessions rebuilds the transcript: history from the
+  // NEW branch must not stack into one row slot (each tool gets its own run).
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piS = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piS);
+    const bash = tools.get("bash");
+    const mk = (id, cmd) => {
+      const ctx = {
+        args: { command: cmd }, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+        state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+        expanded: false, showImages: true, isError: false,
+      };
+      return bash.renderCall(ctx.args, theme, ctx);
+    };
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    // live turns merge
+    mk("s1", "echo one");
+    mk("s2", "echo two");
+    check("switch: baseline merges", mk("s1", "echo one").render(90).length === 2, JSON.stringify(mk("s1", "echo one").render(90)));
+    // resume another session: its history renders before session_start
+    await handlers.get("session_before_switch")[0]({ reason: "resume" }, {});
+    const h1 = mk("other1", "echo old one");
+    const h2 = mk("other2", "echo old two");
+    check("switch: other branch rows stay separate", h1.render(90).length === 1 && h2.render(90).length === 1, `${h1.render(90).length}/${h2.render(90).length}`);
+    check("switch: other branch row keeps its own text", h2.render(90)[0].includes("old two"), JSON.stringify(h2.render(90)));
+    // after the switch settles, live turns merge again
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    mk("n1", "echo new one");
+    mk("n2", "echo new two");
+    const merged = mk("n1", "echo new one").render(90);
+    check("switch: live turns merge after settle", merged.length === 2, JSON.stringify(merged));
+  }
+
+  // 17b. tree navigation arms the history phase too
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piT = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piT);
+    const bash = tools.get("bash");
+    const mk = (id, cmd) => bash.renderCall({ command: cmd }, theme, {
+      args: { command: cmd }, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    });
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    await handlers.get("session_before_tree")[0]({}, {});
+    const t1 = mk("tree1", "echo branch one");
+    const t2 = mk("tree2", "echo branch two");
+    check("tree: branch rows stay separate", t1.render(90).length === 1 && t2.render(90).length === 1, `${t1.render(90).length}/${t2.render(90).length}`);
+    await handlers.get("session_tree")[0]({}, {});
+    mk("tree3", "echo live one");
+    const live = mk("tree3", "echo live one").render(90);
+    mk("tree4", "echo live two");
+    const live2 = mk("tree3", "echo live one").render(90);
+    check("tree: live merges after settle", live.length === 1 && live2.length === 2, `${live.length}/${live2.length}`);
+  }
+
+  // 17c. a transcript rebuild re-registers the SAME ids: rows must keep their
+  // existing runs instead of being merged into one (settings changes rebuild).
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piR = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piR);
+    const bash = tools.get("bash");
+    const mk = (id, cmd) => bash.renderCall({ command: cmd }, theme, {
+      args: { command: cmd }, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    });
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    mk("rb1", "echo one");
+    mk("rb2", "echo two");
+    check("rebuild: baseline merged", mk("rb1", "echo one").render(90).length === 2, "");
+    // Simulate outputPad/cache-notice rebuild: same ids rendered again.
+    mk("rb1", "echo one");
+    mk("rb2", "echo two");
+    const again = mk("rb1", "echo one").render(90);
+    check("rebuild: rows keep their own runs", again.length === 2, JSON.stringify(again));
+  }
+
+  // 18. sync must not re-serialize args on every render pass (same object
+  // comes back each pass; a different object with equal content is no change)
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piJ = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piJ);
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    const bash = tools.get("bash");
+    // Poison toJSON: if the renderer stringifies the same object again, throw.
+    let serialized = 0;
+    const args = { command: "echo x" };
+    args.toJSON = () => { serialized++; return { command: "echo x" }; };
+    const ctx = {
+      args, toolCallId: "j1", invalidate: () => {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    };
+    bash.renderCall(args, theme, ctx);
+    const first = serialized;
+    bash.renderCall(args, theme, ctx);
+    bash.renderCall(args, theme, ctx);
+    check("sync serializes args once", serialized === first && first <= 1, `calls=${serialized}`);
+    // Equal-but-new object: content comparison must still detect no change
+    // (row stays single, no duplicate registration).
+    const twin = { command: "echo x" };
+    bash.renderCall(twin, theme, { ...ctx, args: twin });
+    const rows = bash.renderCall(twin, theme, { ...ctx, args: twin }).render(90);
+    check("equal args keep one row", rows.length === 1, JSON.stringify(rows));
+    // Second pass with the adopted object must not serialize again.
+    const beforeTwin = serialized;
+    bash.renderCall(twin, theme, { ...ctx, args: twin });
+    check("adopted args stop re-serializing", serialized === beforeTwin, `${beforeTwin} -> ${serialized}`);
   }
 
   if (failures > 0) {

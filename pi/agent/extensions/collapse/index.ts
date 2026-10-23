@@ -1,38 +1,40 @@
-// Collapse tool calls and thinking blocks into one-line rows — only while
-// "Thinking blocks: hidden" is on. Flipping thinking to visible restores
-// the stock tool sections (same chrome as expanded view); the toggle is
-// read live from settings, so new renders follow it immediately.
+// Collapse tool calls into one-line rows — only while "Thinking blocks:
+// hidden" is on. Flipping thinking to visible restores the stock tool
+// sections; the toggle is read live from settings, so the next render pass
+// follows it immediately (no reload).
 //
+// Each row is a marker, not a prompt:
+//   › read /path/to/file:10-20                    5.3k ch
+//   › $ timeout 25 ls some/dist                   0.1k ch
+// The tool head is bold violet (red when the tool failed), the read
+// directory grey, the file name bold, the line range red, and the output
+// size grey and right-aligned. Violet carries the head because some
+// terminals render SGR-1 weight indistinguishably. Rows truncate in the
+// middle so head and tail survive; the count stays at the right edge.
+//
+// One component per run
+// ---------------------
 // Adjacent tool calls share ONE component (the run's first tool owns the
-// trace), so Pi emits a single leading blank line for the whole run instead
-// of one per tool. Runs continue across turn boundaries: only a turn whose
-// visible content (prose or a thinking block) renders above its tools starts
-// a new run, so consecutive tool-only turns stay gapless. Clicking a row
-// toggles just that row (registry expansion + per-row mouse regions);
-// Pi-level expand shows every row.
+// trace), so Pi emits a single blank line per run instead of one per tool.
+// A run continues across turn boundaries; only a turn whose VISIBLE content
+// (prose or a thinking block) renders above its tools starts a new run,
+// so consecutive tool-only turns stay gapless. Transcript rebuilds from
+// history (startup, compaction, session switch/fork, tree navigation) give
+// each historical tool its own run, so old rows never teleport.
 //
-// a row just opens it. Every row rests as a one-liner, in both Pi modes:
-// a click shows the stock cell at the depth Pi currently asks for — the
-// stock COLLAPSED cell while Pi is collapsed (ctrl+o off), the stock
-// EXPANDED cell while Pi is expanded. Toggling ctrl+o re-depths already
-// opened rows without another click. Clicking an opened row closes it.
+// Click depth
+// -----------
+// Rows always rest as one-liners. A click opens that row's stock cell at the
+// depth Pi currently asks for: the stock COLLAPSED cell while Pi is
+// collapsed (ctrl+o off), the stock EXPANDED cell while Pi is expanded.
+// Toggling ctrl+o re-depths already-open rows; clicking an open row closes
+// it. Both depths are byte-identical to a real ToolExecutionComponent
+// (pinned by tests).
 //
-// Each tool renders its own single row with no box, background, or indent
-// (renderShell "self", like the built-in edit tool):
-//   › read /path/to/file:10-20                          5.3k ch
-//   › $ timeout 25 ls some/dist                         0.1k ch
-// (›, not >: the row is a marker, not a prompt.)
-// with the tool head bold violet (red when the tool failed), the read
-// directory grey, the file name bold, the line range red, and the output size
-// grey and right-aligned. Violet (not just weight) carries the head because
-// some terminals render SGR-1 bold indistinguishably. Expanded view (ctrl+e)
-// keeps the stock section, re-boxed in Pi's chrome
-// (self-shell tools render bare, so the Box is rebuilt for default-shell
-// tools); failed results keep the built-in rendering. Thinking blocks keep Pi's
-// hidden label, updated per turn to a grey preview with its size:
+// Thinking blocks keep Pi's hidden label, updated per turn to a grey preview
+// with its size:
 //   about something rea…lots of thoughts were here. 1.5k ch
-// Long rows truncate in the middle (head and tail survive); the count is
-// always preserved at the right edge.
+// The label is a plain string, so it is rebuilt on terminal resize.
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import {
@@ -77,11 +79,6 @@ function isHiddenThinking(pi: ExtensionAPI): boolean {
   } catch {
     return false;
   }
-}
-
-function compactView(pi: ExtensionAPI, expanded: unknown): boolean {
-  if (expanded) return false;
-  return isHiddenThinking(pi);
 }
 
 /** Tool instances known to collapse, for visibility-toggle pokes. The toggle
@@ -186,11 +183,14 @@ interface TraceEntry extends CollapseSlots {
  *  The FIRST tool of each run owns the trace (stable position); later tools
  *  render nothing. Keyed by toolCallId; only live-observed tools join, so
  *  history can never teleport (unregistered tools fall back to single rows). */
+// Nothing here is ever pruned, by design: buildTrace reads this registry at
+// render time and the TUI re-renders every component on resize/zoom, so a
+// dropped entry would blank a row that is still on screen. Size is therefore
+// proportional to the transcript, not to elapsed time.
 const traceEntries = new Map<string, TraceEntry>();
 const traceRuns = new Map<number, string[]>();
 const traceOwnerPoke = new Map<number, () => void>();
 let traceRunId = 0;
-const TRACE_SLOT = "__collapseTraceReset";
 
 /** True while the transcript is being rebuilt from history (startup and
  *  compaction). Nothing separates those messages, so merging would stack
@@ -198,6 +198,28 @@ const TRACE_SLOT = "__collapseTraceReset";
  *  the build each tool gets its own run — history keeps its per-tool gaps,
  *  and live turns below it merge as usual. */
 let traceHistoryPhase = true;
+let historyTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Arm the history pass before Pi rebuilds the transcript (compaction,
+ *  session switch/fork, tree navigation). The rebuild renders each tool from
+ *  that branch's history; without this, ids the registry has never seen
+ *  would all join the current run and stack into the first row's slot.
+ *  Disarmed by the completion event, or by any live event, whichever first —
+ *  with a timer as a backstop for aborted switches. */
+function armHistoryPhase(reason: string): void {
+  traceBoundary(reason);
+  traceHistoryPhase = true;
+  if (historyTimer !== undefined) clearTimeout(historyTimer);
+  try {
+    historyTimer = setTimeout(() => {
+      traceHistoryPhase = false;
+      historyTimer = undefined;
+    }, 5000);
+    (historyTimer as unknown as { unref?: () => void }).unref?.();
+  } catch {
+    // No timers: the completion/live events still disarm it.
+  }
+}
 
 /** Message sequence for the "visible content already split this turn" guard. */
 let messageSeq = 0;
@@ -224,7 +246,10 @@ function traceBoundary(reason = "?") {
   return reason;
 }
 
-function traceReset(): void {
+/** Test-only: clear registry state so a render test starts from a known
+ *  world. Exported as a module symbol (not a global) — production code never
+ *  calls it. */
+export function resetTraceState(): void {
   traceEntries.clear();
   traceRuns.clear();
   traceOwnerPoke.clear();
@@ -286,11 +311,17 @@ function traceSync(
   result?: unknown,
 ): boolean {
   let changed = false;
-  const sig = JSON.stringify(args ?? null);
-  if (entry.argsJson !== sig) {
-    entry.argsJson = sig;
+  // Identity first: Pi hands the same args object back on every render pass,
+  // so a re-render costs nothing. Serialize only when the object changed.
+  if (entry.args !== args) {
+    const sig = JSON.stringify(args ?? null);
+    if (entry.argsJson !== sig) {
+      entry.argsJson = sig;
+      changed = true;
+    }
+    // Adopt the object either way: equal content renders the same, and the
+    // identity check above then skips serializing on the next pass.
     entry.args = args;
-    changed = true;
   }
   const flags = {
     isError: !!context?.isError,
@@ -560,21 +591,15 @@ function collapseTool(
     renderResult(result: any, options: any, theme: Theme, context: any): Component {
       trackCollapse((context?.state ?? {}) as CollapseSlots, context);
       if (!isHiddenThinking(pi)) {
-        if (compactView(pi, options?.expanded) && !context?.isError) {
-          const count = textCharCount(result?.content);
-          const state = (context?.state ?? {}) as CollapseSlots;
-          if (state.count !== count) {
-            state.count = count;
-            context?.invalidate?.();
-          }
-          return new Text("", 0, 0);
-        }
+        // Visible thinking: stock sections, exactly as Pi renders them.
+        // Compact rows only exist in hidden mode, so there is no collapsed
+        // branch here.
         const state = (context?.state ?? {}) as CollapseSlots;
         const inner =
           original.renderResult(result, options, theme, { ...context, lastComponent: state.collapseResult }) ??
           new Text("", 0, 0);
         state.collapseResult = inner;
-        if (!needsBox || compactView(pi, options?.expanded)) return inner;
+        if (!needsBox) return inner;
         const box = stockBox(theme, state, options?.isPartial, context?.isError);
         box.clear();
         if (state.collapseCall) box.addChild(state.collapseCall);
@@ -679,7 +704,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${compactView(pi, false) ? "compact rows" : "stock sections"} (thinking ${compactView(pi, false) ? "hidden" : "visible"}); ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}`,
       );
     },
   });
@@ -717,10 +742,6 @@ export default function (pi: ExtensionAPI) {
   // Backfill from history: the newest text-bearing turn may predate this
   // extension load (or the latest turns may be encrypted), so scan the
   // branch on startup instead of waiting for a fresh text turn.
-  (globalThis as Record<string, unknown>)[TRACE_SLOT] = () => {
-    traceReset();
-  };
-
   // A new transcript block starts a fresh tool run: a following tool must
   // not join the previous run's trace (its row would teleport). Boundaries:
   // turn/message ends, non-assistant messages, foreign tools, user bash,
@@ -795,20 +816,15 @@ export default function (pi: ExtensionAPI) {
     }
   });
   pi.on("user_bash", () => traceBoundary("user-bash"));
-  pi.on("session_compact", () => {
-    // The chat is rebuilt from history right after this: treat the rebuild
-    // as a history pass, then seal it so live turns merge again.
-    traceBoundary("session-compact");
-    traceHistoryPhase = true;
-    try {
-      const timer = setTimeout(() => {
-        traceHistoryPhase = false;
-        traceBoundary("history-sealed");
-      }, 0);
-      (timer as unknown as { unref?: () => void }).unref?.();
-    } catch {
-      traceHistoryPhase = false;
-    }
+  // Anything that rebuilds the transcript from history arms the history pass.
+  pi.on("session_compact", () => armHistoryPhase("session-compact"));
+  pi.on("session_before_switch", () => armHistoryPhase("session-switch"));
+  pi.on("session_before_fork", () => armHistoryPhase("session-fork"));
+  pi.on("session_before_tree", () => armHistoryPhase("session-tree"));
+  // Completion events seal the pass so live turns merge again.
+  pi.on("session_tree", () => {
+    traceHistoryPhase = false;
+    traceBoundary("session-tree");
   });
   pi.on("message_end", (event, ctx) => {
     // No boundary: a tool-only turn merges with the run above it. Turns
