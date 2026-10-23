@@ -204,3 +204,27 @@ export function textCharCount(
   }
   return total;
 }
+
+/** Best one-line summary of arbitrary tool args, for tools that ship no
+ *  collapse renderer of their own (extension and MCP tools). Prefers the
+ *  argument that reads like an intent, then falls back to the first string. */
+export function genericToolSummary(args: unknown): string {
+  const squash = (value: unknown): string =>
+    typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!args || typeof args !== "object") return "";
+  const record = args as Record<string, unknown>;
+  const command = squash(record.command) || squash(record.cmd);
+  if (command) return summarizeBashCommand(command);
+  // Prompts and messages are multi-line: their first line is the intent.
+  const firstLineOnly = new Set(["prompt", "message"]);
+  for (const key of ["name", "description", "title", "query", "url", "path", "file_path", "pattern", "prompt", "message"]) {
+    const raw = typeof record[key] === "string" ? (record[key] as string) : "";
+    const value = squash(firstLineOnly.has(key) ? raw.split("\n")[0] : raw);
+    if (value) return value.split(" ").slice(0, 12).join(" ");
+  }
+  for (const value of Object.values(record)) {
+    const text = squash(value);
+    if (text) return text.split(" ").slice(0, 12).join(" ");
+  }
+  return "";
+}

@@ -54,9 +54,11 @@ import {
 } from "./logic.js";
 import {
   clearCollapsePokes,
+  collapseDefinition,
   collapseTool,
   makeLeftByName,
   pokeAllCollapse,
+  wrappedToolNames,
 } from "./rows.js";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
@@ -72,9 +74,11 @@ import {
 
 /** Tests reset the registry through this; production never calls it. */
 export { resetTraceState } from "./trace.js";
+export { collapseDefinition };
 
-const COLLAPSE_REVISION = 20;
+const COLLAPSE_REVISION = 21;
 
+const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
 let collapseSawUI = false;
 let collapseLastHidden: boolean | undefined;
@@ -109,6 +113,11 @@ function widthAwareThinkingLabel(thinking: string, pi: ExtensionAPI): string {
   return thinkingLabelForWidth(thinking, currentColumns(), liveOutputPad(pi));
 }
 
+/** Last label handed to Pi: setHiddenThinkingLabel re-renders every assistant
+ *  row, so repeating the same string is pure churn (terminated turns fire
+ *  message_end once per attempt). */
+let thinkingLabelSent: string | undefined;
+
 function applyThinkingLabel(
   thinking: string | undefined,
   ctx: any,
@@ -123,6 +132,8 @@ function applyThinkingLabel(
     thinkingLive.ui = ctx.ui;
     thinkingLive.width = currentColumns();
     setLast(label);
+    if (label === thinkingLabelSent) return;
+    thinkingLabelSent = label;
     ctx.ui.setHiddenThinkingLabel(label);
   } catch {
     // Label update is cosmetic; never break the turn.
@@ -172,7 +183,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}${uncollapsedReport(pi)}`,
       );
     },
   });
@@ -197,6 +208,43 @@ export default function (pi: ExtensionAPI) {
     if (!create) continue;
     pi.registerTool(collapseTool(create(cwd), makeLeft, pi));
   }
+
+  // Tools from other extensions and MCP servers can only collapse if they hand
+  // us their definition (getAllTools exposes metadata, not renderers). Sibling
+  // extensions opt in through the global slot below; anything else is listed
+  // here so a plain row is never a mystery.
+  const uncollapsedReport = (api: ExtensionAPI): string => {
+    const own = new Set([...Object.keys(definitions), ...wrappedToolNames()]);
+    let all: { name: string }[] = [];
+    try {
+      all = api.getAllTools?.() ?? [];
+    } catch {
+      return "";
+    }
+    const missing = all.map((tool) => tool.name).filter((name) => !own.has(name));
+    return missing.length > 0 ? `; not collapsed (no definition access): ${missing.join(", ")}` : "";
+  };
+
+  // Sibling extensions (for example subagents) cannot be inspected from the
+  // outside: getAllTools returns metadata but not the execute function or the
+  // renderers. They call this slot at registration time instead, which keeps
+  // their definition intact and only overlays the row renderers.
+  try {
+    (globalThis as Record<string, unknown>)[WRAP_SLOT] = (definition: any) =>
+      collapseDefinition(definition, pi);
+  } catch {
+    // Fixture hosts without a global object: nothing to share.
+  }
+  pi.on("session_shutdown", () => {
+    try {
+      const g = globalThis as Record<string, unknown>;
+      // Only clear our own slot; a newer activation may already own it.
+      if (typeof g[WRAP_SLOT] === "function") delete g[WRAP_SLOT];
+    } catch {
+      // Host without globals: nothing to clear.
+    }
+  });
+
 
   // Visibility-toggle poller: no toggle event exists, and the toggle
   // skips tool components, so poll the setting and poke known tools.

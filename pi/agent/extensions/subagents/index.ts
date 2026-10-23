@@ -95,6 +95,13 @@ function shortId(runId: string): string {
 }
 
 export default function subagentsExtension(pi: ExtensionAPI) {
+	// The collapse extension offers this slot so other extensions can opt their
+	// tools into compact rows. It needs the full definition, which the public
+	// tool listing does not expose. Without collapse, tools register unchanged.
+	const registerTool = (definition: any) => {
+		const wrap = (globalThis as Record<string, any>).__collapseWrapTool;
+		pi.registerTool(typeof wrap === "function" ? wrap(definition) : definition);
+	};
 	let runtime: RuntimeState | undefined;
 	let widget: SubagentStatusWidget | undefined;
 	let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -969,7 +976,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		await terminateOwnedSubagents(records.filter((record) => !spareLiveTree || isTerminalStatus(record.status)).map((record) => record.runId));
 	});
 
-	pi.registerTool({
+	registerTool({
 		name: "spawn_agent",
 		label: "Spawn Agent",
 		description:
@@ -1044,7 +1051,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	registerTool({
 		name: "check_subagents",
 		label: "Check Subagents",
 		description:
@@ -1153,7 +1160,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	registerTool({
 		name: "send_to_subagent",
 		label: "Send to Subagent",
 		description: "Send a message to any subagent except your own session. Address it by path, name, run id, or session id. Steer applies after the target's current tool call. followUp waits for the target to settle. interrupt stops a descendant's tool call and applies on arrival. Interrupt runs down the supervision line only. Other interrupts arrive as steering. A finished session resumes from its transcript. A queued session gets the message at start.",
@@ -1216,7 +1223,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	registerTool({
 		name: "cancel_subagent",
 		label: "Cancel Subagent",
 		description: "Stop a running or queued subagent. Its current turn ends. Its process stops. Send a message later to resume it from its transcript.",

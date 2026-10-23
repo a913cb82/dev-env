@@ -4,6 +4,7 @@ import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Co
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import {
   firstWord,
+  genericToolSummary,
   formatCharCount,
   lsParts,
   readLineParts,
@@ -128,6 +129,26 @@ function lsLeft(theme: Theme, args: any, isError: boolean): string {
   return `${toolHead(theme, "ls ", isError)}${dir}`;
 }
 
+/** Row text for a tool that ships no collapse renderer (extension tools,
+ *  MCP tools): the tool name plus the best argument it has. */
+function genericLeft(theme: Theme, name: string, args: any, isError: boolean): string {
+  const summary = genericToolSummary(args);
+  const body = summary ? theme.fg("dim", summary) : theme.fg("dim", "…");
+  return `${toolHead(theme, `${name} `, isError)}${body}`;
+}
+
+/** Row text for any tool: the hand-tuned renderer when we have one, the
+ *  generic summary otherwise. */
+function makeLeftFor(
+  name: string,
+  theme: Theme,
+  args: any,
+  isError: boolean,
+): string {
+  const known = makeLeftByName[name];
+  return known ? known(theme, args, isError) : genericLeft(theme, name, args, isError);
+}
+
 /** Summary builders by tool name, for trace rows owned by another tool. */
 export const makeLeftByName: Record<string, (theme: Theme, args: any, isError: boolean) => string> = {
   read: readLeft,
@@ -194,11 +215,9 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
   for (const id of traceRuns.get(runId) ?? []) {
     const entry = traceEntries.get(id);
     if (!entry) continue;
-    const makeLeft = makeLeftByName[entry.toolName];
-    if (!makeLeft) continue;
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
-      : new CollapsedLine(makeLeft(theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi));
+      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi));
     trace.addChild(
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -343,4 +362,50 @@ export function pokeAllCollapse(): void {
       // One dead component must not block the rest.
     }
   }
+}
+
+/** Names of extension/MCP tools that opted into collapsing. */
+const wrappedNames = new Set<string>();
+
+export function wrappedToolNames(): string[] {
+  return [...wrappedNames];
+}
+
+/** Wrap a tool definition from any source (extension or MCP) so its calls
+ *  collapse like the built-ins. Tools that ship no renderers of their own
+ *  get synthesized ones: the generic summary as the call, the plain output
+ *  text as the expanded result. */
+export function collapseDefinition(original: any, pi: ExtensionAPI): any {
+  if (!original || original.__collapseWrapped) return original;
+  const name = String(original.name ?? "");
+  wrappedNames.add(name);
+  const withRenderers = {
+    ...original,
+    renderCall:
+      original.renderCall ??
+      ((args: any, theme: Theme) =>
+        new Text(genericLeft(theme, name, args, false), 0, 0)),
+    renderResult:
+      original.renderResult ??
+      ((result: any, options: any) => {
+        if (!options?.expanded) return new Text("", 0, 0);
+        return new Text(textOf(result), 0, 0);
+      }),
+  };
+  const wrapped = collapseTool(
+    withRenderers,
+    (theme: Theme, args: any, isError: boolean) => makeLeftFor(name, theme, args, isError),
+    pi,
+  );
+  wrapped.__collapseWrapped = true;
+  return wrapped;
+}
+
+/** Plain text of a tool result, for tools with no result renderer. */
+function textOf(result: any): string {
+  const content = Array.isArray(result?.content) ? result.content : [];
+  return content
+    .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+    .map((part: any) => part.text)
+    .join("\n");
 }

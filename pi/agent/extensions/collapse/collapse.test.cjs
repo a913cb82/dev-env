@@ -1092,6 +1092,114 @@ function textResult(chars) {
     check("depth follows: expanded cell after ctrl+o", atExpanded.includes("line 14"), "");
   }
 
+  // 21. ANY tool collapses: extension/MCP tools register through
+  // collapseDefinition and get a generic row (name + best argument).
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const rows = mod;
+    const tools = new Map();
+    const handlers = new Map();
+    const piE = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piE);
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    // A tool with NO renderers of its own, like spawn_agent.
+    const bare = {
+      name: "spawn_agent",
+      description: "Start a background subagent",
+      parameters: {},
+      async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; },
+    };
+    const wrapped = rows.collapseDefinition(bare, piE);
+    check("wrapped keeps execute", typeof wrapped.execute === "function", typeof wrapped.execute);
+    check("wrapped keeps parameters", wrapped.parameters === bare.parameters, "");
+    check("wrapped is self shell", wrapped.renderShell === "self", wrapped.renderShell);
+    const ctx = (id, args) => ({
+      args, toolCallId: id, invalidate: () => {}, lastComponent: undefined, state: {},
+      cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    });
+    const args = { name: "api-check", prompt: "Check the API\nmore text" };
+    const row = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
+    check("generic tool collapses to one row", row.length === 1 && row[0].startsWith("› "), JSON.stringify(row));
+    check("generic row names the tool", row[0].includes("spawn_agent"), JSON.stringify(row[0]));
+    check("generic row shows the argument", row[0].includes("api-check"), JSON.stringify(row[0]));
+    // Two different extension tools in one message share a run.
+    const other = rows.collapseDefinition({ ...bare, name: "check_subagents" }, piE);
+    const oargs = { target: "api-check" };
+    other.renderCall(oargs, theme, ctx("e2", oargs));
+    const merged = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
+    check("generic tools share a run", merged.length === 2, JSON.stringify(merged));
+    // Result count flows into the row.
+    wrapped.renderResult({ content: [{ type: "text", text: "x".repeat(2400) }], details: {} },
+      { expanded: false, isPartial: false }, theme, ctx("e1", args));
+    const withCount = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
+    check("generic row shows count", withCount[0].includes("2.4k ch"), JSON.stringify(withCount[0]));
+  }
+
+  // 21b. The opt-in slot: collapse publishes a wrapper other extensions can
+  // apply to their own definition, preserving execute and idempotent.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const handlers = new Map();
+    const piE = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+      getAllTools: () => [{ name: "spawn_agent" }, { name: "read" }],
+    };
+    mod.default(piE);
+    const wrap = globalThis.__collapseWrapTool;
+    check("slot published", typeof wrap === "function", typeof wrap);
+    const def = { name: "spawn_agent", parameters: {}, async execute() { return "ran"; } };
+    const wrapped = wrap(def);
+    check("slot keeps execute", wrapped.execute === def.execute, "");
+    check("slot marks wrapper", wrapped.__collapseWrapped === true, "");
+    check("slot is idempotent", wrap(wrapped) === wrapped, "");
+    // The report lists tools that never opted in, and not the ones that did.
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    let said = "";
+    const reportPi = { ...piE, getAllTools: () => [{ name: "spawn_agent" }, { name: "read" }, { name: "mcp_weird" }] };
+    const mod2 = await jiti.import(path.join(HERE, "index.ts"));
+    const handlers2 = new Map();
+    mod2.default({ ...reportPi, registerTool: () => {}, registerCommand: (n, o) => handlers2.set("cmd", o),
+      on: (e, h) => { if (!handlers2.has(e)) handlers2.set(e, []); handlers2.get(e).push(h); } });
+    const wrap2 = globalThis.__collapseWrapTool;
+    wrap2({ name: "spawn_agent", parameters: {}, async execute() {} });
+    await handlers2.get("cmd").handler("", { ui: { notify: (m) => { said = m; } } });
+    check("report lists uncollapsed tools", said.includes("mcp_weird"), said);
+    check("report omits wrapped tools", !said.includes("spawn_agent"), said);
+  }
+
+  // 22. Repeating the same thinking label does not re-render every row.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const handlers = new Map();
+    const labels = [];
+    const piE = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piE);
+    const ctx = { hasUI: true, ui: { setHiddenThinkingLabel: (l) => labels.push(l) } };
+    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "Analyzing the day structure carefully" }, { type: "text", text: "" }] };
+    for (let i = 0; i < 3; i += 1) handlers.get("message_end")[0]({ message: msg }, ctx);
+    check("identical label set once", labels.length === 1, JSON.stringify(labels));
+    const msg2 = { role: "assistant", content: [{ type: "thinking", thinking: "A different line of reasoning entirely" }] };
+    handlers.get("message_end")[0]({ message: msg2 }, ctx);
+    check("new label still applied", labels.length === 2, JSON.stringify(labels));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

@@ -281,6 +281,19 @@ function check(name, cond, extra) {
     check("empty content", hv({ role: "assistant", content: [] }) === false);
   }
 
+  // genericToolSummary: makes ANY tool name-able on one row
+  {
+    const g = logic.genericToolSummary;
+    check("generic uses name", g({ name: "api-check" }) === "api-check", g({ name: "api-check" }));
+    check("generic uses description", g({ description: "Check the API" }) === "Check the API", g({ description: "Check the API" }));
+    check("generic uses prompt first line", g({ prompt: "Do a thing\nand more" }) === "Do a thing", g({ prompt: "Do a thing\nand more" }));
+    check("generic prefers command", g({ command: "  ls   -la  /tmp " }) === "ls -la /tmp", g({ command: "  ls   -la  /tmp " }));
+    check("generic uses path", g({ path: "/a/b.txt" }) === "/a/b.txt", g({ path: "/a/b.txt" }));
+    check("generic falls back to first string", g({ whatever: "value" }) === "value", g({ whatever: "value" }));
+    check("generic empty for nothing", g({}) === "", g({}));
+    check("generic collapses whitespace", g({ description: "a\n\n  b" }) === "a b", g({ description: "a\n\n  b" }));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
