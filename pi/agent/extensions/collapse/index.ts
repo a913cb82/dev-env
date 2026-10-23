@@ -64,7 +64,7 @@ import {
 const COUNT_GAP = 2;
 
 /** Bump when the loaded code changes; reported by /collapse. */
-const COLLAPSE_REVISION = 18;
+const COLLAPSE_REVISION = 19;
 
 /** Compact one-line rows only make sense in the hidden-thinking workflow:
  *  when thinking blocks are visible the transcript goes back to stock tool
@@ -210,8 +210,7 @@ function traceSummary(): string {
   const runs = [...traceRuns.entries()].filter(([, ids]) => ids.length > 0);
   if (runs.length === 0) return "trace: empty";
   const newest = runs.reduce((a, b) => (a[0] >= b[0] ? a : b));
-  const sizes = runs.map(([id, ids]) => `#${id}:${ids.length}`).join(" ");
-  return `trace: newest run #${newest[0]} has ${newest[1].length} row(s); runs ${sizes}`;
+  return `trace: newest run #${newest[0]} has ${newest[1].length} row(s); ${runs.length} run(s) live`;
 }
 
 /** A new transcript block starts: the next tool begins a fresh run.
@@ -758,8 +757,13 @@ export default function (pi: ExtensionAPI) {
       // Any lifecycle event means the transcript is no longer being rebuilt.
       traceHistoryPhase = false;
       const role = (event as { message?: { role?: string } })?.message?.role;
-      if (role !== "assistant") traceBoundary(`message:${role ?? "?"}`);
-      else messageSeq++;
+      if (role === "assistant") {
+        messageSeq++;
+      } else if (role !== "toolResult") {
+        // toolResult messages are not transcript blocks: they render inside
+        // the tool component that produced them, so they never split a run.
+        traceBoundary(`message:${role ?? "?"}`);
+      }
     } catch {
       // Cosmetic only.
     }

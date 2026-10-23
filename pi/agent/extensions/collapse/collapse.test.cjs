@@ -878,6 +878,33 @@ function textResult(chars) {
     check("collapse reports run size", /newest run #\d+ has 2 row/.test(report.at(-1) ?? ""), report.at(-1));
   }
 
+  // 14f. toolResult messages arrive as message_start too and must NOT split
+  {
+    globalThis.__collapseTraceReset?.();
+    const bash = pi.tools.get("bash");
+    const mk = (id, cmd) => {
+      const ctx = {
+        args: { command: cmd }, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+        state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+        expanded: false, showImages: true, isError: false,
+      };
+      return bash.renderCall(ctx.args, theme, ctx);
+    };
+    // Start a run on THIS activation's registry (the global reset slot now
+    // belongs to a later activation, so bump via a user turn instead).
+    await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
+    mk("tr1", "echo one");
+    await pi.handlers.get("message_start")[0]({ message: { role: "toolResult", content: [] } }, {});
+    mk("tr2", "echo two");
+    const merged = mk("tr1", "echo one").render(90);
+    check("toolResult does not split", merged.length === 2, JSON.stringify(merged));
+    // A real user turn still splits.
+    await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
+    mk("tr3", "echo three");
+    const split = mk("tr3", "echo three").render(90);
+    check("user still splits after toolResult", split.length === 1, JSON.stringify(split));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
