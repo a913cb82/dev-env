@@ -44,12 +44,13 @@ Live files are symlinks into this repo. Edits to linked files write directly to 
 2. Review the result: `git status -sb`
 3. Commit and push. The pre-commit hook blocks the commit when `./sync.sh --check` reports drift.
 
-Edit repo files first when possible. Avoid direct edits under `~/.pi`. Run `./sync.sh --check` before you commit.
+Edit repo files first when possible. Avoid direct edits under `~/.pi`. Run `./sync.sh --check` before you commit. Run the regression tests with `./tests/*.test.sh`.
 
 ### Contents
 
 - `bootstrap.sh`: installs packages, uv, and Pi (pinned via `PI_VERSION`), then links live files. It is safe to run more than once.
 - `sync.sh`: adopts live files into the repo. `--check` reports drift without writing.
+- `tests/`: regression tests for bootstrap links and the Pi install path.
 - `hooks/pre-commit`: blocks commits with drift. Enable it with `core.hooksPath`.
 - `shell/`: `tmux.conf` for WSL and `bashrc.d/` shell defaults.
 - `git/`: commit identity, gh credential helper, global ignores.

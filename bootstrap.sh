@@ -45,39 +45,81 @@ link "$REPO/git/gitconfig" "$HOME/.gitconfig"
 link "$REPO/git/gitignore_global" "$HOME/.gitignore_global"
 
 section "ssh"
+install -d -m 700 "$HOME/.ssh"
 if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ -z "$CHECK_ONLY" ]; then
   ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
 fi
-if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
+if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
   echo "Add this key to GitHub:"; cat "$HOME/.ssh/id_ed25519.pub"
+elif [ -f "$HOME/.ssh/id_ed25519" ]; then
+  ssh-keygen -y -f "$HOME/.ssh/id_ed25519" > "$HOME/.ssh/id_ed25519.pub"
+  echo "Add this key to GitHub:"; cat "$HOME/.ssh/id_ed25519.pub"
+else
+  echo "TODO: run ./bootstrap.sh without --check-only to create an SSH key"
 fi
 
 section "pi"
-# The installer provisions Node and prefers a bin dir already on PATH, so the
-# launcher lands in ~/.local/bin. It always installs the latest release, so
-# when that differs from PI_VERSION, fill the managed release directory with
-# the pinned build and point the launcher at it.
+# apt-requirements.txt provides Node 22.19+ and npm on current Ubuntu, so the
+# installer's preflight passes. The installer prefers a bin dir already on
+# PATH, so the launcher lands in ~/.local/bin. It always installs the latest
+# release, so when that differs from PI_VERSION, fill the managed release
+# directory with the pinned build and point the launcher at it.
 export PATH="$HOME/.local/bin:$PATH"
-if ! command -v pi >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/pi" ]; then
-  if [ -z "$CHECK_ONLY" ]; then
-    curl -fsSL https://pi.dev/install.sh | sh
-    if [ "$(pi --version 2>/dev/null)" != "$PI_VERSION" ]; then
-      echo "Pinning Pi to $PI_VERSION"
-      export PATH="$HOME/.local/share/pi-node/current/bin:$PATH"
-      release="$PI/install/releases/$PI_VERSION"
-      mkdir -p "$release"
-      npm --prefix "$release" install --ignore-scripts --min-release-age=0 \
-        --omit=dev --include=optional --no-fund --no-audit \
-        "@earendil-works/pi-coding-agent@$PI_VERSION"
-      printf '%s' "$PI_VERSION" > "$PI/install/current-version"
-      find "$PI/install/releases" -mindepth 1 -maxdepth 1 ! -name "$PI_VERSION" -exec rm -rf {} +
-    fi
+
+node_and_npm_ok() {
+  command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 &&
+    node -e 'const [maj, min] = process.versions.node.split(".").map(Number); process.exit(maj > 22 || (maj === 22 && min >= 19) ? 0 : 1)'
+}
+
+pi_bin() {
+  local bin="$HOME/.local/bin/pi"
+  [ -x "$bin" ] || bin="$PI/bin/pi"
+  [ -x "$bin" ] && printf '%s' "$bin"
+}
+
+install_pi() {
+  local installer
+  installer=$(mktemp)
+  curl -fsSL https://pi.dev/install.sh -o "$installer"
+  # Detach from the controlling terminal so the installer skips its action
+  # menu and never offers to launch Pi. Without Node 22.19+, keep the terminal:
+  # the installer is the only thing here that can provision a suitable Node.
+  if node_and_npm_ok && command -v setsid >/dev/null 2>&1; then
+    setsid -w sh "$installer" </dev/null
+  else
+    sh "$installer"
+  fi
+  rm -f "$installer"
+}
+
+if [ -z "$CHECK_ONLY" ]; then
+  if ! pi_bin >/dev/null; then install_pi; fi
+  hash -r
+  bin=$(pi_bin) || { echo "ERROR: Pi install failed" >&2; exit 1; }
+  if [ "$("$bin" --version 2>/dev/null || true)" != "$PI_VERSION" ]; then
+    echo "Pinning Pi to $PI_VERSION"
+    export PATH="$HOME/.local/share/pi-node/current/bin:$PATH"
+    release="$PI/install/releases/$PI_VERSION"
+    mkdir -p "$release"
+    npm --prefix "$release" install --ignore-scripts --min-release-age=0 \
+      --omit=dev --include=optional --no-fund --no-audit \
+      "@earendil-works/pi-coding-agent@$PI_VERSION"
+    # The launcher reads this with `read`, which fails at EOF when the file
+    # has no trailing newline.
+    printf '%s\n' "$PI_VERSION" > "$PI/install/current-version"
+    find "$PI/install/releases" -mindepth 1 -maxdepth 1 ! -name "$PI_VERSION" -exec rm -rf {} +
+    bin=$(pi_bin)
+  fi
+  if [ "$("$bin" --version 2>/dev/null || true)" != "$PI_VERSION" ]; then
+    echo "ERROR: Pi reports $("$bin" --version 2>/dev/null || echo 'no version'); expected $PI_VERSION" >&2
+    exit 1
   fi
 fi
 mkdir -p "$PI/skills" "$PI/extensions"
 link "$REPO/pi/agent/AGENTS.md" "$PI/AGENTS.md"
 link "$REPO/pi/agent/keybindings.json" "$PI/keybindings.json"
 link "$REPO/pi/agent/settings.json" "$PI/settings.json"
+link "$REPO/pi/agent/subagents.json" "$PI/subagents.json"
 link_area() { # link_area <repo-dir> <live-dir>: link every repo entry live.
   # Live real files/dirs are never touched (unadopted work?): sync.sh owns
   # that direction. Stale live symlinks (gone from repo) are pruned.

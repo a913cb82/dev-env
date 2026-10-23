@@ -2,6 +2,8 @@ curl
 gh
 git
 jq
+nodejs
+npm
 python3
 ripgrep
 tmux
