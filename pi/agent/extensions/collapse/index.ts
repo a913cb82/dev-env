@@ -203,15 +203,22 @@ let traceHistoryPhase = true;
 let messageSeq = 0;
 let visibleBumpSeq = -1;
 
-/** A new transcript block starts: the next tool begins a fresh run. */
-function traceBoundary(): void {
+/** A new transcript block starts: the next tool begins a fresh run.
+ *  The reason is kept for `/collapse`: when rows show an unexpected gap,
+ *  the report says exactly which boundary split them. */
+const boundaryReasons: string[] = [];
+function traceBoundary(reason = "?") {
   traceRunId++;
+  boundaryReasons.push(`${reason}#${traceRunId}`);
+  if (boundaryReasons.length > 8) boundaryReasons.shift();
+  return reason;
 }
 
 function traceReset(): void {
   traceEntries.clear();
   traceRuns.clear();
   traceOwnerPoke.clear();
+  boundaryReasons.length = 0;
   traceRunId++;
   traceHistoryPhase = false;
 }
@@ -662,7 +669,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${compactView(pi, false) ? "compact rows" : "stock sections"} (thinking ${compactView(pi, false) ? "hidden" : "visible"}); thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}`,
+        `collapse r${COLLAPSE_REVISION}: ${compactView(pi, false) ? "compact rows" : "stock sections"} (thinking ${compactView(pi, false) ? "hidden" : "visible"}); boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}`,
       );
     },
   });
@@ -708,14 +715,14 @@ export default function (pi: ExtensionAPI) {
   // not join the previous run's trace (its row would teleport). Boundaries:
   // turn/message ends, non-assistant messages, foreign tools, user bash,
   // compaction, and session start (which also drops dead registrations).
-  const boundary = () => traceBoundary();
+  const boundary = (reason: string) => traceBoundary(reason);
   pi.on("session_start", (_event, ctx) => {
     try {
       collapsePoke.clear();
       // History is rendered before this event; keep those entries so their
       // rows stay put, but seal the run so live tools start a fresh trace.
       traceHistoryPhase = false;
-      traceBoundary();
+      traceBoundary("session-start");
       messageSeq++;
       visibleBumpSeq = -1;
       if (ctx.hasUI && ctx.ui) thinkingLive.ui = ctx.ui;
@@ -740,7 +747,7 @@ export default function (pi: ExtensionAPI) {
       // Any lifecycle event means the transcript is no longer being rebuilt.
       traceHistoryPhase = false;
       const role = (event as { message?: { role?: string } })?.message?.role;
-      if (role !== "assistant") traceBoundary();
+      if (role !== "assistant") traceBoundary(`message:${role ?? "?"}`);
       else messageSeq++;
     } catch {
       // Cosmetic only.
@@ -758,7 +765,7 @@ export default function (pi: ExtensionAPI) {
       const message = (event as { message?: unknown })?.message;
       if (!hasLeadingVisibleContent(message as { role?: unknown; content?: unknown })) return;
       visibleBumpSeq = messageSeq;
-      traceBoundary();
+      traceBoundary("leading-content");
     } catch {
       // Cosmetic only.
     }
@@ -767,21 +774,21 @@ export default function (pi: ExtensionAPI) {
     try {
       traceHistoryPhase = false;
       const name = (event as { toolName?: string })?.toolName;
-      if (name && !makeLeftByName[name]) traceBoundary();
+      if (name && !makeLeftByName[name]) traceBoundary(`foreign-tool:${name}`);
     } catch {
       // Cosmetic only.
     }
   });
-  pi.on("user_bash", () => traceBoundary());
+  pi.on("user_bash", () => traceBoundary("user-bash"));
   pi.on("session_compact", () => {
     // The chat is rebuilt from history right after this: treat the rebuild
     // as a history pass, then seal it so live turns merge again.
-    traceBoundary();
+    traceBoundary("session-compact");
     traceHistoryPhase = true;
     try {
       const timer = setTimeout(() => {
         traceHistoryPhase = false;
-        traceBoundary();
+        traceBoundary("history-sealed");
       }, 0);
       (timer as unknown as { unref?: () => void }).unref?.();
     } catch {

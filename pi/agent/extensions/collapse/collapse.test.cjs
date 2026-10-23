@@ -848,6 +848,23 @@ function textResult(chars) {
     check("second click returns to row", closed.length === 1 && closed[0].startsWith("› "), JSON.stringify(closed));
   }
 
+  // 16. /collapse reports WHY runs split (live diagnostics)
+  {
+    globalThis.__collapseTraceReset?.();
+    const report = [];
+    const ctx = { hasUI: true, ui: { notify: (m) => report.push(m) } };
+    await pi.commands.get("collapse").handler("", ctx);
+    check("collapse reports boundaries", /boundar/i.test(report.at(-1) ?? ""), report.at(-1));
+    // A turn with leading prose must record that reason.
+    await pi.handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
+    await pi.handlers.get("message_update")[0](
+      { message: { role: "assistant", content: [{ type: "text", text: "prose" }] } },
+      {},
+    );
+    await pi.commands.get("collapse").handler("", ctx);
+    check("boundary reason recorded", /leading-content/.test(report.at(-1) ?? ""), report.at(-1));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
