@@ -306,7 +306,7 @@ function textResult(chars) {
     check("thinking label fills width", label.length === 77, `${label.length}: ${JSON.stringify(label)}`);
   }
 
-  // 8a2. explicit terminal width widens the preview budget
+  // 8a1. explicit terminal width widens the preview budget
   {
     const realColumns = process.stdout.columns;
     process.stdout.columns = 200;
@@ -450,7 +450,7 @@ function textResult(chars) {
     }
   }
 
-  // 8e. ls / grep / find / powershell rows
+  // 8e2. ls / grep / find / powershell rows
   {
     const ls = pi.tools.get("ls");
     const { ctx: lsCtx } = callContext({ args: { path: "/some/dir" }, state: { count: 300 } });
@@ -535,6 +535,41 @@ function textResult(chars) {
     check("re-activation replaces listener", globalThis[slot] !== previous, "slot unchanged");
   }
 
+  // 12. visibility toggle pokes settled rows into the other mode
+  {
+    factory(pi); // reclaim slots with the primary mock (8c used a fresh one)
+    resetTrace();
+    const poll = globalThis.__collapsePollTick;
+    check("poll slot installed", !!poll?.tick && !!poll?.timer, typeof poll);
+    const read = pi.tools.get("read");
+    const args = { path: "/path/to/file" };
+    let calls = 0;
+    const state = {};
+    const ctx = {
+      args, toolCallId: "t", invalidate: () => { calls++; }, lastComponent: undefined,
+      state, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    };
+    pi._hidden = true;
+    await poll.tick(); // baseline records without poking
+    read.renderCall(args, theme, ctx); // registers + collapsed row
+    await poll.tick();
+    check("steady no poke", calls === 0, String(calls));
+    pi._hidden = false;
+    await poll.tick();
+    check("toggle pokes", calls === 1, String(calls));
+    const lines = read.renderCall(args, theme, ctx).render(80);
+    check("poked row goes stock", lines.length > 2 && lines[0].includes("toolSuccessBg"), JSON.stringify(lines[0]));
+    await pi.handlers.get("session_start")[0](
+      {},
+      { hasUI: true, ui: { setHiddenThinkingLabel() {} }, sessionManager: { getEntries: () => [] } },
+    );
+    pi._hidden = true;
+    await poll.tick();
+    check("cleared registry stays quiet", calls === 1, String(calls));
+  }
+
+
   // 13. adjacent same-turn tools share one trace component (no gaps between)
   {
     const read = pi.tools.get("read");
@@ -585,7 +620,7 @@ function textResult(chars) {
     check("sibling stays collapsed", opened.some((l) => l.startsWith("› ") && l.includes("read") && !l.includes("toolSuccessBg")), JSON.stringify(opened).slice(0, 200));
   }
 
-  // 13c. Pi-level expand at rest still shows one-line rows in one trace
+  // 13c. Pi-expanded at rest still shows one-line rows in one trace
   {
     resetTrace();
     const read = pi.tools.get("read");
@@ -611,41 +646,6 @@ function textResult(chars) {
     const alone = ls.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-after-foreign" }).render(80);
     check("foreign tool splits run", alone.length === 1 && alone[0].includes("/b"), JSON.stringify(alone));
   }
-
-  // 12. visibility toggle pokes settled rows into the other mode
-  {
-    factory(pi); // reclaim slots with the primary mock (8c used a fresh one)
-    resetTrace();
-    const poll = globalThis.__collapsePollTick;
-    check("poll slot installed", !!poll?.tick && !!poll?.timer, typeof poll);
-    const read = pi.tools.get("read");
-    const args = { path: "/path/to/file" };
-    let calls = 0;
-    const state = {};
-    const ctx = {
-      args, toolCallId: "t", invalidate: () => { calls++; }, lastComponent: undefined,
-      state, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
-      expanded: false, showImages: true, isError: false,
-    };
-    pi._hidden = true;
-    await poll.tick(); // baseline records without poking
-    read.renderCall(args, theme, ctx); // registers + collapsed row
-    await poll.tick();
-    check("steady no poke", calls === 0, String(calls));
-    pi._hidden = false;
-    await poll.tick();
-    check("toggle pokes", calls === 1, String(calls));
-    const lines = read.renderCall(args, theme, ctx).render(80);
-    check("poked row goes stock", lines.length > 2 && lines[0].includes("toolSuccessBg"), JSON.stringify(lines[0]));
-    await pi.handlers.get("session_start")[0](
-      {},
-      { hasUI: true, ui: { setHiddenThinkingLabel() {} }, sessionManager: { getEntries: () => [] } },
-    );
-    pi._hidden = true;
-    await poll.tick();
-    check("cleared registry stays quiet", calls === 1, String(calls));
-  }
-
 
   // 14. cross-turn merging: no line gaps between tool rows in consecutive turns
   // (Requires importing the module fresh for each scenario: trace state is
@@ -730,7 +730,7 @@ function textResult(chars) {
     check("empty thinking still merges", emptyThinking.length === 2, JSON.stringify(emptyThinking));
 
 
-  // 14e. history rebuild must not stack past tools into one row (teleport)
+  // 14c. history rebuild must not stack past tools into one row (teleport)
   {
     // Fresh activation: renders before session_start are the history pass.
     const tools = new Map();
@@ -885,7 +885,7 @@ function textResult(chars) {
     check("collapse reports run size", /newest run #\d+ has 2 row/.test(report.at(-1) ?? ""), report.at(-1));
   }
 
-  // 14f. toolResult messages arrive as message_start too and must NOT split
+  // 17. toolResult messages arrive as message_start too and must NOT split
   {
     resetTrace();
     const bash = pi.tools.get("bash");
@@ -912,7 +912,7 @@ function textResult(chars) {
     check("user still splits after toolResult", split.length === 1, JSON.stringify(split));
   }
 
-  // 17. switching/forking sessions rebuilds the transcript: history from the
+  // 18. switching/forking sessions rebuilds the transcript: history from the
   // NEW branch must not stack into one row slot (each tool gets its own run).
   {
     const mod = await jiti.import(path.join(HERE, "index.ts"));
@@ -954,7 +954,7 @@ function textResult(chars) {
     check("switch: live turns merge after settle", merged.length === 2, JSON.stringify(merged));
   }
 
-  // 17b. tree navigation arms the history phase too
+  // 18b. tree navigation arms the history phase too
   {
     const mod = await jiti.import(path.join(HERE, "index.ts"));
     resetTrace = mod.resetTraceState ?? resetTrace;
@@ -986,7 +986,7 @@ function textResult(chars) {
     check("tree: live merges after settle", live.length === 1 && live2.length === 2, `${live.length}/${live2.length}`);
   }
 
-  // 17c. a transcript rebuild re-registers the SAME ids: rows must keep their
+  // 18c. a transcript rebuild re-registers the SAME ids: rows must keep their
   // existing runs instead of being merged into one (settings changes rebuild).
   {
     const mod = await jiti.import(path.join(HERE, "index.ts"));
@@ -1017,7 +1017,7 @@ function textResult(chars) {
     check("rebuild: rows keep their own runs", again.length === 2, JSON.stringify(again));
   }
 
-  // 18. sync must not re-serialize args on every render pass (same object
+  // 19. sync must not re-serialize args on every render pass (same object
   // comes back each pass; a different object with equal content is no change)
   {
     const mod = await jiti.import(path.join(HERE, "index.ts"));
@@ -1057,6 +1057,39 @@ function textResult(chars) {
     const beforeTwin = serialized;
     bash.renderCall(twin, theme, { ...ctx, args: twin });
     check("adopted args stop re-serializing", serialized === beforeTwin, `${beforeTwin} -> ${serialized}`);
+  }
+
+  // 15d. an open row re-depths live when Pi's expansion flag flips
+  //      (ctrl+o) — no second click needed
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piD = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piD);
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    const read = tools.get("read");
+    const args = { path: "/repo/notes.txt" };
+    const body = Array.from({ length: 14 }, (_, i) => `line ${i + 1}`).join("\n");
+    const base = {
+      args, invalidate: () => {}, lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: false, showImages: true,
+      isError: false, toolCallId: "depth1", expanded: false,
+    };
+    read.renderCall(args, theme, base);
+    read.renderResult({ content: [{ type: "text", text: body }], details: {} }, { expanded: false, isPartial: false }, theme, { ...base, lastComponent: undefined });
+    read.renderCall(args, theme, base).children[0].onMouse({ type: "click", button: "left" });
+    const atCollapsed = read.renderCall(args, theme, base).render(100).join("\n");
+    check("depth follows: collapsed cell first", !atCollapsed.includes("line 14"), "");
+    // Pi expands (ctrl+o): same row, no click, must now show the expanded cell.
+    const atExpanded = read.renderCall(args, theme, { ...base, expanded: true }).render(100).join("\n");
+    check("depth follows: expanded cell after ctrl+o", atExpanded.includes("line 14"), "");
   }
 
   if (failures > 0) {

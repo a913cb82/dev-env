@@ -55,3 +55,4 @@ Edit repo files first when possible. Avoid direct edits under `~/.pi`. Run `./sy
 - `shell/`: `tmux.conf` for WSL and `bashrc.d/` shell defaults.
 - `git/`: commit identity, gh credential helper, global ignores.
 - `pi/agent/`: agent instructions, settings, keybindings, skills, and extensions.
+- `pi/agent/extensions/collapse/`: one-line tool rows and a thinking preview while thinking is hidden. See its `README.md` for the run, boundary, and click-depth rules.
