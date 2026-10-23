@@ -203,6 +203,17 @@ let traceHistoryPhase = true;
 let messageSeq = 0;
 let visibleBumpSeq = -1;
 
+/** Row/runs summary for `/collapse`: how many rows the newest run holds, and
+ *  how many runs are live. A gap between rows means two runs, so this says
+ *  whether the rows you are looking at were ever merged. */
+function traceSummary(): string {
+  const runs = [...traceRuns.entries()].filter(([, ids]) => ids.length > 0);
+  if (runs.length === 0) return "trace: empty";
+  const newest = runs.reduce((a, b) => (a[0] >= b[0] ? a : b));
+  const sizes = runs.map(([id, ids]) => `#${id}:${ids.length}`).join(" ");
+  return `trace: newest run #${newest[0]} has ${newest[1].length} row(s); runs ${sizes}`;
+}
+
 /** A new transcript block starts: the next tool begins a fresh run.
  *  The reason is kept for `/collapse`: when rows show an unexpected gap,
  *  the report says exactly which boundary split them. */
@@ -669,7 +680,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${compactView(pi, false) ? "compact rows" : "stock sections"} (thinking ${compactView(pi, false) ? "hidden" : "visible"}); boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}`,
+        `collapse r${COLLAPSE_REVISION}: ${compactView(pi, false) ? "compact rows" : "stock sections"} (thinking ${compactView(pi, false) ? "hidden" : "visible"}); ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}`,
       );
     },
   });

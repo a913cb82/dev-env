@@ -865,6 +865,19 @@ function textResult(chars) {
     check("boundary reason recorded", /leading-content/.test(report.at(-1) ?? ""), report.at(-1));
   }
 
+  // 16b. /collapse reports the newest run's row count (gap forensics)
+  {
+    globalThis.__collapseTraceReset?.();
+    const read = pi.tools.get("read");
+    const bash = pi.tools.get("bash");
+    const { ctx } = callContext({ args: { path: "/a" }, state: {} });
+    read.renderCall(ctx.args, theme, ctx);
+    bash.renderCall({ command: "ls" }, theme, { ...ctx, args: { command: "ls" }, state: {}, toolCallId: "t-sum" });
+    const report = [];
+    await pi.commands.get("collapse").handler("", { hasUI: true, ui: { notify: (m) => report.push(m) } });
+    check("collapse reports run size", /newest run #\d+ has 2 row/.test(report.at(-1) ?? ""), report.at(-1));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
