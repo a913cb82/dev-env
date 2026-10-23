@@ -38,6 +38,14 @@ fs.readdirSync = function (...args) {
 };
 
 function findPiRoot() {
+	// Managed install: the launcher is a shim, so resolve the pinned release.
+	try {
+		const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
+		const root = path.join(process.env.HOME, ".pi/agent/install/releases", version, "node_modules/@earendil-works/pi-coding-agent");
+		if (fs.existsSync(path.join(root, "dist", "bundle", "index.js"))) return root;
+	} catch {
+		// Fall through to the direct-binary layout.
+	}
 	const bin = execSync("command -v pi", { encoding: "utf8" }).trim();
 	const real = fs.realpathSync(bin);
 	// <root>/dist/bundle/cli.js
@@ -3139,6 +3147,47 @@ function check(name, cond, extra) {
 		else process.env.PI_SUBAGENT_RUN_ID = rlPrevRunId;
 		if (rlPrevRootId === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
 		else process.env.PI_SUBAGENT_ROOT_ID = rlPrevRootId;
+	}
+
+	// --- collapse opt-in slot (row rendering for extension tools) ---
+	{
+		const slotPrev = globalThis.__collapseWrapTool;
+		const tools = new Map();
+		const handlers = new Map();
+		const piC = {
+			registerFlag: () => {},
+			on: (event, handler) => handlers.set(event, handler),
+			registerMessageRenderer: () => {},
+			registerCommand: () => {},
+			registerTool: (tool) => tools.set(tool.name, tool),
+			getFlag: () => undefined,
+			getActiveTools: () => [],
+			sendMessage: () => {},
+			sendUserMessage: () => {},
+			getSettings: () => ({}),
+		};
+		try {
+			// Load order is not guaranteed: collapse may appear after us.
+			delete globalThis.__collapseWrapTool;
+			subagentsExtension(piC);
+			check("tools register unwrapped without collapse", tools.get("spawn_agent").__collapseWrapped !== true);
+			globalThis.__collapseWrapTool = (definition) => ({ ...definition, renderShell: "self", __collapseWrapped: true });
+			await handlers.get("session_start")({}, {
+				sessionManager: { getSessionId: () => "collapse-parent", getBranch: () => [] },
+				cwd: sandbox,
+				isProjectTrusted: () => false,
+				mode: "rpc",
+				hasUI: false,
+				isIdle: () => true,
+			});
+			check("tools wrap once collapse appears", tools.get("spawn_agent").__collapseWrapped === true);
+			check("wrap keeps execute", typeof tools.get("spawn_agent").execute === "function");
+			check("all subagent tools wrapped", ["spawn_agent", "check_subagents", "send_to_subagent", "cancel_subagent"]
+				.every((name) => tools.get(name)?.__collapseWrapped === true));
+		} finally {
+			if (slotPrev === undefined) delete globalThis.__collapseWrapTool;
+			else globalThis.__collapseWrapTool = slotPrev;
+		}
 	}
 
 	delete process.env.PI_SUBAGENT_COMMAND;

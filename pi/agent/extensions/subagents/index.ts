@@ -98,9 +98,23 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	// The collapse extension offers this slot so other extensions can opt their
 	// tools into compact rows. It needs the full definition, which the public
 	// tool listing does not expose. Without collapse, tools register unchanged.
+	// Extension load order is not guaranteed, so a definition registered before
+	// collapse appeared is retried at session_start, when every extension is up.
+	const pendingCollapse: any[] = [];
 	const registerTool = (definition: any) => {
 		const wrap = (globalThis as Record<string, any>).__collapseWrapTool;
-		pi.registerTool(typeof wrap === "function" ? wrap(definition) : definition);
+		if (typeof wrap === "function") {
+			pi.registerTool(wrap(definition));
+			return;
+		}
+		pi.registerTool(definition);
+		pendingCollapse.push(definition);
+	};
+	const drainPendingCollapse = () => {
+		if (pendingCollapse.length === 0) return;
+		const wrap = (globalThis as Record<string, any>).__collapseWrapTool;
+		if (typeof wrap !== "function") return;
+		while (pendingCollapse.length > 0) pi.registerTool(wrap(pendingCollapse.pop()));
 	};
 	let runtime: RuntimeState | undefined;
 	let widget: SubagentStatusWidget | undefined;
@@ -490,6 +504,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
+		drainPendingCollapse();
 		shuttingDown = false;
 		agentActive = false;
 		isIdle = () => ctx.isIdle?.() ?? !agentActive;

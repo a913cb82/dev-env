@@ -76,7 +76,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 21;
+const COLLAPSE_REVISION = 22;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -301,7 +301,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", (event) => traceOnMessageStart(event));
   pi.on("message_update", (event) => traceOnMessageUpdate(event));
   pi.on("tool_execution_start", (event) =>
-    traceOnToolExecutionStart(event, (name) => !!makeLeftByName[name]),
+    // Tools that opted into collapsing (the global wrap slot) render their
+    // own rows, so they merge like the built-ins; anything else still splits.
+    traceOnToolExecutionStart(event, (name) => !!makeLeftByName[name] || wrappedToolNames().includes(name)),
   );
   pi.on("user_bash", () => traceBoundary("user-bash"));
   // Anything that rebuilds the transcript from history arms the history pass.

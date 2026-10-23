@@ -1200,6 +1200,47 @@ function textResult(chars) {
     check("new label still applied", labels.length === 2, JSON.stringify(labels));
   }
 
+  // 23. wrapped foreign tools merge: opting in through the slot makes them
+  // own rows, so tool_execution_start must not split the run for them.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const commands = new Map();
+    const piW = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: (n, o) => commands.set(n, o),
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piW);
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    const read = tools.get("read");
+    const mk = (tool, id, args) => {
+      const ctx = {
+        args, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+        state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+        expanded: false, showImages: true, isError: false,
+      };
+      return tool.renderCall(ctx.args, theme, ctx);
+    };
+    mk(read, "r1", { path: "/a" });
+    const spawn = mod.collapseDefinition(
+      { name: "spawn_agent", description: "d", parameters: {}, async execute() { return {}; } }, piW);
+    await handlers.get("tool_execution_start")[0]({ toolName: "spawn_agent", toolCallId: "t-sp", args: {} }, {});
+    mk(spawn, "t-sp", { name: "demo" });
+    const checker = mod.collapseDefinition(
+      { name: "check_subagents", description: "d", parameters: {}, async execute() { return {}; } }, piW);
+    await handlers.get("tool_execution_start")[0]({ toolName: "check_subagents", toolCallId: "t-cs", args: {} }, {});
+    mk(checker, "t-cs", { target: "demo" });
+    const lines = mk(read, "r1", { path: "/a" }).render(80);
+    check("wrapped foreign tools share the run", lines.length === 3, JSON.stringify(lines));
+    let said = "";
+    await commands.get("collapse").handler("", { ui: { notify: (m) => { said = m; } } });
+    check("no foreign boundary for wrapped tools", !said.includes("foreign-tool:spawn_agent") && !said.includes("foreign-tool:check_subagents"), said);
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
