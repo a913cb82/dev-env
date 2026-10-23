@@ -1241,6 +1241,33 @@ function textResult(chars) {
     check("no foreign boundary for wrapped tools", !said.includes("foreign-tool:spawn_agent") && !said.includes("foreign-tool:check_subagents"), said);
   }
 
+  // 24. A wrapped tool with no summarizable args shows just its name:
+  // no "…" placeholder, collapsed or opened.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const piW = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: () => {},
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piW);
+    const wrapped = mod.collapseDefinition(
+      { name: "check_subagents", description: "d", parameters: {}, async execute() { return {}; } }, piW);
+    const ctx = (id, args) => ({
+      args, toolCallId: id, invalidate: () => {}, lastComponent: undefined, state: {},
+      cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    });
+    const row = wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })).render(90);
+    check("empty summary shows name only", row.length === 1 && row[0] === "› <b:accent>check_subagents</b>", JSON.stringify(row));
+    // opened (clicked) rows show the same name-only call line
+    const opened = wrapped.renderCall({ wait: true }, theme, { ...ctx("e1", { wait: true }), state: {} }).render(90);
+    check("opened name-only row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

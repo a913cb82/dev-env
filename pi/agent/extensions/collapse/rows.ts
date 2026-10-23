@@ -133,8 +133,10 @@ function lsLeft(theme: Theme, args: any, isError: boolean): string {
  *  MCP tools): the tool name plus the best argument it has. */
 function genericLeft(theme: Theme, name: string, args: any, isError: boolean): string {
   const summary = genericToolSummary(args);
-  const body = summary ? theme.fg("dim", summary) : theme.fg("dim", "…");
-  return `${toolHead(theme, `${name} `, isError)}${body}`;
+  // No summarizable argument (check_subagents {wait} and friends): the name
+  // alone is the row. A "…" placeholder would read as truncated content.
+  if (!summary) return toolHead(theme, name, isError);
+  return `${toolHead(theme, `${name} `, isError)}${theme.fg("dim", summary)}`;
 }
 
 /** Row text for any tool: the hand-tuned renderer when we have one, the
