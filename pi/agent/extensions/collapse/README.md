@@ -4,9 +4,9 @@ Compacts Pi's transcript into one-line tool rows and a one-line thinking
 preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 
 ```
- read /home/abrai/dev-env/src/app.ts:10-20           5.3k ch
- $ timeout 25 ls some/dist                           0.1k ch
- grep flushTimers src/                               1.2k ch
+▏read /home/abrai/dev-env/src/app.ts:10-20          5.3k ch
+▏$ timeout 25 ls some/dist                          0.1k ch
+▏grep flushTimers src/                              1.2k ch
 ```
 
 Three levels, one meaning each:
@@ -22,8 +22,8 @@ Three levels, one meaning each:
   (right-aligned), and the summary of any tool without a dedicated renderer.
 
 ```
- read /a/b.txt:5-10                                 5.3k ch
- $ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k ch
+▏read /a/b.txt:5-10                                5.3k ch
+▏$ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k ch
 ```
 
 `bash`/`powershell` rows are tokenized rather than styled by position:
@@ -38,8 +38,13 @@ Long rows cut in the middle, so the head and the count survive.
 
 Every row's first glyph lands on column 2 — the same column as Pi's prose
 (`outputPad`), hidden-thinking rows (`Text` pad) and stock tool cells
-(`Box(1, 1)`). There is no gutter glyph: the tool name or `$` is the marker,
-so a row expands into its stock cell without its text moving sideways. Tool
+(`Box(1, 1)`). Column 1 carries a single dim cell rule (`▏`) with no space
+after it, so it costs no width and the content still starts on column 2. A
+run of rows therefore reads as one block — a continuous left margin, like a
+blockquote — and a row still expands into its stock cell without its text
+moving sideways. Thinking previews (the detach experiment) do not carry the
+rule: it marks tool runs. With `outputPad = 0` the row starts on column 1 and
+no rule is drawn, because it would push the content out of alignment. Tool
 rows end their count on the same column as the thinking rows' count, one
 column short of the edge: Pi renders thinking labels in a `Text` and a label
 that exactly fills the line word-wraps its trailing count, so both keep that

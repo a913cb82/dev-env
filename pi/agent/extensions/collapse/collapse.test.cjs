@@ -66,7 +66,7 @@ const ansiTheme = {
 };
 
 const plainText = (line) => String(line).replace(/\x1b\[[0-9;]*m/g, "").replace(/<[^>]*>/g, "");
-const isRow = (line) => { const t = plainText(line); return t.startsWith(" ") && !t.startsWith("  ") && !t.includes("\u203a"); };
+const isRow = (line) => plainText(line).startsWith("▏");
 
 // Marker theme: visible styling assertions without ANSI.
 const theme = {
@@ -1166,7 +1166,7 @@ function textResult(chars) {
       expanded: false, showImages: true, isError: false,
     });
     const row = wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })).render(90);
-    check("empty summary shows name only", row.length === 1 && plainText(row[0]) === " check_subagents", JSON.stringify(row));
+    check("empty summary shows name only", row.length === 1 && plainText(row[0]) === "▏check_subagents", JSON.stringify(row));
     // opened (clicked) rows show the same name-only call line
     const opened = wrapped.renderCall({ wait: true }, theme, { ...ctx("e1", { wait: true }), state: {} }).render(90);
     check("opened name-only row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
@@ -2266,7 +2266,7 @@ function textResult(chars) {
       ["read", { path: "/a/b.txt" }], ["bash", { command: "ls -la" }],
       ["grep", { pattern: "x", path: "/a" }], ["ls", { path: "/a" }],
     ]) {
-      check(`${name} starts at column 2`, plainText(row(name, args)).startsWith(" ") && !plainText(row(name, args)).startsWith("  ") && !plainText(row(name, args)).includes("›"), row(name, args));
+      check(`${name} carries the rail`, plainText(row(name, args)).startsWith("▏") && plainText(row(name, args))[1] !== " ", row(name, args));
     }
     // tool head carries accent + bold
     for (const [name, args, head] of [
@@ -2304,8 +2304,8 @@ function textResult(chars) {
       const { ctx } = callContext({ args, toolCallId: `bash-${name}-${args.command ?? ""}` });
       return tool.renderCall(ctx.args, theme, { ...ctx, args }).render(400)[0];
     };
-    const A = " <b:accent>$</b>";
-    const PS = " <b:accent>PS></b>";
+    const A = "<dim>▏</><b:accent>$</b>";
+    const PS = "<dim>▏</><b:accent>PS></b>";
     check(
       "bash chain styles each part",
       row("bash", { command: "cd /path/to/thing && cat > /tmp/real/thing | tail -n 3" }) ===
@@ -2432,6 +2432,47 @@ function textResult(chars) {
       delete process.stdout.columns;
     }
   }
+
+
+// ---------------------------------------------------------------------------
+// 68. The run rail: column 1 marks a tool run without moving the content.
+// ---------------------------------------------------------------------------
+{
+  const RAIL = "▏";
+  const rowsLib = await jiti.import(path.join(HERE, "rows.ts"));
+  const tuiLib = await jiti.import("@earendil-works/pi-tui");
+  const { CollapsedLine } = rowsLib;
+  check("rows.ts exports CollapsedLine", typeof CollapsedLine === "function");
+
+  const before = process.stdout.columns;
+  Object.defineProperty(process.stdout, "columns", { value: 60, configurable: true, writable: true });
+  // Real escapes for width math: marker tags would count as visible text.
+  const LEFT = ansiTheme.fg("accent", "$ ls");
+  const RIGHT = ansiTheme.fg("dim", "1.0k ch");
+  const line = (opts) => new CollapsedLine(LEFT, RIGHT, opts.pad ?? 1, ansiTheme, opts.rail ?? true).render(60)[0];
+  const dimRail = ansiTheme.fg("dim", RAIL);
+
+  const tool = line({});
+  check("tool row opens with the dim rail", tool.startsWith(dimRail), JSON.stringify(tool.slice(0, 24)));
+  check("rail is one cell and content starts on column 2",
+    tuiLib.visibleWidth(tool.slice(0, tool.indexOf("$"))) === 1 && plainText(tool).indexOf("$") === 1,
+    JSON.stringify(plainText(tool).slice(0, 8)));
+  check("rail keeps the row at the label column", tuiLib.visibleWidth(tool) === 58 && 58 <= 60, `${tuiLib.visibleWidth(tool)}`);
+  check("count still ends one column inside the edge",
+    plainText(tool).replace(/\s+$/, "").length === 58, `${plainText(tool).replace(/\s+$/, "").length}`);
+
+  const preview = line({ rail: false });
+  check("thinking preview has no rail", !plainText(preview).includes(RAIL) && plainText(preview).startsWith(" "), JSON.stringify(plainText(preview).slice(0, 6)));
+
+  const noPad = line({ pad: 0 });
+  check("no pad: no rail, content on column 1", !plainText(noPad).includes(RAIL) && plainText(noPad).startsWith("$"), JSON.stringify(plainText(noPad).slice(0, 6)));
+
+  const plainRow = new CollapsedLine("<accent>$</><b>ls</b>", "<dim>1.0k ch</>", 1).render(60)[0];
+  check("theme-less row still gets the rail glyph", plainText(plainRow).startsWith(RAIL));
+
+  if (before === undefined) delete process.stdout.columns;
+  else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
+}
 
   if (failures > 0) {
     console.error(`${failures} failure(s)`);

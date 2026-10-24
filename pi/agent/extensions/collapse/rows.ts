@@ -53,12 +53,29 @@ function truncateMiddleWidth(text: string, maxWidth: number): string {
  *  Fills to width-outputPad, not width: thinking rows are indented by
  *  Pi's outputPad, so their counts end at W-pad — ending tool rows there
  *  too keeps both counts on the same column. */
-class CollapsedLine implements Component {
+/** Left rule that marks a collapsed tool run: one dim cell in column 1, so
+ *  the row's first glyph still lands on column 2 (see the render comment). */
+const ROW_RAIL = "\u258f";
+
+export class CollapsedLine implements Component {
   constructor(
     private left: string,
     private right: string,
     private pad = 1,
+    private theme?: Theme,
+    /** false for rows that are not part of a tool run (thinking previews). */
+    private rail = true,
   ) {}
+
+  /** Column 1 carries the rail, columns after it stay padding. With no pad
+   *  the row starts at column 1 (stock cell with outputPad=0), so a rail
+   *  there would push the content out of alignment: none is drawn. */
+  private prefix(): string {
+    const pad = " ".repeat(Math.max(0, this.pad));
+    if (!this.rail || this.pad < 1) return pad;
+    const glyph = this.theme ? this.theme.fg("dim", ROW_RAIL) : ROW_RAIL;
+    return glyph + pad.slice(1);
+  }
 
   render(width: number): string[] {
     // The thinking label is sized from the terminal columns, but Pi can hand
@@ -68,12 +85,13 @@ class CollapsedLine implements Component {
     // clamp to the render width so a narrower host never overflows.
     const cols = currentColumns();
     const target = Math.max(8, Math.min(width, (cols ?? width) - 1 - this.pad));
-    // No gutter glyph: one leading space puts the first glyph on column 2,
-    // the column Pi's prose (outputPad), hidden-thinking rows (Text pad) and
-    // stock tool cells (Box(1, 1)) all start on. A row therefore expands
-    // into its stock cell without its text moving sideways.
-    const prefix = " ";
-    const prefixWidth = 1;
+    // No trailing space after the rail: it occupies column 1 alone, so the
+    // first content glyph still lands on column 2 — the column Pi's prose
+    // (outputPad), hidden-thinking rows (Text pad) and stock tool cells
+    // (Box(1, 1)) start on. A row therefore expands into its stock cell
+    // without its text moving sideways, and the repeated rail groups a run.
+    const prefix = this.prefix();
+    const prefixWidth = visibleWidth(prefix);
     const rightWidth = visibleWidth(this.right);
     const leftWidth = visibleWidth(this.left);
     let left = this.left;
@@ -276,7 +294,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     const open = isRunThinkingOpen(runId);
     const thinkingRow = open
       ? new Text(hiddenThinking, liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi));
+      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi), theme, false);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -291,7 +309,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     if (!entry) continue;
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
-      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi));
+      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -375,7 +393,7 @@ export function collapseTool(
       }
       const toolCallId = context?.toolCallId;
       const entry = traceUpsert(original.name, toolCallId, original);
-      if (!entry) return new CollapsedLine(makeLeft(theme, args, !!context?.isError), countSuffix(theme, context?.state ?? {}), liveOutputPad(pi));
+      if (!entry) return new CollapsedLine(makeLeft(theme, args, !!context?.isError), countSuffix(theme, context?.state ?? {}), liveOutputPad(pi), theme);
       const changed = traceSync(entry, args, context);
       if (traceOwnerId(entry.runId) !== entry.id) {
         if (changed) tracePokeOwner(entry.runId);
