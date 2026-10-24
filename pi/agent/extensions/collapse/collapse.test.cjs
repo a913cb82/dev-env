@@ -1343,12 +1343,13 @@ function textResult(chars) {
     await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager });
     widgets[0]({ children: [chat] }, {});
     widgets[0]({ children: [chat] }, {});
-    // flag off by default: nothing detached
-    delete process.env.COLLAPSE_HIDE_THINKING;
+    // opt-out flag: nothing detached
+    process.env.COLLAPSE_HIDE_THINKING = "0";
     let r = detach.detachPass(piL, sessionManager);
     check("flag off detaches nothing", r.detached === 0 && chat.children.length === 3, JSON.stringify(r));
-    // flag on: only the SAFE+hosted row goes (lonely thinking has no host run)
-    process.env.COLLAPSE_HIDE_THINKING = "1";
+    // default on (unset): only the SAFE+hosted row goes (lonely thinking
+    // has no host run)
+    delete process.env.COLLAPSE_HIDE_THINKING;
     const bash = tools.get("bash");
     const theme = { fg: (c, t) => t, style: (t) => t };
     const mk = (t, id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
