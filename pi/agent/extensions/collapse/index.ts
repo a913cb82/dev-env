@@ -69,8 +69,8 @@ import {
   walkerWidget,
   WALKER_KEY,
 } from "./labels.js";
-import { unwrapAll, wrappingPass, wrapStatus } from "./wrap.js";
-export { captureWalkerTui, unwrapAll, wrappingPass, wrapStatus };
+import { scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus } from "./wrap.js";
+export { captureWalkerTui, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus };
 import {
   planToolRuns,
 } from "./logic.js";
@@ -99,7 +99,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 32;
+const COLLAPSE_REVISION = 33;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -241,6 +241,10 @@ export default function (pi: ExtensionAPI) {
       try {
         ctx.ui?.setWidget?.(WALKER_KEY, (tui: unknown) => {
           captureWalkerTui(tui);
+          // The handle becomes valid inside a render; schedule the pass for
+          // the tick right after it commits (coalesced, idempotent), so
+          // post-reload rows converge in milliseconds, not on the 1s poll.
+          scheduleWrappingPass(pi);
           return walkerWidget();
         });
       } catch {

@@ -1754,6 +1754,51 @@ function textResult(chars) {
     check("trailing label glues", fake.render(100)[0] === "› read /a", JSON.stringify(fake.render(100)));
   }
 
+  // 45. a row's updateContent re-heals its spacer synchronously (toggle path)
+  {
+    resetTrace();
+    const prevTool = toolComp("t-b4", "self", ["", "› prev"]);
+    const label = new MouseRegion(new Text("Thinking..."));
+    let origCalls = 0;
+    const container = { children: [new Spacer(), label], removeChild(c) { const i = container.children.indexOf(c); if (i >= 0) container.children.splice(i, 1); } };
+    const row = {
+      lastMessage: { role: "assistant", content: [] },
+      hiddenThinkingLabel: "T",
+      setHiddenThinkingLabel() {},
+      children: [container],
+      contentContainer: container,
+      updateContent() { origCalls++; container.children = [new Spacer(), label]; return "orig-result"; },
+    };
+    modW.captureWalkerTui({ children: [prevTool, row] });
+    modW.wrappingPass(piW);
+    check("pass drops initial spacer", container.children.length === 1, String(container.children.length));
+    // Pi's toggle path rebuilds children (spacer returns); the shadow must
+    // re-heal synchronously and preserve orig behavior.
+    const ret = row.updateContent({}, true);
+    check("orig updateContent still runs", origCalls === 1 && ret === "orig-result", `${origCalls}/${ret}`);
+    check("spacer re-healed synchronously", container.children.length === 1 && container.children[0] === label, String(container.children.length));
+    modW.unwrapAll();
+    row.updateContent({}, true);
+    check("unwrap restores updateContent", origCalls === 2 && container.children.length === 2, `${origCalls}/${container.children.length}`);
+  }
+
+  // 46. a scheduled pass runs right after capture (no 1s-tick wait)
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-sched" });
+    read.renderCall(ctx.args, theme, ctx);
+    const fake = toolComp("t-sched", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]), fake] });
+    check("schedule exported", typeof modW.scheduleWrappingPass === "function", typeof modW.scheduleWrappingPass);
+    modW.scheduleWrappingPass(piW);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    check("scheduled pass stripped", fake.render(100)[0] === "› read /a", JSON.stringify(fake.render(100)));
+    check("schedule status live", /wrapped/.test(modW.wrapStatus()), modW.wrapStatus());
+    modW.captureWalkerTui({ children: [] });
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

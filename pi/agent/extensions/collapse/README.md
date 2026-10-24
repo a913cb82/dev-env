@@ -42,7 +42,12 @@ row, its leading `Spacer(1)` is removed via public `removeChild` on its
 thinking (which renders `Markdown`, failing the label check) are never
 touched — a visibility toggle rebuilds the children and self-heals. Both
 directions are pure tree structure, evaluated per render, so a sibling
-streaming from thinking into prose flips the verdict live. No Pi sources
+streaming from thinking into prose flips the verdict live. Convergence is
+immediate, not polled: the walker factory schedules a pass for the tick
+right after the capturing render commits (post-reload rows settle in
+milliseconds), and every thinking row carries an `updateContent` shadow
+that re-heals its spacer synchronously after Pi's own rebuilds
+(streaming deltas, click-toggles). No Pi sources
 are touched and no prototype is modified. `/collapse` reports
 `wrap: N wrapped, M spacers dropped`.
 

@@ -37,6 +37,7 @@ export interface WrapCounts {
   skipped: number;
   already: number;
   spacers: number;
+  synced: number;
 }
 
 /** Marks instances carrying our shadows (same module instance, so one
@@ -57,6 +58,114 @@ interface InstalledWrap {
 const installedWraps = new WeakMap<object, InstalledWrap>();
 
 let wrapOutcome = "idle (no pass yet)";
+
+/** Marks assistant rows carrying our `updateContent` shadow (distinct from
+ *  the render/handleMouse shadows on tool components; the two node kinds
+ *  never overlap). */
+const ROW_SYNCED = Symbol("collapseRowSync");
+
+/** Installed row-sync shadows plus the original they replaced. */
+interface InstalledRowSync {
+  shadowUpdateContent: unknown;
+  origUpdateContent: (message: unknown, streaming?: unknown) => unknown;
+}
+const installedRowSyncs = new WeakMap<object, InstalledRowSync>();
+
+/** A pass scheduled but not yet run (at most one pending: repeat captures
+ *  during a render storm collapse into a single immediate pass). */
+let scheduledPass: { pi: ExtensionAPI } | undefined;
+
+/** Sync an assistant row's `updateContent`: after Pi rebuilds the children
+ *  (streaming delta, click-toggle), re-drop the leading spacer when the
+ *  live gate still holds. The gate re-evaluates per call, so a toggle to
+ *  visible thinking (Markdown children) simply stops healing. Returns true
+ *  when this call installed the shadow. */
+export function syncRowUpdates(
+  row: unknown,
+  pi: ExtensionAPI,
+  getPrev?: () => unknown,
+): boolean {
+  try {
+    if (!isThinkingRow(row)) return false;
+    if ((row as Record<symbol, unknown>)[ROW_SYNCED] === true) return false;
+    const unbound = row.updateContent;
+    const orig = unbound.bind(row);
+    const prevOf = getPrev ?? (() => undefined);
+    row.updateContent = (message: unknown, streaming?: unknown): unknown => {
+      const result = orig(message, streaming);
+      try {
+        if (isHiddenThinking(pi)) dropLeadingSpacers(row, prevOf());
+      } catch {
+        // Pi's rebuild stands; the next pass heals.
+      }
+      return result;
+    };
+    installedRowSyncs.set(row, {
+      shadowUpdateContent: row.updateContent,
+      origUpdateContent: unbound,
+    });
+    (row as Record<symbol, unknown>)[ROW_SYNCED] = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Remove the row-sync shadow iff it is still ours. */
+function unsyncRowUpdates(row: unknown): boolean {
+  try {
+    if (!row || typeof row !== "object") return false;
+    if ((row as Record<symbol, unknown>)[ROW_SYNCED] !== true) return false;
+    const installed = installedRowSyncs.get(row);
+    if (!installed) return false;
+    if (installed.shadowUpdateContent === (row as { updateContent?: unknown }).updateContent) {
+      try {
+        (row as { updateContent: unknown }).updateContent = installed.origUpdateContent;
+      } catch {
+        return false;
+      }
+    }
+    installedRowSyncs.delete(row);
+    try {
+      delete (row as Record<symbol, unknown>)[ROW_SYNCED];
+    } catch {
+      // Mark unreadable: treat as unsynced; the method is restored.
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Schedule one pass on the next immediate tick (coalesced). The walker
+ *  handle becomes valid inside a render, where tree surgery is unsafe;
+ *  the tick runs right after that render commits, so post-reload rows
+ *  converge in milliseconds instead of waiting out the 1s poll. */
+export function scheduleWrappingPass(pi: ExtensionAPI): void {
+  try {
+    if (scheduledPass) {
+      scheduledPass.pi = pi;
+      return;
+    }
+    if (typeof setImmediate !== "function") {
+      wrappingPass(pi);
+      return;
+    }
+    scheduledPass = { pi };
+    setImmediate(() => {
+      const pending = scheduledPass;
+      scheduledPass = undefined;
+      if (!pending) return;
+      try {
+        wrappingPass(pending.pi);
+      } catch {
+        // The poll tick stays the backstop.
+      }
+    });
+  } catch {
+    // The poll tick stays the backstop.
+  }
+}
 
 export function wrapStatus(): string {
   return wrapOutcome;
@@ -323,8 +432,12 @@ export function unwrapAll(): number {
     while (stack.length > 0) {
       const node = stack.pop();
       if (!node || typeof node !== "object") continue;
-      if ((node as Record<symbol, unknown>)[WRAPPED] === true) {
+      if (
+        (node as Record<symbol, unknown>)[WRAPPED] === true ||
+        (node as Record<symbol, unknown>)[ROW_SYNCED] === true
+      ) {
         if (unwrapToolComponent(node)) count++;
+        if (unsyncRowUpdates(node)) count++;
         continue;
       }
       const kids = (node as { children?: unknown }).children;
@@ -342,7 +455,7 @@ export function unwrapAll(): number {
  *  spacers are simply not counted. Frames carry (parent, index) so both
  *  halves can read the live previous sibling. */
 export function wrappingPass(pi: ExtensionAPI): WrapCounts {
-  const counts: WrapCounts = { wrapped: 0, skipped: 0, already: 0, spacers: 0 };
+  const counts: WrapCounts = { wrapped: 0, skipped: 0, already: 0, spacers: 0, synced: 0 };
   try {
     const tui = walkerTui();
     const children = (tui as { children?: unknown } | undefined)?.children;
@@ -377,12 +490,18 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
         continue;
       }
       if (isThinkingRow(node)) {
+        const kids = parent.children;
+        const getPrev = (): unknown =>
+          Array.isArray(kids) && index > 0 ? kids[index - 1] : undefined;
         try {
-          const kids = parent.children;
-          const prev = Array.isArray(kids) && index > 0 ? kids[index - 1] : undefined;
-          counts.spacers += dropLeadingSpacers(node, prev);
+          counts.spacers += dropLeadingSpacers(node, getPrev());
         } catch {
           // Surgery skipped; the blank stays stock.
+        }
+        try {
+          if (syncRowUpdates(node, pi, getPrev)) counts.synced++;
+        } catch {
+          // The next pass retries the install.
         }
       }
       counts.skipped++;
