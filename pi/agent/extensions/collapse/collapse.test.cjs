@@ -1552,12 +1552,19 @@ function textResult(chars) {
   class Markdown { constructor(text) { this.text = text; } }
   // Mirror Pi's real nesting: spacers/labels live in contentContainer.
   const thinkingRow = (children) => {
-    const contentContainer = { children, removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); } };
+    const contentContainer = {
+      children,
+      removeChild(c) {
+        const list = this.children;
+        const i = list.indexOf(c);
+        if (i >= 0) list.splice(i, 1);
+      },
+    };
     return {
       lastMessage: { role: "assistant", content: [] },
       hiddenThinkingLabel: "T",
       updateContent() {},
-      setHiddenThinkingLabel() {},
+      setHiddenThinkingLabel(label) { this.hiddenThinkingLabel = label; },
       children: [contentContainer],
       contentContainer,
     };
@@ -1822,6 +1829,108 @@ function textResult(chars) {
     modW.captureWalkerTui({ children: [prev, fake] });
     modW.wrappingPass(piW);
     check("expanded label above glues", fake.render(100)[0] === "› read /a", JSON.stringify(fake.render(100)));
+    modW.captureWalkerTui({ children: [] });
+  }
+
+  // 49. streaming relabel: the live row shows OUR preview, never stock
+  {
+    resetTrace();
+    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(500) }] };
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
+    row.lastMessage = msg;
+    row.hiddenThinkingLabel = "Thinking...";
+    modW.captureWalkerTui({ children: [row] });
+    check("streaming relabel exported", typeof modW.reconcileStreamingLabel === "function", typeof modW.reconcileStreamingLabel);
+    modW.reconcileStreamingLabel(piW, msg, 1000);
+    check("streaming label is ours, not stock", row.hiddenThinkingLabel !== "Thinking..." && /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    check("streaming label carries the preview", /x/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+  }
+
+  // 50. the count grows with the text; updates are throttled but never stuck
+  {
+    resetTrace();
+    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "a".repeat(400) }] };
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
+    row.lastMessage = msg;
+    row.hiddenThinkingLabel = "";
+    modW.captureWalkerTui({ children: [row] });
+    modW.reconcileStreamingLabel(piW, msg, 5000);
+    const first = row.hiddenThinkingLabel;
+    // A delta inside the throttle window must not thrash the label.
+    msg.content[0].thinking = "a".repeat(4000);
+    modW.reconcileStreamingLabel(piW, msg, 5050);
+    check("throttled delta keeps label", row.hiddenThinkingLabel === first, `${row.hiddenThinkingLabel} VS ${first}`);
+    // Once the window passes, the bigger text lands (smooth growth).
+    modW.reconcileStreamingLabel(piW, msg, 5200);
+    check("throttle window releases", row.hiddenThinkingLabel !== first && /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+  }
+
+  // 51. no thinking text renders no region, so no label is written at all
+  {
+    resetTrace();
+    const prose = { role: "assistant", content: [{ type: "text", text: "hello" }] };
+    const empty = { role: "assistant", content: [{ type: "thinking", thinking: "   " }] };
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
+    row.lastMessage = prose;
+    row.hiddenThinkingLabel = "Thinking...";
+    modW.captureWalkerTui({ children: [row] });
+    modW.reconcileStreamingLabel(piW, prose, 9000);
+    check("prose-only row keeps stock label", row.hiddenThinkingLabel === "Thinking...", row.hiddenThinkingLabel);
+    row.lastMessage = empty;
+    modW.reconcileStreamingLabel(piW, empty, 9200);
+    check("blank thinking writes nothing", row.hiddenThinkingLabel === "Thinking...", row.hiddenThinkingLabel);
+  }
+
+  // 52. only the streaming row is touched; history rows keep their labels
+  {
+    resetTrace();
+    const hist = { role: "assistant", content: [{ type: "thinking", thinking: "old thoughts here" }] };
+    const live = { role: "assistant", content: [{ type: "thinking", thinking: "n".repeat(300) }] };
+    const oldRow = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
+    oldRow.lastMessage = hist;
+    oldRow.hiddenThinkingLabel = "OLD-LABEL";
+    const liveRow = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
+    liveRow.lastMessage = live;
+    liveRow.hiddenThinkingLabel = "Thinking...";
+    modW.captureWalkerTui({ children: [oldRow, liveRow] });
+    modW.reconcileStreamingLabel(piW, live, 12000);
+    check("history row untouched", oldRow.hiddenThinkingLabel === "OLD-LABEL", oldRow.hiddenThinkingLabel);
+    check("live row relabeled", /ch/.test(liveRow.hiddenThinkingLabel), liveRow.hiddenThinkingLabel);
+  }
+
+  // 53. the settle pass still writes the final count after streaming
+  {
+    resetTrace();
+    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "z".repeat(300) }] };
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
+    row.lastMessage = msg;
+    row.hiddenThinkingLabel = "";
+    modW.captureWalkerTui({ children: [row] });
+    modW.reconcileStreamingLabel(piW, msg, 15000);
+    const during = row.hiddenThinkingLabel;
+    msg.content[0].thinking = "z".repeat(9000);
+    // Streaming wrote labels without caching, so the settle pass recomputes.
+    modW.reconcileThinkingLabels(piW);
+    check("settle pass corrects the count", row.hiddenThinkingLabel !== during && /ch/.test(row.hiddenThinkingLabel), `${row.hiddenThinkingLabel} VS ${during}`);
+  }
+
+  // 54. message_start/message_update schedule a pass (row shadowed promptly)
+  {
+    resetTrace();
+    const prevTool = toolComp("t-b9", "self", ["", "› prev"]);
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
+    modW.captureWalkerTui({ children: [prevTool, row] });
+    const starts = piW.handlers.get("message_start") ?? [];
+    for (const fn of starts) fn({ message: { role: "assistant", content: [] } }, { hasUI: false });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    check("message_start heals the fresh row", row.contentContainer.children.length === 1, String(row.contentContainer.children.length));
+    // A later delta rebuilds the children (Pi path); the row shadow heals it.
+    row.contentContainer.children = [new Spacer(), new MouseRegion(new Text("T"))];
+    for (const fn of piW.handlers.get("message_update") ?? []) fn({ message: { role: "assistant", content: [{ type: "thinking", thinking: "live text" }] } }, {});
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    check("update pass heals the rebuilt row", row.contentContainer.children.length === 1, String(row.contentContainer.children.length));
     modW.captureWalkerTui({ children: [] });
   }
 

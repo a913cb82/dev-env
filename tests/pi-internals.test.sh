@@ -48,6 +48,7 @@ assert(T.Markdown && T.Markdown.name === 'Markdown', 'pi-tui Markdown class name
 assert(T.MouseRegion && T.MouseRegion.name === 'MouseRegion', 'pi-tui MouseRegion class name (label wrapper identity)');
 const assistSrc = fs.readFileSync('$ROOT/dist/modes/interactive/components/assistant-message.js', 'utf8');
 assert(assistSrc.includes('contentContainer'), 'assistant row exposes contentContainer (spacer surgery anchor)');
+assert(assistSrc.includes('thinkingBlocks.length === 0'), 'no thinking region renders without text (no stock-label window)');
 const mode = fs.readFileSync('$ROOT/dist/modes/interactive/interactive-mode.js', 'utf8');
 assert(mode.includes('chatContainer'), 'chatContainer anchor in interactive-mode');
 assert(mode.includes('setHiddenThinkingLabel'), 'global label fan-out anchor in interactive-mode');

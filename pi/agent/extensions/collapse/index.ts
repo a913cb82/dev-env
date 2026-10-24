@@ -64,13 +64,14 @@ export {
 };
 import {
   captureWalkerTui,
+  reconcileStreamingLabel,
   reconcileThinkingLabels,
   walkerStatus,
   walkerWidget,
   WALKER_KEY,
 } from "./labels.js";
 import { scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus } from "./wrap.js";
-export { captureWalkerTui, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus };
+export { captureWalkerTui, reconcileStreamingLabel, reconcileThinkingLabels, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus };
 import {
   planToolRuns,
 } from "./logic.js";
@@ -99,7 +100,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 34;
+const COLLAPSE_REVISION = 35;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -278,14 +279,29 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", (event) => {
     traceOnMessageStart(event);
     reconcileRows();
+    // Shadow the new row before its first content lands: otherwise its
+    // first paint carries the stock label and the un-healed leading spacer
+    // (the row appears one line low, then jumps up when the pass runs).
+    scheduleWrappingPass(pi);
   });
-  pi.on("message_update", (event) => traceOnMessageUpdate(event));
+  pi.on("message_update", (event) => {
+    traceOnMessageUpdate(event);
+    // Live preview: Pi renders no thinking region until text exists, so
+    // writing our label on the delta means the stock `Thinking...` never
+    // paints. Throttled per row; the settle pass fixes the final count.
+    reconcileStreamingLabel(pi, (event as { message?: unknown })?.message);
+    scheduleWrappingPass(pi);
+  });
   pi.on("message_end", () => {
     reconcileRows();
     detachPass(pi);
     wrappingPass(pi);
   });
-  pi.on("tool_execution_start", () => reconcileRows());
+  pi.on("tool_execution_start", () => {
+    reconcileRows();
+    // A tool row owned by the trace needs its wrap before the first paint.
+    scheduleWrappingPass(pi);
+  });
   pi.on("turn_end", () => {
     reconcileRows();
     detachPass(pi);

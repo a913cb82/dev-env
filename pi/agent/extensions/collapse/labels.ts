@@ -124,6 +124,66 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
   }
 }
 
+/** Streaming relabel window: a live row's preview refreshes at most this
+ *  often. Reads as smooth growth (~10 updates/s) without relabeling on
+ *  every token, which would rebuild the row's children each delta. */
+const STREAM_LABEL_MS = 100;
+
+/** Last live relabel per row, so a brand-new row writes immediately (no
+ *  stock "Thinking..." frame) and later deltas coalesce. */
+const streamLabelAt = new WeakMap<object, number>();
+
+/** Relabel the live row while its thinking streams.
+ *
+ * Pi renders NO thinking region until a block has non-empty text
+ * (`if (thinkingBlocks.length === 0) continue`), so before the first token
+ * there is nothing to label — and once text exists, waiting for a settle
+ * event would flash the stock `Thinking...`. This writes our preview (with
+ * its live char count) on the delta instead, throttled per row. Only the
+ * row whose `lastMessage` IS this message is touched, so history rows keep
+ * their own labels. Returns rows written.
+ *
+ * Labels written here are deliberately NOT cached in `labeledFor`: the
+ * settle pass must recompute from the final text, so the count lands
+ * exactly even when the last delta was throttled away. */
+export function reconcileStreamingLabel(
+  pi: ExtensionAPI,
+  message: unknown,
+  now = Date.now(),
+): number {
+  try {
+    if (!isHiddenThinking(pi)) return 0;
+    if (!message || typeof message !== "object") return 0;
+    if ((message as { role?: unknown }).role !== "assistant") return 0;
+    if (!capturedTui || !Array.isArray((capturedTui as { children?: unknown }).children)) return 0;
+    const text = extractThinkingText(message as { role?: unknown; content?: unknown });
+    // Match Pi: no thinking region renders without non-empty text, so there
+    // is nothing to label and nothing that could flash as stock.
+    if (!text) return 0;
+    const rows: unknown[] = [];
+    collectRows(capturedTui, rows);
+    const width = currentColumns();
+    const pad = liveOutputPad(pi);
+    const label = thinkingLabelForWidth(text, width, pad);
+    let written = 0;
+    for (const row of rows) {
+      if (!isThinkingRow(row)) continue;
+      if (row.lastMessage !== message) continue;
+      const at = streamLabelAt.get(row);
+      if (at !== undefined && now - at < STREAM_LABEL_MS) continue;
+      streamLabelAt.set(row, now);
+      labeledFor.delete(row);
+      if (row.hiddenThinkingLabel !== label) {
+        row.setHiddenThinkingLabel(label);
+        written++;
+      }
+    }
+    return written;
+  } catch {
+    return 0;
+  }
+}
+
 /** The invisible widget whose factory smuggles out the live TUI handle.
  *  Renders nothing; exists only so `captureWalkerTui` runs. */
 export function walkerWidget(): Component {

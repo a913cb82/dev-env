@@ -94,6 +94,16 @@ stops matching, the walk bails silently and rows keep Pi's stock
 `Thinking...`; `/collapse` reports `thinking walk: active (N row(s))` or the
 inactive reason. (The pure preview helpers stay in `logic.ts`, tested.)
 
+**Live preview while thinking.** The label is also written on
+`message_update`, so the preview (and its char count) grows as the model
+thinks instead of flashing stock `Thinking...` until the turn settles. Only
+the row whose `lastMessage` is the streaming message is touched — history
+rows keep their labels — and writes are throttled to ~10/s per row so the
+row is not rebuilt on every token. Pi renders no thinking region at all
+until a block has non-empty text, so there is no pre-text window that would
+need a placeholder. Labels written while streaming are not cached, so the
+settle pass always recomputes the final count.
+
 **Any tool, not just the built-ins.** Tools from other extensions and MCP
 servers render through the same row pipeline as soon as they hand over their
 definition. Pi's public tool listing exposes only metadata (name, description,
@@ -127,7 +137,7 @@ If rows show an unexpected gap, the boundary list names what split them.
 | `rows.ts` | row painting, the stock cell a row opens, tool wrappers, the opt-in slot for foreign tools |
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
-| `labels.ts` | tree-walk per-row thinking labels, walker widget, reconcile |
+| `labels.ts` | tree-walk per-row thinking labels (settle + live preview), walker widget, reconcile |
 | `detach.ts` | opt-in thinking-row detach (env-gated experiment, default off) |
 | `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
 | `logic.ts` | pure helpers (summaries, truncation, label sizing) |
