@@ -2099,6 +2099,114 @@ function textResult(chars) {
     check("edit deep cell matches stock", JSON.stringify(openedX) === JSON.stringify(stockX), `line ${openedX.findIndex((l, i) => l !== stockX[i])}`);
   }
 
+  // 61. generalization matrix: EVERY builtin opens byte-identical to stock
+  // at both depths (default-shell box path and self-shell compose path)
+  {
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    agent.initTheme("light");
+    const themeMod = await jiti.import(
+      path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"),
+    );
+    const realTheme = themeMod.loadThemeFromPath(
+      path.join(PI, "dist", "modes", "interactive", "theme", "light.json"),
+      "truecolor",
+    );
+    const cwd = "/repo";
+    const text = (body) => ({ content: [{ type: "text", text: body }], details: {} });
+    const cases = [
+      ["read", { path: "/repo/a.txt", offset: 1, limit: 3 }, text("one\ntwo\nthree")],
+      ["bash", { command: "ls -la" }, text("total 0\ndrwxr-xr-x  2 me me 4096 .")],
+      ["powershell", { command: "Get-ChildItem" }, text("Name\n----")],
+      ["write", { path: "/repo/b.txt", content: "hello" }, text("Wrote /repo/b.txt")],
+      ["grep", { pattern: "alpha", path: "/repo" }, text("a.txt:1:alpha")],
+      ["find", { pattern: "**/*.ts", path: "/repo" }, text("src/a.ts\nsrc/b.ts")],
+      ["ls", { path: "/repo" }, text("a.txt\nb.txt")],
+    ];
+    const factories = {
+      read: agent.createReadToolDefinition, bash: agent.createBashToolDefinition,
+      powershell: agent.createPowerShellToolDefinition, write: agent.createWriteToolDefinition,
+      grep: agent.createGrepToolDefinition, find: agent.createFindToolDefinition,
+      ls: agent.createLsToolDefinition,
+    };
+    for (const [name, args, result] of cases) {
+      for (const expanded of [false, true]) {
+        resetTrace();
+        const tool = piW.tools.get(name);
+        const { ctx } = callContext({ args, toolCallId: `card-${name}-${expanded}`, expanded });
+        tool.renderCall(args, realTheme, ctx);
+        tool.renderResult(result, { expanded, isPartial: false }, realTheme, { ...ctx, lastComponent: undefined });
+        const rest = tool.renderCall(args, realTheme, ctx);
+        if (!rest.children?.[0]?.onMouse) {
+          check(`${name} matrix row exists (${expanded ? "deep" : "shallow"})`, false, "no clickable row");
+          continue;
+        }
+        rest.children[0].onMouse({ type: "click", button: "left" });
+        const ours = tool.renderCall(args, realTheme, ctx).render(100);
+        const stockComp = new agent.ToolExecutionComponent(
+          name, `stock-${name}-${expanded}`, args, { showImages: true, imageWidthCells: 60 },
+          factories[name](cwd), { requestRender() {} }, cwd,
+        );
+        stockComp.setExpanded(expanded);
+        stockComp.markExecutionStarted();
+        stockComp.setArgsComplete();
+        stockComp.updateResult(result, false);
+        const stock = stockComp.render(100).slice(1);
+        const at = ours.findIndex((line, i) => line !== stock[i]);
+        check(
+          `${name} opens like stock (${expanded ? "deep" : "shallow"})`,
+          JSON.stringify(ours) === JSON.stringify(stock),
+          `line ${at}: ${JSON.stringify(ours[at])} VS ${JSON.stringify(stock[at])}`,
+        );
+      }
+    }
+  }
+
+  // 62. opt-in tools are covered too: a self-shell custom definition whose
+  // result renderer stakes the body into the CALL component (the edit
+  // pattern) still opens correctly, because the opened row always runs both.
+  {
+    resetTrace();
+    const tui = await jiti.import("@earendil-works/pi-tui");
+    const wrap = globalThis.__collapseWrapTool;
+    check("wrap slot available for custom tools", typeof wrap === "function", typeof wrap);
+    const custom = {
+      name: "custom_stateful",
+      parameters: {},
+      async execute() { return "ran"; },
+      renderShell: "self",
+      renderCall(_args, theme, context) {
+        const box = context.state.customBox ?? new tui.Container();
+        context.state.customBox = box;
+        box.clear();
+        box.addChild(new tui.Text(theme.bold("custom header"), 0, 0));
+        return box;
+      },
+      renderResult(result, _options, theme, context) {
+        // Mutates the call component, returns an empty container - exactly
+        // how edit delivers its diff.
+        const box = context.state.customBox;
+        if (box) {
+          box.clear();
+          box.addChild(new tui.Text(theme.bold("custom header"), 0, 0));
+          box.addChild(new tui.Text(`body: ${result.details.body}`, 0, 0));
+        }
+        return new tui.Container();
+      },
+    };
+    const wrapped = wrap(custom);
+    const args = { anything: 1 };
+    const result = { content: [{ type: "text", text: "ok" }], details: { body: "PAYLOAD" } };
+    const { ctx } = callContext({ args, toolCallId: "t-custom", name: "custom_stateful" });
+    wrapped.renderCall(args, theme, ctx);
+    wrapped.renderResult(result, { expanded: false, isPartial: false }, theme, { ...ctx, lastComponent: undefined });
+    const rest = wrapped.renderCall(args, theme, ctx);
+    check("custom row rests as one line", rest.render(100).length === 1, JSON.stringify(rest.render(100)));
+    rest.children[0].onMouse({ type: "click", button: "left" });
+    const opened = wrapped.renderCall(args, theme, ctx).render(100).join("\n");
+    check("custom opened shows header", /custom header/.test(opened), opened.slice(0, 160));
+    check("custom opened shows result-injected body", /PAYLOAD/.test(opened), opened.slice(0, 160));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
