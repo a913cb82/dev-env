@@ -153,6 +153,69 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
   }
 }
 
+
+/** Write a row's label WITHOUT rebuilding its content. Pi builds the hidden
+ *  label as one `Text` inside a `MouseRegion`; the styled string is
+ *  `theme.italic(theme.fg("thinkingText", label))`, so replacing the old
+ *  label inside that string keeps Pi's styling exactly. `updateContent`
+ *  would instead re-create every Markdown block of the message, which is
+ *  what makes a resize feel slow. Any unexpected shape falls back to Pi's
+ *  setter (correct, just slower). */
+function writeLabel(row: any, label: string): boolean {
+  try {
+    const old = row?.hiddenThinkingLabel;
+    const children = row?.contentContainer?.children;
+    if (typeof old === "string" && old !== "" && old !== label && Array.isArray(children)) {
+      let hit = 0;
+      for (const child of children) {
+        const text = (child as any)?.child;
+        if (!text || typeof text.setText !== "function" || typeof text.text !== "string") continue;
+        const at = text.text.indexOf(old);
+        if (at < 0) continue;
+        text.setText(text.text.slice(0, at) + label + text.text.slice(at + old.length));
+        hit++;
+      }
+      if (hit > 0) {
+        row.hiddenThinkingLabel = label;
+        return true;
+      }
+    }
+  } catch {
+    // Fall through: Pi's setter always works.
+  }
+  row.setHiddenThinkingLabel(label);
+  return false;
+}
+
+/** Columns each row's label was last built for. A render is the only place
+ *  that learns about a resize (Pi has no resize event), so the row's own
+ *  render relabels for the new width before the frame is drawn. */
+const rowColumns = new WeakMap<object, number>();
+
+/** Relabel one row in place when the terminal width changed since its last
+ *  render. Runs before the row renders, so the resize frame is already
+ *  correct instead of waiting for the 1s poll. */
+function maybeRelabel(row: any, pi: ExtensionAPI): void {
+  try {
+    const cols = currentColumns();
+    if (cols === undefined) return;
+    const seen = rowColumns.get(row);
+    rowColumns.set(row, cols);
+    if (seen === cols) return;
+    if (!isHiddenThinking(pi)) return;
+    const message = row.lastMessage;
+    if (message?.role !== "assistant") return;
+    const thinking = extractThinkingText(message);
+    if (!thinking) return;
+    const pad = liveOutputPad(pi);
+    const label = thinkingLabelForWidth(thinking, cols, pad);
+    if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
+    labeledFor.set(row, { message, width: cols, pad });
+  } catch {
+    // Fail-open: the poll relabels on its next pass.
+  }
+}
+
 const RAILED = Symbol("collapseRowRail");
 
 /** Shadow one row's render so its thinking line joins the run's left margin.
@@ -167,6 +230,7 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
     if (typeof render !== "function") return false;
     const orig = render.bind(row);
     target.render = (width: number): string[] => {
+      maybeRelabel(row, pi);
       const lines = orig(width);
       return railLines(lines, row, pi);
     };
@@ -225,7 +289,7 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
         continue;
       }
       const label = thinkingLabelForWidth(thinking, width, pad);
-      if (row.hiddenThinkingLabel !== label) row.setHiddenThinkingLabel(label);
+      if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
       labeledFor.set(row, { message, width, pad });
       labeled++;
     }
@@ -306,7 +370,7 @@ export function reconcileStreamingLabel(
       const label = thinkingLabelForWidth(text, width, pad);
       labeledFor.delete(row);
       if (row.hiddenThinkingLabel !== label) {
-        row.setHiddenThinkingLabel(label);
+        writeLabel(row, label);
         streamWrites++;
         written++;
       }

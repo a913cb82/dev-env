@@ -132,11 +132,13 @@ are never edited, so history, replay, compaction, and reload backfill keep
 full reasoning. `/collapse` reports `hidden: N run(s)`.
 
 **Thinking label.** Per row, via a tree walk — never the global setter.
-Pi's `setHiddenThinkingLabel` applies one string to every assistant row, so
-the extension does not call it at all. Instead it walks the public TUI tree
-(from the widget factory handle) and sets each thinking row's *own* label
-from its *own* message, on `message_start` / `message_end` /
-`tool_execution_start` / `turn_end` / `session_start` (history backfill).
+Pi's `setHiddenThinkingLabel` applies one string to every assistant row — and
+calls `updateContent`, which re-creates every Markdown block of the message —
+so the extension does not use it for a normal write. Instead it walks the
+public TUI tree (from the widget factory handle) and rewrites each thinking
+row's *own* label from its *own* message, on `message_start` /
+`message_end` / `tool_execution_start` / `turn_end` / `session_start`
+(history backfill).
 Reconciling is idempotent: a row already labeled for its current message is
 skipped, and a clobbered row heals on the next pass. If the tree shape ever
 stops matching, the walk bails silently and rows keep Pi's stock
@@ -155,9 +157,20 @@ visible width, so right alignment is unchanged. `tests/pi-internals.test.sh`
 pins both the Pi wrapper and chalk's rewrite, so a change on either side fails
 the test instead of silently bringing the italic back.
 
-The label is sized from `process.stdout.columns` and carries its width in the
-per-row cache, so the first poll after a resize rebuilds it. The one-column
-margin above is what keeps the gap between a resize and that poll invisible.
+The label is sized from `process.stdout.columns`. Pi has no resize event and
+the poll runs once a second, so waiting for the poll would leave stale
+truncation on screen for up to a second. Instead the row's own render — the
+first thing that sees the new width — rewrites the label before drawing that
+frame, so a zoom is correct in the frame it lands. The poll stays as the
+safety net for rows that are not rendering.
+
+The write is a string replacement inside Pi's label `Text` (the styled string
+is `theme.italic(theme.fg("thinkingText", label))`, so swapping the label
+keeps Pi's styling exactly), never `setHiddenThinkingLabel`: that calls
+`updateContent`, which rebuilds the message's Markdown and is what made a
+resize lag for seconds on a long transcript. Every hidden-label run in the
+message is patched. If a row's shape is unexpected the setter is used as the
+fallback, so a Pi change costs speed, never correctness.
 
 **Live preview while thinking.** The label is also written on
 `message_update`, so the preview (and its char count) grows as the model

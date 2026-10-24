@@ -73,6 +73,15 @@ assert(railLine[padAt] === ' ', 'pad cell precedes the label ANSI (rail can repl
 assert(trimAnsi(railLine.slice(padAt)).indexOf('RAIL-PROBE') === 1, 'label text starts on column 2');
 assert(railLine.includes(railLabel), 'label survives Pi styling verbatim (rail matches on those bytes)');
 assert(T.visibleWidth(railLine) === 60, 'label row fills the render width');
+// In-place relabel: the hidden label is a Text we can re-text, reached
+// through the MouseRegion that Pi wraps it in, inside contentContainer.
+const cc = railRow.contentContainer;
+assert(cc && Array.isArray(cc.children), 'contentContainer.children is a live array');
+const holder = cc.children.find((c) => c && c.child && typeof c.child.setText === 'function');
+assert(holder !== undefined, 'hidden label is a Text inside a MouseRegion (relabel anchor)');
+assert(typeof holder.child.text === 'string' && holder.child.text.includes('RAIL-PROBE'), 'hidden-label Text holds the styled label');
+assert(holder.child.paddingX === 1, 'hidden-label Text carries the output pad');
+assert(typeof holder.child.setText === 'function', 'pi-tui Text.setText exists (relabel without updateContent)');
 // chalk 6 rewrites every copy of its own close code in its input into
 // close+open, so a bare SGR 23 cannot end italic inside the label. The
 // extension uses 23;23, which chalk leaves alone.

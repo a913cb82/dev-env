@@ -2620,6 +2620,113 @@ function textResult(chars) {
   else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
 }
 
+
+// ---------------------------------------------------------------------------
+// 70. A resize relabels in the frame it lands, without rebuilding the message.
+// ---------------------------------------------------------------------------
+{
+  const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+  const tuiLib = await jiti.import("@earendil-works/pi-tui");
+  const logicLib = await jiti.import(path.join(HERE, "logic.ts"));
+  const STYLE = "\x1b[3m\x1b[38;5;240m";
+  const RESET = "\x1b[0m";
+  const text = "weigh the options ".repeat(200);
+
+  // Pi's row: contentContainer -> MouseRegion -> Text(label). The double
+  // rebuilds its label Texts only through Pi's setter, which is what a
+  // resize must not have to do.
+  const rowOf = (opts = {}) => {
+    const spy = { updates: 0, sets: 0, writes: 0 };
+    const texts = [];
+    const children = [{ child: { render: () => ["prose"] } }]; // a prose child
+    for (let i = 0; i < (opts.runs ?? 1); i++) {
+      const node = {
+        text: STYLE + "Thinking..." + RESET,
+        setText(next) { this.text = next; spy.writes++; },
+      };
+      texts.push(node);
+      children.push({ child: node });
+    }
+    const row = {
+      lastMessage: { role: "assistant", content: [{ type: "thinking", thinking: text }] },
+      hiddenThinkingLabel: "Thinking...",
+      outputPad: 1,
+      contentContainer: opts.noContainer ? undefined : { children },
+      isStreaming: false,
+      updateContent() { spy.updates++; },
+      setHiddenThinkingLabel(label) { row.hiddenThinkingLabel = label; spy.sets++; row.updateContent(); },
+      render(width) {
+        const styled = STYLE + row.hiddenThinkingLabel + RESET;
+        const padTo = (t) => t + " ".repeat(Math.max(0, width - tuiLib.visibleWidth(t)));
+        return [" prose line", padTo(" " + styled), ...texts.slice(1).map((n) => padTo(" " + n.text))];
+      },
+    };
+    return { row, spy, texts };
+  };
+
+  const before = process.stdout.columns;
+  const setCols = (n) => Object.defineProperty(process.stdout, "columns", { value: n, configurable: true, writable: true });
+  const pi = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+  const fresh = async (rows) => {
+    const module = await jiti.import(path.join(HERE, "labels.ts"));
+    module.captureWalkerTui({ children: rows });
+    return module;
+  };
+
+  {
+    const { row, spy, texts: ts } = rowOf();
+    const module = await fresh([row]);
+    setCols(100);
+    module.reconcileThinkingLabels(pi);
+    check("first label is written in place (no message rebuild)", spy.updates === 0 && spy.sets === 0, "updates=" + spy.updates + " sets=" + spy.sets);
+    check("label wrapper survives the in-place write", ts[0].text.startsWith(STYLE) && ts[0].text.endsWith(RESET), JSON.stringify(ts[0].text.slice(0, 12)));
+
+    const wide = ts[0].text;
+    setCols(80);
+    const line = row.render(80)[1];
+    const visible = plainText(line);
+    check("the resize frame already carries the narrow label", visible.trimEnd().length === 78 && tuiLib.visibleWidth(line) === 80, String(visible.trimEnd().length));
+    check("the narrow label was written in place, no rebuild", spy.updates === 0 && ts[0].text !== wide, "updates=" + spy.updates);
+    check("narrow label matches the width math", ts[0].text.includes(logicLib.thinkingLabelForWidth(text, 80, 1)), JSON.stringify(plainText(ts[0].text).slice(-12)));
+    check("rail still lands on the resized row", visible.startsWith("▏"), JSON.stringify(visible.slice(0, 6)));
+
+    const writes = spy.writes;
+    row.render(80);
+    check("same width does not rewrite the label", spy.writes === writes, spy.writes + " vs " + writes);
+  }
+
+  {
+    // Every thinking run in a message shares the label: patch them all.
+    const { row, spy, texts: ts } = rowOf({ runs: 2 });
+    const module = await fresh([row]);
+    setCols(100);
+    module.reconcileThinkingLabels(pi);
+    check("every hidden-label run is patched", ts.every((t) => t.text.includes(row.hiddenThinkingLabel)) && spy.updates === 0, JSON.stringify(ts.map((t) => plainText(t.text).length)));
+  }
+
+  {
+    // Unexpected shape: fall back to Pi's setter rather than losing the label.
+    const { row, spy } = rowOf({ noContainer: true });
+    const module = await fresh([row]);
+    setCols(100);
+    module.reconcileThinkingLabels(pi);
+    check("unknown row shape falls back to setHiddenThinkingLabel", spy.sets === 1 && row.hiddenThinkingLabel.length > 0, "sets=" + spy.sets);
+  }
+
+  {
+    // Streaming labels take the same in-place path.
+    const { row, spy } = rowOf();
+    const module = await fresh([row]);
+    setCols(100);
+    row.isStreaming = true;
+    module.reconcileStreamingLabel(pi, undefined, Date.now() + 1000);
+    check("streaming label is written in place", row.hiddenThinkingLabel.length > 0 && spy.updates === 0, "updates=" + spy.updates);
+  }
+
+  if (before === undefined) delete process.stdout.columns;
+  else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
+}
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
