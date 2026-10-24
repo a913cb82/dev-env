@@ -254,6 +254,20 @@ the row, so a collapsed row is never emptier than stock. Definitions with
 their own renderers keep them, wrapped in the shared chrome. `/collapse` lists
 any tool that never opted in.
 
+**Live rows.** Until a call has a result, a built-in row also streams the
+arguments its summary hides — the `write` body, both sides of an `edit`, the
+`bash` description, `grep`/`find` flags — as the same dim `key=value` pairs,
+in declared order, filling the row. When they do not all fit and the row
+hides text, the right column reports the argument text written so far
+(`1.9k ch`) instead of waiting for a result count: on a long body the visible
+head stops changing, so the count is the only thing that still moves. Text
+that fits needs no badge, so short calls show no count. When the result
+arrives the pairs drop away and the row settles back to the canonical
+one-liner with the result count. Generic rows already carry every argument,
+so they are unchanged. The cost is bounded by the row, not the argument:
+values are sliced to their head, only `length` is read for the count, and a
+5MB body renders in 0.007ms.
+
 ## Diagnostics
 
 `/collapse` reports the loaded revision, the mode, the newest run's row count,

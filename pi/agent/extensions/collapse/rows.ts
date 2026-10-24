@@ -2,7 +2,7 @@
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { ROW_RAIL, bashSegments, fallbackArgsText, formatCharCount, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment } from "./logic.js";
+import { ROW_RAIL, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment, type GenericPair } from "./logic.js";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
@@ -177,16 +177,19 @@ function rowBudget(pi: ExtensionAPI, count = ""): number {
   return Math.max(16, labelBudget(currentColumns(), liveOutputPad(pi)) - visibleWidth(count) - COUNT_GAP);
 }
 
-/** Row text for a tool that ships no collapse renderer (extension tools,
- *  MCP tools): the argument that names the subject (plain), then every other
- *  argument as a dim `key=value` pair, filled to the row budget and cut at
- *  the end of the last value. */
-function genericLeft(theme: Theme, name: string, args: any, isError: boolean, budget: number): string {
-  const row = genericToolRow(args);
-  const head = toolHead(theme, row.primary ? `${name} ` : name, isError);
-  let text = `${head}${row.primary}`;
+/** Append `pairs` after `head`, filling to `budget`: whole pairs while they
+ *  fit, then the head of the next value (never mid-key); a three-character
+ *  stub reads worse than an ellipsis, so stop short instead. `cut` reports
+ *  that some of the pairs are not on the row. */
+function fillPairs(
+  theme: Theme,
+  head: string,
+  pairs: readonly GenericPair[],
+  budget: number,
+): { text: string; cut: boolean } {
+  let text = head;
   let used = visibleWidth(text);
-  for (const pair of row.pairs) {
+  for (const pair of pairs) {
     const plain = `${pair.key}=${pair.value}`;
     const width = visibleWidth(plain);
     if (used + 1 + width <= budget) {
@@ -194,27 +197,44 @@ function genericLeft(theme: Theme, name: string, args: any, isError: boolean, bu
       used += 1 + width;
       continue;
     }
-    // Fill the remainder with the head of the next value; a three-character
-    // stub reads worse than an ellipsis, so stop short instead.
     const room = budget - used - 1;
     if (room >= 12) text += ` ${theme.fg("dim", truncateEndWidth(plain, room))}`;
     else if (used + 1 <= budget) text += theme.fg("dim", "…");
-    return text;
+    return { text, cut: true };
   }
-  return text;
+  return { text, cut: false };
+}
+
+/** Row text for a tool that ships no collapse renderer (extension tools,
+ *  MCP tools): the argument that names the subject (plain), then every other
+ *  argument as a dim `key=value` pair, filled to the row budget and cut at
+ *  the end of the last value. */
+function genericLeft(theme: Theme, name: string, args: any, isError: boolean, budget: number): string {
+  const row = genericToolRow(args);
+  const head = toolHead(theme, row.primary ? `${name} ` : name, isError);
+  return fillPairs(theme, `${head}${row.primary}`, row.pairs, budget).text;
 }
 
 /** Row text for any tool: the hand-tuned renderer when we have one, the
- *  generic row otherwise. */
+ *  generic row otherwise. While a call is live, a hand-tuned row also streams
+ *  the arguments its summary hides (`cut` says some did not fit). */
 function makeLeftFor(
   name: string,
   theme: Theme,
   args: any,
   isError: boolean,
   budget: number,
-): string {
+  live = false,
+): { text: string; cut: boolean } {
   const known = makeLeftByName[name];
-  return known ? known(theme, args, isError) : genericLeft(theme, name, args, isError, budget);
+  // Generic rows already carry every argument: nothing is hidden, so nothing
+  // is cut.
+  if (!known) return { text: genericLeft(theme, name, args, isError, budget), cut: false };
+  const base = known(theme, args, isError);
+  // A live row streams what its summary hides; a settled row keeps the calm
+  // one-liner (the result count then says all there is to say).
+  if (!live) return { text: base, cut: false };
+  return fillPairs(theme, base, extraArgPairs(args, SHOWN_ARGS[name] ?? []), budget);
 }
 
 /** Summary builders by tool name, for trace rows owned by another tool. */
@@ -227,6 +247,19 @@ export const makeLeftByName: Record<string, (theme: Theme, args: any, isError: b
   grep: (t, a, e) => searchLeft(t, "grep", a, e),
   find: (t, a, e) => searchLeft(t, "find", a, e),
   ls: lsLeft,
+};
+
+/** The arguments each builtin summary already shows; everything else is a
+ *  dim pair while the call is live. */
+const SHOWN_ARGS: Record<string, readonly string[]> = {
+  read: ["path", "file_path", "offset", "limit"],
+  bash: ["command", "timeout"],
+  powershell: ["command", "timeout"],
+  edit: ["path"],
+  write: ["path"],
+  grep: ["pattern", "path"],
+  find: ["pattern", "path"],
+  ls: ["path"],
 };
 
 /** Stock content for one opened trace row, boxed like Pi's own section. The
@@ -297,6 +330,11 @@ function buildOpenedRow(
  *  for (collapsed cell while Pi is collapsed, expanded cell while Pi is
  *  expanded). The region handles the click, so Pi's own toggle never fires
  *  for row clicks. */
+/** Right column while a call is live: the argument text written so far. */
+function liveCountSuffix(theme: Theme, chars: number): string {
+  return chars > 0 ? theme.fg("dim", formatCharCount(chars)) : "";
+}
+
 function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI): Component {
   const trace = new Container();
   const piExpanded = !!ownerCtx?.expanded;
@@ -325,12 +363,21 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
       : (() => {
           const count = countSuffix(theme, entry);
-          return new CollapsedLine(
-            makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, count)),
-            count,
-            liveOutputPad(pi),
-            theme,
-          );
+          // No result yet: the row streams the arguments its summary hides.
+          // When they do not all fit, the right column says how much text the
+          // model has written instead — the only sign of life left.
+          const live = entry.count == null && !entry.isError;
+          const textChars = live ? argsTextChars(entry.args) : 0;
+          let right = count;
+          let left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), live);
+          if (live && left.cut && textChars > visibleWidth(left.text)) {
+            const liveRight = liveCountSuffix(theme, textChars);
+            if (liveRight) {
+              right = liveRight;
+              left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), true);
+            }
+          }
+          return new CollapsedLine(left.text, right, liveOutputPad(pi), theme);
         })();
     trace.addChild(
       new MouseRegion(row, (event: any) => {
@@ -507,7 +554,8 @@ export function collapseDefinition(original: any, pi: ExtensionAPI): any {
   };
   const wrapped = collapseTool(
     withRenderers,
-    (theme: Theme, args: any, isError: boolean, budget: number) => makeLeftFor(name, theme, args, isError, budget),
+    (theme: Theme, args: any, isError: boolean, budget: number) =>
+      makeLeftFor(name, theme, args, isError, budget).text,
     pi,
   );
   wrapped.__collapseWrapped = true;

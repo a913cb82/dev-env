@@ -484,13 +484,14 @@ export function rowValue(value: unknown): string | undefined {
  *  list stops once it exceeds any row. */
 function rowPairs(
   record: Record<string, unknown>,
-  skip: string,
+  skip: string | ReadonlySet<string>,
   cap = ROW_PAIRS_CHARS,
 ): GenericPair[] {
+  const skipAll = typeof skip === "string" ? undefined : skip;
   const pairs: GenericPair[] = [];
   let used = 0;
   for (const [key, value] of Object.entries(record)) {
-    if (key === skip) continue;
+    if (skipAll ? skipAll.has(key) : key === skip) continue;
     const text = rowValue(value);
     if (text === undefined) continue;
     if (used + key.length + text.length > cap) break;
@@ -527,6 +528,29 @@ export function genericToolRow(args: unknown): GenericRow {
   }
   // Nothing on the telling list: the arguments themselves are the row.
   return { key: "", primary: "", pairs: rowPairs(record, "") };
+}
+
+/** The arguments a live row's summary does not show, as pairs: while a call
+ *  is still being written there is no result to count, and a builtin summary
+ *  (a path, a command) stops changing long before the call is complete. */
+export function extraArgPairs(args: unknown, shown: readonly string[]): GenericPair[] {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return [];
+  return rowPairs(args as Record<string, unknown>, new Set(shown));
+}
+
+/** How much text the model has written for this call: string values (and the
+ *  strings of array arguments) only. Lengths are O(1) reads, so a megabyte
+ *  body costs the same as a path — this runs on every frame. */
+export function argsTextChars(args: unknown): number {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return 0;
+  let total = 0;
+  for (const value of Object.values(args as Record<string, unknown>)) {
+    if (typeof value === "string") total += value.length;
+    else if (Array.isArray(value)) {
+      for (const item of value) if (typeof item === "string") total += item.length;
+    }
+  }
+  return total;
 }
 
 /** Group history tool calls into shared runs, mirroring the live layout:

@@ -401,6 +401,27 @@ function check(name, cond, extra) {
     check("generic stops collecting early", full.pairs.length === 1, JSON.stringify(full.pairs.map((p) => p.key)));
   }
 
+  // Live rows: the args a builtin's summary hides (write body, edit texts,
+  // grep flags) and how much text the call has produced so far.
+  {
+    const x = logic.extraArgPairs;
+    const pairs = (args, shown) => x(args, shown).map((p) => `${p.key}=${p.value}`).join(" ");
+    check("extras skip the shown args", pairs({ path: "/a", oldText: "x", newText: "y" }, ["path"]) === 'oldText="x" newText="y"', pairs({ path: "/a", oldText: "x", newText: "y" }, ["path"]));
+    check("extras keep declared order", pairs({ path: "p", zebra: 1, alpha: 2 }, ["path"]) === "zebra=1 alpha=2", pairs({ path: "p", zebra: 1, alpha: 2 }, ["path"]));
+    check("extras skip undefined", pairs({ path: "p", gone: undefined }, ["path"]) === "", pairs({ path: "p", gone: undefined }, ["path"]));
+    check("extras show null", pairs({ path: "p", cwd: null }, ["path"]) === "cwd=null", pairs({ path: "p", cwd: null }, ["path"]));
+    check("extras show flags", pairs({ pattern: "p", ignoreCase: true }, ["pattern"]) === "ignoreCase=true", pairs({ pattern: "p", ignoreCase: true }, ["pattern"]));
+    check("extras skip every shown arg", pairs({ path: "p", offset: 1, limit: 2 }, ["path", "offset", "limit"]) === "", pairs({ path: "p", offset: 1, limit: 2 }, ["path", "offset", "limit"]));
+    check("extras bound a huge value", x({ path: "p", content: "x".repeat(5000) }, ["path"])[0].value.length <= 258, String(x({ path: "p", content: "x".repeat(5000) }, ["path"])[0].value.length));
+    check("extras on junk", JSON.stringify(x(null, [])) === "[]" && JSON.stringify(x("x", [])) === "[]" && JSON.stringify(x([1], [])) === "[]", "junk");
+
+    const t = logic.argsTextChars;
+    check("args text counts strings", t({ path: "/a/b.ts", content: "0123456789", timeout: 30 }) === 17, String(t({ path: "/a/b.ts", content: "0123456789", timeout: 30 })));
+    check("args text counts array strings", t({ targets: ["rev", "tst"] }) === 6, String(t({ targets: ["rev", "tst"] })));
+    check("args text ignores non-strings", t({ n: 5, flag: true, nothing: null }) === 0, String(t({ n: 5, flag: true, nothing: null })));
+    check("args text on junk", t(null) === 0 && t("x") === 0 && t([]) === 0 && t({}) === 0, "junk");
+  }
+
   // planToolRuns: group contiguous history tools so the rebuild layout
   // matches live runs (no teleporting: never span visible content).
   {

@@ -3016,6 +3016,98 @@ function textResult(chars) {
   check("custom message without display splits", f.runId !== e.runId, `${e.runId}/${f.runId}`);
 }
 
+// ---------------------------------------------------------------------------
+// 75. A live call has no result to count, and a builtin's summary stops
+//     changing early (write: after the path; edit: after the path). While the
+//     call is live the row therefore streams the arguments the summary hides,
+//     and the right column reports the text written so far. Both settle away
+//     the moment the result lands.
+// ---------------------------------------------------------------------------
+{
+  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const logic = await jiti.import(path.join(HERE, "logic.ts"));
+  const agent = await jiti.import("@earendil-works/pi-coding-agent");
+  const themeMod = await jiti.import(path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"));
+  agent.initTheme("light");
+  themeMod.loadThemeFromPath(path.join(PI, "dist", "modes", "interactive", "theme", "light.json"), "truecolor");
+  const handlers = new Map();
+  const piS = {
+    registerTool: () => {}, registerCommand: () => {},
+    on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+    getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+  };
+  (mod.default ?? mod)(piS);
+  await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+  const mk = (name) => mod.collapseDefinition({
+    name, description: name, parameters: {},
+    async execute() { return { content: [{ type: "text", text: "ok" }] }; },
+  }, piS);
+  const opts = { showImages: true, imageWidthCells: 60 };
+  const ui = { requestRender() {} };
+  const chars = (args) => logic.formatCharCount(logic.argsTextChars(args));
+
+  // One run, one owner: rows render in transcript order (block 72's rule).
+  const body = "export function f() {\n  return 1;\n}\n" + "x".repeat(1200);
+  const wArgs = { path: "/repo/src/mod.ts", content: body };
+  const eArgs = { path: "/repo/src/mod.ts", oldText: "const a = 1;", newText: "const a = 2;" };
+  const bArgs = { command: "npm run build", timeout: 30, description: "Build the extension" };
+  const gArgs = { pattern: "rail", path: "src", glob: "*.ts", ignoreCase: true };
+  const rArgs = { path: "/repo/a.ts", offset: 1, limit: 20 };
+  const xArgs = { path: "/repo/broken.ts", content: "hello" };
+  const sArgs = { path: "/repo/short.ts", content: "hi" };
+  const cases = [["write", wArgs], ["edit", eArgs], ["bash", bArgs], ["grep", gArgs], ["read", rArgs], ["write", {}], ["write", xArgs], ["write", sArgs]];
+  const comps = cases.map(([name, args], i) => new agent.ToolExecutionComponent(name, `live-${i}`, args, opts, mk(name), ui, "/repo"));
+  const owner = comps[0];
+  const rows = () => owner.render(120).map(plainText).filter(isRow);
+
+  check("every live tool has a row", rows().length === cases.length, `${rows().length}`);
+  check("live write row streams the body", rows()[0].includes('content="export function f()'), rows()[0]);
+  check("live write row counts the args text", rows()[0].trimEnd().endsWith(chars(wArgs)), rows()[0]);
+  check("live edit row streams oldText", rows()[1].includes('oldText="const a = 1;"'), rows()[1]);
+  check("live edit row streams newText", rows()[1].includes('newText="const a = 2;"'), rows()[1]);
+  check("live bash row streams the description", rows()[2].includes('description="Build the extension"'), rows()[2]);
+  check("live bash row keeps its command grammar", rows()[2].includes("$ npm run build (timeout 30s)"), rows()[2]);
+  check("live bash row hides little, so no count", !/\d\.\dk ch/.test(rows()[2]), rows()[2]);
+  check("live grep row streams its flags", rows()[3].includes('glob="*.ts" ignoreCase=true'), rows()[3]);
+  check("live grep row fits its flags, so no count", !/\d\.\dk ch/.test(rows()[3]), rows()[3]);
+  check("live read row has no hidden args", !rows()[4].includes("offset="), rows()[4]);
+  // The count is a fallback for hidden text, not a badge: it appears only when
+  // the hidden args do not fit.
+  check("live read row has no count", rows()[4].trimEnd() === "▏read /repo/a.ts:1-20", rows()[4]);
+  check("live short write row has no count", rows()[7].trimEnd().endsWith('content="hi"'), rows()[7]);
+  check("bare call row has no count", rows()[5].trimEnd() === "▏write", JSON.stringify(rows()[5]));
+  check("live rows fit the terminal", rows().every((row) => row.length <= 118), rows().map((r) => r.length).join(","));
+
+  // Settled: the count is the result's, and the hidden args are gone.
+  const wResult = { content: [{ type: "text", text: "Wrote 1240 bytes" }], isError: false };
+  comps[0].updateResult(wResult, false);
+  const settled = rows()[0];
+  check("settled write row drops the body", !settled.includes("content="), settled);
+  check("settled write row counts the result", settled.trimEnd().endsWith(logic.formatCharCount(16)), settled);
+  check("settled write row is one padded line", settled.startsWith("▏write /repo/src/mod.ts") && settled.length === 118, JSON.stringify(settled));
+  check("settling one row leaves the others live", rows()[1].includes('oldText="const a = 1;"'), rows()[1]);
+
+  comps[1].updateResult({ content: [{ type: "text", text: "Edited" }], isError: false }, false);
+  check("settled edit row drops the texts", !rows()[1].includes("oldText="), rows()[1]);
+  comps[2].updateResult({ content: [{ type: "text", text: "built" }], isError: false }, false);
+  check("settled bash row drops the description", !rows()[2].includes("description="), rows()[2]);
+
+  // Failure settles the row too: no body, and the head takes the error style.
+  comps[6].updateResult({ content: [{ type: "text", text: "disk full" }], isError: true }, false);
+  check("failed write row drops the body", !rows()[6].includes("content="), rows()[6]);
+  check("failed write row still names the file", rows()[6].includes("write /repo/broken.ts"), rows()[6]);
+
+  // A megabyte argument must not cost the frame: values are sliced, the count
+  // is a string length, and only the head is quoted.
+  const big = [["write", { path: "/repo/big.ts", content: "x".repeat(5_000_000) }]];
+  const bigComp = new agent.ToolExecutionComponent("write", "live-big", big[0][1], opts, mk("write"), ui, "/repo");
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i < 20; i++) bigComp.render(120);
+  const per = Number(process.hrtime.bigint() - t0) / 1e6 / 20;
+  check("5MB live write row stays cheap", per < 0.5, `${per.toFixed(3)}ms`);
+
+}
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
