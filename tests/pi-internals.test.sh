@@ -42,6 +42,12 @@ assert(toolSrc.includes('this.toolCallId'), 'tool component exposes toolCallId (
 assert(toolSrc.includes('getRenderShell'), 'tool component exposes getRenderShell (self-shell gate)');
 assert(toolSrc.includes('lines.push(\"\")'), 'self-shell render prepends one blank line (the stripped line)');
 assert(toolSrc.includes('y - 1'), 'handleMouse delegates y-1 (click re-base anchor)');
+assert(T.Spacer && T.Spacer.name === 'Spacer', 'pi-tui Spacer class name (glue scan identity)');
+assert(T.Text && T.Text.name === 'Text', 'pi-tui Text class name (hidden-label identity)');
+assert(T.Markdown && T.Markdown.name === 'Markdown', 'pi-tui Markdown class name (visible-thinking identity)');
+assert(T.MouseRegion && T.MouseRegion.name === 'MouseRegion', 'pi-tui MouseRegion class name (label wrapper identity)');
+const assistSrc = fs.readFileSync('$ROOT/dist/modes/interactive/components/assistant-message.js', 'utf8');
+assert(assistSrc.includes('contentContainer'), 'assistant row exposes contentContainer (spacer surgery anchor)');
 const mode = fs.readFileSync('$ROOT/dist/modes/interactive/interactive-mode.js', 'utf8');
 assert(mode.includes('chatContainer'), 'chatContainer anchor in interactive-mode');
 assert(mode.includes('setHiddenThinkingLabel'), 'global label fan-out anchor in interactive-mode');

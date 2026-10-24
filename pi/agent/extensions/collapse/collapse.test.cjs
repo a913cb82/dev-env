@@ -1537,7 +1537,7 @@ function textResult(chars) {
     }
   }
 
-  // 34-38 run on a FRESH activation: the shared reset slot now belongs to
+  // 34-44 run on a FRESH activation: the shared reset slot now belongs to
   // a later import (block 33 reassigns it), so the outer registry keeps
   // stale runs that fresh ids would join (block 17 hit the same quirk).
   // A private instance keeps ownership assertions deterministic.
@@ -1545,6 +1545,29 @@ function textResult(chars) {
   const piW = createMockPi();
   (modW.default ?? modW)(piW);
   resetTrace = modW.resetTraceState ?? resetTrace;
+  // Doubles mirror Pi's real class names (constructor.name checks must match).
+  class Spacer { render() { return [""]; } }
+  class Text { constructor(text) { this.text = text; } render() { return [this.text]; } }
+  class MouseRegion { constructor(child) { this.child = child; } }
+  class Markdown { constructor(text) { this.text = text; } }
+  // Mirror Pi's real nesting: spacers/labels live in contentContainer.
+  const thinkingRow = (children) => {
+    const contentContainer = { children, removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); } };
+    return {
+      lastMessage: { role: "assistant", content: [] },
+      hiddenThinkingLabel: "T",
+      updateContent() {},
+      setHiddenThinkingLabel() {},
+      children: [contentContainer],
+      contentContainer,
+    };
+  };
+  const toolComp = (id, shell, lines) => ({
+    toolCallId: id,
+    getRenderShell: () => shell,
+    render: (_w) => [...lines],
+    handleMouse: (e) => (e.y <= 0 || e.y > lines.length - 1 ? undefined : `hit${e.y - 1}`),
+  });
 
   // 34. render-wrap strips the tool component's leading blank (run owner only)
   {
@@ -1553,13 +1576,8 @@ function textResult(chars) {
     const read = piW.tools.get("read");
     const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-wrap" });
     read.renderCall(ctx.args, theme, ctx); // registers trace entry; t-wrap owns its run
-    const fake = {
-      toolCallId: "t-wrap",
-      getRenderShell: () => "self",
-      render: (_w) => ["", "› read /a"],
-      handleMouse: (e) => (e.y <= 0 || e.y > 1 ? undefined : `hit${e.y - 1}`),
-    };
-    modW.captureWalkerTui({ children: [fake] });
+    const fake = toolComp("t-wrap", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]), fake] });
     const res = modW.wrappingPass(piW);
     check("owner wrapped", res && res.wrapped === 1, JSON.stringify(res));
     const out = fake.render(100);
@@ -1572,13 +1590,8 @@ function textResult(chars) {
     const read = piW.tools.get("read");
     const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-click" });
     read.renderCall(ctx.args, theme, ctx);
-    const fake = {
-      toolCallId: "t-click",
-      getRenderShell: () => "self",
-      render: (_w) => ["", "r1", "r2"],
-      handleMouse: (e) => (e.y <= 0 || e.y > 2 ? undefined : `hit${e.y - 1}`),
-    };
-    modW.captureWalkerTui({ children: [fake] });
+    const fake = toolComp("t-click", "self", ["", "r1", "r2"]);
+    modW.captureWalkerTui({ children: [thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]), fake] });
     modW.wrappingPass(piW);
     check("displayed y=0 reaches content row 0", fake.handleMouse({ y: 0 }) === "hit0", String(fake.handleMouse({ y: 0 })));
     check("displayed y=1 reaches content row 1", fake.handleMouse({ y: 1 }) === "hit1", String(fake.handleMouse({ y: 1 })));
@@ -1594,17 +1607,11 @@ function textResult(chars) {
     const c1 = callContext({ args: { path: "/a" }, toolCallId: "t-own" });
     read.renderCall(c1.ctx.args, theme, c1.ctx);
     bash.renderCall({ command: "ls" }, theme, { ...c1.ctx, args: { command: "ls" }, state: {}, toolCallId: "t-next" });
-    const mkfake = (id, shell) => ({
-      toolCallId: id,
-      getRenderShell: () => shell,
-      render: (_w) => ["", `› ${id}`],
-      handleMouse: (e) => e.y,
-    });
-    const owner = mkfake("t-own", "self");
-    const nonOwner = mkfake("t-next", "self");
-    const foreign = mkfake("t-foreign", "self");
-    const stock = mkfake("t-stock", "default");
-    modW.captureWalkerTui({ children: [owner, nonOwner, foreign, stock] });
+    const owner = toolComp("t-own", "self", ["", "› t-own"]);
+    const nonOwner = toolComp("t-next", "self", ["", "› t-next"]);
+    const foreign = toolComp("t-foreign", "self", ["", "› t-foreign"]);
+    const stock = toolComp("t-stock", "default", ["", "› t-stock"]);
+    modW.captureWalkerTui({ children: [thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]), owner, nonOwner, foreign, stock] });
     const res = modW.wrappingPass(piW);
     check("only owner wrapped", res.wrapped === 1, JSON.stringify(res));
     check("owner stripped", owner.render(100)[0] === "› t-own", JSON.stringify(owner.render(100)));
@@ -1625,13 +1632,8 @@ function textResult(chars) {
     const read = piW.tools.get("read");
     const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-re" });
     read.renderCall(ctx.args, theme, ctx);
-    const fake = {
-      toolCallId: "t-re",
-      getRenderShell: () => "self",
-      render: (_w) => ["", "r1", "r2"],
-      handleMouse: (e) => (e.y <= 0 || e.y > 2 ? undefined : `hit${e.y - 1}`),
-    };
-    modW.captureWalkerTui({ children: [fake] });
+    const fake = toolComp("t-re", "self", ["", "r1", "r2"]);
+    modW.captureWalkerTui({ children: [thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]), fake] });
     const res1 = modW.wrappingPass(piW);
     const res2 = modW.wrappingPass(piW);
     check("first pass wraps", res1.wrapped === 1, JSON.stringify(res1));
@@ -1653,16 +1655,103 @@ function textResult(chars) {
     const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-new" });
     read.renderCall(ctx.args, theme, ctx);
     // Rebuild replaces the instance: a fresh object with the same id wraps.
-    const fresh = {
-      toolCallId: "t-new",
-      getRenderShell: () => "self",
-      render: (_w) => ["", "› read /a"],
-      handleMouse: (e) => e.y,
-    };
-    modW.captureWalkerTui({ children: [fresh] });
+    const fresh = toolComp("t-new", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]), fresh] });
     const res2 = modW.wrappingPass(piW);
     check("fresh instance wraps", res2.wrapped === 1 && fresh.render(100)[0] === "› read /a", JSON.stringify(res2));
     modW.captureWalkerTui({ children: [] });
+  }
+
+  // 39. prose directly above the owner keeps the separator (and clicks stay stock)
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-prose" });
+    read.renderCall(ctx.args, theme, ctx);
+    const prosePrev = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking...")), new Spacer(), new Markdown("some prose")]);
+    const fake = toolComp("t-prose", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [prosePrev, fake] });
+    const res = modW.wrappingPass(piW);
+    check("prose-prev owner still wrapped", res.wrapped === 1, JSON.stringify(res));
+    check("prose-prev keeps blank", JSON.stringify(fake.render(100)) === JSON.stringify(["", "› read /a"]), JSON.stringify(fake.render(100)));
+    check("blank click hits nothing", fake.handleMouse({ y: 0 }) === undefined, String(fake.handleMouse({ y: 0 })));
+    check("content click still hits", fake.handleMouse({ y: 1 }) === "hit0", String(fake.handleMouse({ y: 1 })));
+  }
+
+  // 40. a tool row above the owner still glues (r31 tool-to-tool contiguity)
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-chain" });
+    read.renderCall(ctx.args, theme, ctx);
+    const prevTool = toolComp("t-prev", "self", ["", "› prev"]);
+    const fake = toolComp("t-chain", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [prevTool, fake] });
+    const res = modW.wrappingPass(piW);
+    check("tool-prev owner wrapped", res.wrapped === 1, JSON.stringify(res));
+    check("tool-prev glues", fake.render(100)[0] === "› read /a", JSON.stringify(fake.render(100)));
+  }
+
+  // 41. a first-child owner keeps its blank (nothing rendered above it)
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-first" });
+    read.renderCall(ctx.args, theme, ctx);
+    const fake = toolComp("t-first", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [fake] });
+    modW.wrappingPass(piW);
+    check("first-child keeps blank", JSON.stringify(fake.render(100)) === JSON.stringify(["", "› read /a"]), JSON.stringify(fake.render(100)));
+  }
+
+  // 42. a thinking-only row directly after tools loses its leading spacer
+  {
+    resetTrace();
+    const prevTool = toolComp("t-before", "self", ["", "› prev"]);
+    const label = new MouseRegion(new Text("Thinking..."));
+    const row = thinkingRow([new Spacer(), label]);
+    modW.captureWalkerTui({ children: [prevTool, row] });
+    const res = modW.wrappingPass(piW);
+    check("leading spacer dropped", res.spacers === 1, JSON.stringify(res));
+    check("spacer gone, label kept", row.contentContainer.children.length === 1 && row.contentContainer.children[0] === label, JSON.stringify(row.contentContainer.children.length));
+    // Prose rows and non-tool predecessors are untouched.
+    const prose = thinkingRow([new Spacer(), new Markdown("prose")]);
+    const row2 = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
+    modW.captureWalkerTui({ children: [prose, row2] });
+    const res2 = modW.wrappingPass(piW);
+    check("non-tool predecessor keeps spacer", res2.spacers === 0 && row2.contentContainer.children.length === 2, `${res2.spacers}/${row2.contentContainer.children.length}`);
+  }
+
+  // 43. spacer surgery is idempotent and visible-mode skips it
+  {
+    resetTrace();
+    const prevTool = toolComp("t-b3", "self", ["", "› prev"]);
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
+    modW.captureWalkerTui({ children: [prevTool, row] });
+    modW.wrappingPass(piW);
+    const res2 = modW.wrappingPass(piW);
+    check("second pass drops nothing new", res2.spacers === 0, JSON.stringify(res2));
+    check("label survives re-pass", row.contentContainer.children.length === 1, String(row.contentContainer.children.length));
+    piW._hidden = false;
+    const rowV = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
+    modW.captureWalkerTui({ children: [prevTool, rowV] });
+    const resV = modW.wrappingPass(piW);
+    check("visible mode keeps spacer", resV.spacers === 0 && rowV.contentContainer.children.length === 2, `${resV.spacers}/${rowV.contentContainer.children.length}`);
+    piW._hidden = true;
+    modW.captureWalkerTui({ children: [] });
+  }
+
+  // 44. [text, thinking] order still glues: the label trails, prose keeps its own seam
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-order" });
+    read.renderCall(ctx.args, theme, ctx);
+    const prev = thinkingRow([new Spacer(), new Markdown("prose first"), new MouseRegion(new Text("Thinking..."))]);
+    const fake = toolComp("t-order", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [prev, fake] });
+    modW.wrappingPass(piW);
+    check("trailing label glues", fake.render(100)[0] === "› read /a", JSON.stringify(fake.render(100)));
   }
 
   if (failures > 0) {

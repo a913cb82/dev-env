@@ -26,12 +26,25 @@ gapless.
 **Render wrap.** The run owner's component still carries Pi's hardcoded
 leading blank line, which no renderer can suppress — so the extension shadows
 the instance's `render` (drop a single leading `""`) and `handleMouse`
-(re-base y by +1, matching Pi's y-1 delegation). Only the run owner is ever
-wrapped; foreign tools, default-shell components, and visible-thinking mode
-are skipped, and visible mode self-bypasses inside the wrapped render, so
-toggling thinking visible restores stock spacing with no unwrap pass. No Pi
-sources are touched and no prototype is modified: the shadows are
-instance-only and reversible. `/collapse` reports `wrap: N wrapped`.
+(re-base y by +1, matching Pi's y-1 delegation). The strip is conditional:
+it applies only when the previous sibling renders a hidden thinking label
+(or is another tool row) with nothing else between — after prose, or as a
+first child, the blank is kept byte-identical, and clicks on a kept blank
+keep stock hit behavior. Only the run owner is ever wrapped; foreign tools,
+default-shell components, and visible-thinking mode are skipped, and visible
+mode self-bypasses inside the wrapped render, so toggling thinking visible
+restores stock spacing with no unwrap pass.
+
+**Spacer surgery.** Mirror image below the block: when an assistant row whose
+first rendered line is a hidden thinking label opens directly under a tool
+row, its leading `Spacer(1)` is removed via public `removeChild` on its
+`contentContainer`. Prose-first rows, non-tool predecessors, and visible
+thinking (which renders `Markdown`, failing the label check) are never
+touched — a visibility toggle rebuilds the children and self-heals. Both
+directions are pure tree structure, evaluated per render, so a sibling
+streaming from thinking into prose flips the verdict live. No Pi sources
+are touched and no prototype is modified. `/collapse` reports
+`wrap: N wrapped, M spacers dropped`.
 
 **Transcript rebuilds are safe.** Startup, compaction, session switch, fork and
 tree navigation re-render history. During a rebuild each historical tool gets
