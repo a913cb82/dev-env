@@ -2502,7 +2502,15 @@ function textResult(chars) {
         const label = row.renderLabel ?? row.hiddenThinkingLabel;
         // Pi writes OSC 133 marks around parts; the label row carries them.
         const line = "\x1b]133;B\x07\x1b]133;C\x07" + " ".repeat(row.outputPad) + STYLE + label + RESET;
-        return [" plain prose line", line + " ".repeat(Math.max(0, width - tuiLib.visibleWidth(line)))];
+        const bare = label.replace("\x1b[23;23m", "");
+        const same = " ".repeat(row.outputPad) + STYLE + bare + RESET;
+        const padTo = (text) => text + " ".repeat(Math.max(0, width - tuiLib.visibleWidth(text)));
+        // A lookalike with the same VISIBLE text but without the label's own
+        // escape is a different line; only the label may be railed.
+        const lookalike = padTo(same);
+        return opts.lookalikeFirst
+          ? [" plain prose line", lookalike, padTo(line)]
+          : [" plain prose line", padTo(line), lookalike];
       },
     };
     return row;
@@ -2533,6 +2541,18 @@ function textResult(chars) {
     check("thinking row keeps its width", tuiLib.visibleWidth(lines[1]) === 100, `${tuiLib.visibleWidth(lines[1])}`);
     check("thinking count still ends on the label column", visible.trimEnd().length === 98, `${visible.trimEnd().length}`);
     check("prose lines are untouched", lines[0] === " plain prose line", JSON.stringify(lines[0]));
+    check("only the label line is railed", !plainText(lines[2]).includes("▏") && plainText(lines[2]).trimEnd().length === 98, JSON.stringify(plainText(lines[2]).slice(0, 8)));
+  }
+
+  {
+    // Prose that repeats the preview verbatim is not the label row: the
+    // label carries its own escape (italic-off), a copy does not.
+    const row = rowOf({ lookalikeFirst: true });
+    const module = await fresh([row]);
+    module.reconcileThinkingLabels(pi);
+    const lines = row.render(100);
+    check("lookalike with the same visible text is not railed", !plainText(lines[1]).includes("▏"), JSON.stringify(plainText(lines[1]).slice(0, 8)));
+    check("the real label is still railed after it", plainText(lines[2]).startsWith("▏"), JSON.stringify(plainText(lines[2]).slice(0, 6)));
   }
 
   {
@@ -2541,6 +2561,16 @@ function textResult(chars) {
     module.reconcileThinkingLabels(pi);
     module.reconcileThinkingLabels(pi);
     check("second pass keeps one rail", plainText(row.render(100)[1]).split("▏").length === 2, JSON.stringify(plainText(row.render(100)[1]).slice(0, 8)));
+  }
+
+  {
+    // pad 2: rail in the first cell, one pad cell left, label on column 3.
+    const row = rowOf({ pad: 2 });
+    const module = await fresh([row]);
+    module.reconcileThinkingLabels({ getSettings: () => ({ outputPad: 2, hideThinkingBlock: true }) });
+    const line = row.render(100)[1];
+    const text = plainText(line);
+    check("pad 2 rails the first cell only", text.startsWith("▏ w") && tuiLib.visibleWidth(line) === 100, JSON.stringify(text.slice(0, 8)));
   }
 
   {

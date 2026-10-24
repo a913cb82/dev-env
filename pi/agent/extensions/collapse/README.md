@@ -51,7 +51,10 @@ still on column 2, and the rule takes the row's own style — Pi styles the
 whole label with `thinkingText`, so the margin stays visually even. Rows
 carrying Pi's OSC 133 marks keep them. With `outputPad = 0` no rule is
 drawn: content already starts on column 1, and a rule would push it out of
-alignment.
+alignment. A row is identified by its label appearing byte-for-byte (the
+label carries the extension's own italic-off escape), so prose that repeats
+the same visible text is left alone; the line must also end after the label,
+so a wrapped or stale label simply loses the rule for a frame.
 
 ## Behaviour
 

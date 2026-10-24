@@ -75,46 +75,39 @@ export function isThinkingRow(node: unknown): node is {
 }
 
 
-/** Escape-free text, for comparing a rendered line with the label it holds.
- *  Rows can start with SGR (styles) and OSC (Pi's shell-integration marks). */
-function plain(text: string): string {
-  return text
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-9;]*m/g, "");
-}
+/** Pi writes OSC marks (133;A/B/C) and styles (SGR) before the pad cell. */
+const OSC_AT = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/y;
+const SGR_AT = /\x1b\[[0-9;]*m/y;
 
-/** Length of the escape sequences that precede the pad cell: Pi writes OSC
- *  marks (133;A/B/C) around message parts, so the pad is not always at 0. */
-function leadingEscapes(line: string): number {
-  let i = 0;
-  for (;;) {
-    const rest = line.slice(i);
-    const match =
-      /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(rest) ??
-      /^\x1b\[[0-9;]*m/.exec(rest);
-    if (!match) return i;
-    i += match[0].length;
-  }
-}
-
-/** The ANSI that opens a line's visible text (Pi styles the label with
- *  italic + thinkingText). Reused for the rail so it matches its row. */
-function leadingStyle(line: string, from: number): string {
+/** Index just past the escape sequences that start at `from`. */
+function escapeEnd(text: string, from = 0): number {
   let i = from;
-  while (i < line.length) {
-    const match = /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(line.slice(i)) ??
-      /^\x1b\[[0-9;]*m/.exec(line.slice(i));
-    if (!match) break;
-    i += match[0].length;
+  for (;;) {
+    OSC_AT.lastIndex = i;
+    if (OSC_AT.test(text)) {
+      i = OSC_AT.lastIndex;
+      continue;
+    }
+    SGR_AT.lastIndex = i;
+    if (SGR_AT.test(text)) {
+      i = SGR_AT.lastIndex;
+      continue;
+    }
+    return i;
   }
-  return line.slice(from, i);
 }
 
 /** Put the run rail in the pad cell of the hidden-thinking line only. Rows
  *  are Pi's `Text` at `outputPad`, so the rail must replace that cell rather
  *  than be prefixed to the label: same width, content still on column 2, and
- *  the label Pi renders is otherwise untouched. Anything unexpected (no
- *  matching line, visible thinking, no pad) returns the stock lines. */
+ *  the label Pi renders is otherwise untouched.
+ *
+ *  The row is identified by its label appearing verbatim, not by its visible
+ *  text: the label carries the extension's own italic-off escape, so prose
+ *  that repeats the preview reads the same but is a different line. Anything
+ *  unexpected (no such line, visible thinking, no pad) returns the stock
+ *  lines, and the miss path hands back the very same array — renders are
+ *  hot. */
 function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
   try {
     if (!isHiddenThinking(pi)) return lines;
@@ -122,33 +115,39 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
     if (typeof label !== "string" || label === "") return lines;
     const pad = typeof row?.outputPad === "number" ? row.outputPad : liveOutputPad(pi);
     if (pad < 1) return lines;
-    const want = " ".repeat(pad) + plain(label);
     const spaces = " ".repeat(pad);
-    const at = new Map<number, number>();
-    let hit = -1;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (typeof line !== "string") continue;
-      if (plain(line).trimEnd() !== want.trimEnd()) continue;
-      const start = leadingEscapes(line);
-      if (line.slice(start, start + pad) !== spaces) continue;
-      at.set(i, start);
-      hit = i;
-      break;
+      const at = escapeEnd(line);
+      if (line.slice(at, at + pad) !== spaces) continue;
+      const textAt = escapeEnd(line, at + pad);
+      if (!line.startsWith(label, textAt)) continue;
+      // The label owns the line: after it, only escapes and padding may
+      // follow (Pi closes its styling before the row's trailing spaces).
+      let whole = true;
+      for (let j = textAt + label.length; ; ) {
+        j = escapeEnd(line, j);
+        if (j >= line.length) break;
+        if (line[j] !== " ") {
+          whole = false;
+          break;
+        }
+        j++;
+      }
+      if (!whole) continue;
+      // Replace the FIRST pad cell with the rail in the label's own style;
+      // the remaining pad, the label and its style stay where Pi put them.
+      const out = lines.slice();
+      out[i] =
+        line.slice(0, at) +
+        line.slice(at + pad, textAt) +
+        ROW_RAIL +
+        "\x1b[0m" +
+        line.slice(at + 1);
+      return out;
     }
-    // No matching line: hand back the very same array (renders are hot).
-    if (hit < 0) return lines;
-    // Replace only the first pad cell: the rest of the pad, the label and its
-    // style stay exactly where Pi put them.
-    const out = lines.slice();
-    const start = at.get(hit) ?? 0;
-    out[hit] =
-      lines[hit].slice(0, start) +
-      leadingStyle(lines[hit], start + pad) +
-      ROW_RAIL +
-      "\x1b[0m" +
-      lines[hit].slice(start + pad);
-    return out;
+    return lines;
   } catch {
     return lines;
   }

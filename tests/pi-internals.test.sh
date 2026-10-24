@@ -57,7 +57,11 @@ const TM = require('$ROOT/dist/modes/interactive/theme/theme.js');
 TM.initTheme('light');
 const trimAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const railMsg = { role: 'assistant', content: [{ type: 'thinking', thinking: 'weigh the options' }] };
-const railRow = new C.AssistantMessageComponent(railMsg, true, undefined, 'RAIL-PROBE', 1, []);
+const railRow = new C.AssistantMessageComponent(railMsg, true, undefined, 'Thinking...', 1, []);
+// The label the extension writes carries its own italic-off escape; the rail
+// match is on those bytes, so pin that they survive Pi's styling verbatim.
+const railLabel = 'RAIL-PROBE' + String.fromCharCode(27) + '[23;23m' + '2.0k ch';
+railRow.setHiddenThinkingLabel(railLabel);
 const railLines = railRow.render(60);
 const railLine = railLines.find((l) => trimAnsi(l).includes('RAIL-PROBE'));
 assert(railLine !== undefined, 'hidden label renders a line');
@@ -67,6 +71,7 @@ const BEL = String.fromCharCode(7);
 const padAt = railLine.lastIndexOf(BEL) + 1;
 assert(railLine[padAt] === ' ', 'pad cell precedes the label ANSI (rail can replace it)');
 assert(trimAnsi(railLine.slice(padAt)).indexOf('RAIL-PROBE') === 1, 'label text starts on column 2');
+assert(railLine.includes(railLabel), 'label survives Pi styling verbatim (rail matches on those bytes)');
 assert(T.visibleWidth(railLine) === 60, 'label row fills the render width');
 // chalk 6 rewrites every copy of its own close code in its input into
 // close+open, so a bare SGR 23 cannot end italic inside the label. The
