@@ -39,13 +39,12 @@ Toggling `ctrl+o` re-depths an open row without another click; clicking it
 again closes it. Both depths are byte-identical to a real
 `ToolExecutionComponent` (pinned by tests).
 
-**Thinking label.** Pi's hidden label becomes a grey preview with its size,
-rebuilt on terminal resize. Repeating the same preview is a no-op: Pi's label
-is one string applied to every assistant row, so re-setting it re-renders the
-whole transcript. A terminated stream leaves one assistant message per
-attempt, each drawing its own thinking line and error text; the preview string
-is shared, so those lines read alike. That repetition comes from Pi's
-transcript, not from this extension.
+**Thinking label.** Untouched: every collapsed row shows Pi's stock
+`Thinking...` default. Pi's hidden label is one global string applied to
+every assistant row, so any preview the extension set would repeat the
+newest turn's thinking on all older rows. Setting nothing keeps every row
+honest. (The pure preview helpers stay in `logic.ts`, tested, for the day
+upstream offers per-row labels.)
 
 **Any tool, not just the built-ins.** Tools from other extensions and MCP
 servers render through the same row pipeline as soon as they hand over their

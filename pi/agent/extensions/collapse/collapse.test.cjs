@@ -291,38 +291,22 @@ function textResult(chars) {
     check("expanded update keeps chrome", wlines2.some((l) => l.includes("48;2")) && flat.includes("$ echo hi"), flat.slice(0, 200));
   }
 
-  // 8. message_end with thinking updates the hidden label with preview + count
-  // test env has no tty columns, so the width fallback (77) applies
+  // 8. the hidden thinking label is Pi's own: the extension never sets it,
+  // so every collapsed row shows the stock "Thinking..." default.
   {
+    const calls = [];
+    const ui = { setHiddenThinkingLabel: (value) => { calls.push(value); } };
     const handlers = pi.handlers.get("message_end") ?? [];
-    check("message_end subscribed", handlers.length === 1, String(handlers.length));
-    let label;
-    const ctx = { hasUI: true, ui: { setHiddenThinkingLabel: (value) => { label = value; } } };
-    const thinking = "a".repeat(1500);
-    await handlers[0]({ message: { role: "assistant", content: [{ type: "thinking", thinking }] } }, ctx);
-    const expected = `${"a".repeat(34)}…${"a".repeat(34)} 1.5k ch`;
-    check("thinking label preview+count", label === expected, JSON.stringify(label)?.slice(0, 120));
-    check("thinking label has no prefix", !label.startsWith("Thinking"), JSON.stringify(label)?.slice(0, 40));
-    check("thinking label fills width", label.length === 77, `${label.length}: ${JSON.stringify(label)}`);
-  }
-
-  // 8a1. explicit terminal width widens the preview budget
-  {
-    const realColumns = process.stdout.columns;
-    process.stdout.columns = 200;
-    try {
-      const handlers = pi.handlers.get("message_end") ?? [];
-      let label;
-      const ctx = { hasUI: true, ui: { setHiddenThinkingLabel: (value) => { label = value; } } };
-      await handlers[0](
-        { message: { role: "assistant", content: [{ type: "thinking", thinking: "a".repeat(1500) }] } },
-        ctx,
-      );
-      check("wide label fills width", label.length === 197, `${label.length}`);
-      check("wide label keeps tail", label.endsWith("1.5k ch"), JSON.stringify(label).slice(-40));
-    } finally {
-      process.stdout.columns = realColumns;
+    for (const h of handlers) {
+      await h({ message: { role: "assistant", content: [{ type: "thinking", thinking: "a".repeat(1500) }] } }, { hasUI: true, ui });
     }
+    const shandlers = pi.handlers.get("session_start") ?? [];
+    for (const h of shandlers) {
+      await h({}, { hasUI: true, ui, sessionManager: { getEntries: () => [
+        { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "old" }] } },
+      ] } });
+    }
+    check("label never set", calls.length === 0, JSON.stringify(calls));
   }
 
   // 8a. long commands are not pre-truncated: only the row width cuts
@@ -365,43 +349,10 @@ function textResult(chars) {
     await fresh.commands.get("collapse").handler("", { ui: { notify: (msg) => notes.push(msg) } });
     check("collapse reports revision", notes.join("").includes("collapse r"), JSON.stringify(notes));
     check("collapse reports default label", notes.join("").includes("default"), JSON.stringify(notes));
-    const handlers = pi.handlers.get("message_end") ?? [];
-    await handlers[0](
-      { message: { role: "assistant", content: [{ type: "thinking", thinking: "hello world" }] } },
-      { hasUI: true, ui: { setHiddenThinkingLabel: () => {} } },
-    );
+    check("collapse reports stock label", notes.join("").includes("Pi stock"), JSON.stringify(notes));
     const notes2 = [];
     await pi.commands.get("collapse").handler("", { ui: { notify: (msg) => notes2.push(msg) } });
-    check("collapse reports last label", notes2.join("").includes("hello world"), JSON.stringify(notes2));
-    check("collapse label has no prefix", !notes2.join("").includes("Thinking hello"), JSON.stringify(notes2));
     check("collapse reports compact mode", notes2.join("").includes("compact rows"), JSON.stringify(notes2));
-  }
-
-  // 8d. session_start backfills the label from history
-  {
-    const handlers = pi.handlers.get("session_start") ?? [];
-    check("session_start subscribed", handlers.length === 1, String(handlers.length));
-    let label;
-    const entries = [
-      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "older" }] } },
-      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "" }] } },
-      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "newer turn" }] } },
-    ];
-    await handlers[0](
-      {},
-      { hasUI: true, ui: { setHiddenThinkingLabel: (value) => { label = value; } }, sessionManager: { getEntries: () => entries } },
-    );
-    check(
-      "session_start backfills",
-      label.startsWith("newer turn") && !label.startsWith("Thinking") && label.endsWith("0.0k ch") && label.length === 77,
-      JSON.stringify(label),
-    );
-    let called = false;
-    await handlers[0](
-      {},
-      { hasUI: true, ui: { setHiddenThinkingLabel: () => { called = true; } }, sessionManager: { getEntries: () => [] } },
-    );
-    check("session_start empty history quiet", called === false, String(called));
   }
 
   // 8d2. thinking visible restores stock tool sections (same chrome as expanded)
@@ -428,18 +379,10 @@ function textResult(chars) {
     }
   }
 
-  // 8e. outputPad 0 widens both the label budget and the row fill
+  // 8e. outputPad 0 widens the row fill
   {
     pi._pad = 0;
     try {
-      const handlers = pi.handlers.get("message_end") ?? [];
-      let label;
-      const ctx = { hasUI: true, ui: { setHiddenThinkingLabel: (value) => { label = value; } } };
-      await handlers[0](
-        { message: { role: "assistant", content: [{ type: "thinking", thinking: "a".repeat(1500) }] } },
-        ctx,
-      );
-      check("pad 0 label wider", label.length === 79, `${label.length}`);
       const read = pi.tools.get("read");
       const state = { count: 100 };
       const { ctx: rctx } = callContext({ args: { path: "/path/to/file" }, state });
@@ -474,13 +417,10 @@ function textResult(chars) {
     check("powershell row", psLine.includes("<b:accent>PS> Get-ChildItem</b>"), JSON.stringify(psLine));
   }
 
-  // 9. message_end without thinking leaves the label alone
+  // 9. no message_end hook at all: the label is never ours to set
   {
     const handlers = pi.handlers.get("message_end") ?? [];
-    let called = false;
-    const ctx = { hasUI: true, ui: { setHiddenThinkingLabel: () => { called = true; } } };
-    await handlers[0]({ message: { role: "assistant", content: [{ type: "text", text: "hi" }] } }, ctx);
-    check("no thinking no label", called === false, String(called));
+    check("no message_end subscription", handlers.length === 0, String(handlers.length));
   }
 
   // 10. real ANSI: padding/truncation measured by visible width
@@ -502,37 +442,6 @@ function textResult(chars) {
     check("ansi one line", lines.length === 1, JSON.stringify(lines));
     check("ansi padded to width", tui.visibleWidth(lines[0]) === 59, `${tui.visibleWidth(lines[0])}: ${JSON.stringify(lines[0])}`);
     check("ansi keeps count", lines[0].endsWith("\x1b[31m5.3k ch\x1b[0m"), JSON.stringify(lines[0]).slice(-40));
-  }
-
-  // 11. terminal resize rebuilds the thinking label at the new width
-  {
-    const slot = "__collapseResizeHandler";
-    const resize = globalThis[slot];
-    check("resize handler installed", typeof resize === "function", typeof resize);
-    const handlers = pi.handlers.get("message_end") ?? [];
-    const seen = [];
-    const ctx = { hasUI: true, ui: { setHiddenThinkingLabel: (value) => { seen.push(value); } } };
-    await handlers[0](
-      { message: { role: "assistant", content: [{ type: "thinking", thinking: "a".repeat(1500) }] } },
-      ctx,
-    );
-    const realColumns = process.stdout.columns;
-    process.stdout.columns = 120;
-    try {
-      const before = seen.length;
-      await resize();
-      check("resize reissues label", seen.length === before + 1, `${seen.length} vs ${before}`);
-      const relabeled = seen[seen.length - 1];
-      check("resized label fills width", relabeled.length === 117, `${relabeled.length}`);
-      check("resized label keeps tail", relabeled.endsWith("1.5k ch"), JSON.stringify(relabeled).slice(-24));
-      await resize();
-      check("same width no-op", seen.length === before + 1, `${seen.length} vs ${before}`);
-    } finally {
-      process.stdout.columns = realColumns;
-    }
-    const previous = globalThis[slot];
-    factory(pi);
-    check("re-activation replaces listener", globalThis[slot] !== previous, "slot unchanged");
   }
 
   // 12. visibility toggle pokes settled rows into the other mode
@@ -682,7 +591,6 @@ function textResult(chars) {
 
     // 14a. two turns that each contain only tool calls merge into one run
     render("x1", "echo one");
-    await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: false });
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
     render("x2", "echo two");
     const merged = render("x1", "echo one").render(90);
@@ -692,7 +600,6 @@ function textResult(chars) {
     // 14b. visible text between turns still splits the run
     resetTrace();
     render("y1", "echo one");
-    await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: false });
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
     await handlers.get("message_update")[0](
       { message: { role: "assistant", content: [{ type: "text", text: "now some prose" }] } },
@@ -704,7 +611,6 @@ function textResult(chars) {
     // 14c. a leading-content turn (text before its tool call) also splits
     resetTrace();
     render("z1", "echo one");
-    await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: false });
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
     await handlers.get("message_update")[0](
       { message: { role: "assistant", content: [
@@ -719,7 +625,6 @@ function textResult(chars) {
     // 14d. empty/whitespace-only thinking is not visible content
     resetTrace();
     render("w1", "echo one");
-    await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: false });
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
     await handlers.get("message_update")[0](
       { message: { role: "assistant", content: [{ type: "thinking", thinking: "   " }] } },
@@ -1176,28 +1081,6 @@ function textResult(chars) {
     await handlers2.get("cmd").handler("", { ui: { notify: (m) => { said = m; } } });
     check("report lists uncollapsed tools", said.includes("mcp_weird"), said);
     check("report omits wrapped tools", !said.includes("spawn_agent"), said);
-  }
-
-  // 22. Repeating the same thinking label does not re-render every row.
-  {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
-    resetTrace = mod.resetTraceState ?? resetTrace;
-    const handlers = new Map();
-    const labels = [];
-    const piE = {
-      registerTool: () => {},
-      registerCommand: () => {},
-      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
-      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
-    };
-    (mod.default ?? mod)(piE);
-    const ctx = { hasUI: true, ui: { setHiddenThinkingLabel: (l) => labels.push(l) } };
-    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "Analyzing the day structure carefully" }, { type: "text", text: "" }] };
-    for (let i = 0; i < 3; i += 1) handlers.get("message_end")[0]({ message: msg }, ctx);
-    check("identical label set once", labels.length === 1, JSON.stringify(labels));
-    const msg2 = { role: "assistant", content: [{ type: "thinking", thinking: "A different line of reasoning entirely" }] };
-    handlers.get("message_end")[0]({ message: msg2 }, ctx);
-    check("new label still applied", labels.length === 2, JSON.stringify(labels));
   }
 
   // 23. wrapped foreign tools merge: opting in through the slot makes them

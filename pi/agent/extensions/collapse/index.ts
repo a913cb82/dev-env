@@ -48,10 +48,7 @@ import {
   createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
-  extractThinkingText,
-  findLatestThinkingText,
   planToolRuns,
-  thinkingLabelForWidth,
 } from "./logic.js";
 import {
   clearCollapsePokes,
@@ -61,7 +58,7 @@ import {
   pokeAllCollapse,
   wrappedToolNames,
 } from "./rows.js";
-import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
+import { isHiddenThinking } from "./settings.js";
 import {
   applyPlannedRuns,
   armHistoryPhase,
@@ -78,7 +75,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 24;
+const COLLAPSE_REVISION = 25;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -102,90 +99,19 @@ function collapseTick(pi: ExtensionAPI): void {
   }
 }
 
-/** Raw material to rebuild the thinking label after a resize: the label is
- *  a plain string, so every width change needs a fresh budget + reissue.
- *  setHiddenThinkingLabel pushes the rebuild into all existing rows. */
-const thinkingLive: { text?: string; ui?: any; width?: number } = {};
-const RESIZE_SLOT = "__collapseResizeHandler";
-
-/** One-line label sized to the live terminal, count pinned right. The label
- *  is a plain string (no render-time width), so budget up front from
- *  stdout.columns with a non-tty fallback. */
-function widthAwareThinkingLabel(thinking: string, pi: ExtensionAPI): string {
-  return thinkingLabelForWidth(thinking, currentColumns(), liveOutputPad(pi));
-}
-
-/** Last label handed to Pi: setHiddenThinkingLabel re-renders every assistant
- *  row, so repeating the same string is pure churn (terminated turns fire
- *  message_end once per attempt). */
-let thinkingLabelSent: string | undefined;
-
-function applyThinkingLabel(
-  thinking: string | undefined,
-  ctx: any,
-  setLast: (label: string) => void,
-  pi: ExtensionAPI,
-): void {
-  if (ctx.hasUI) collapseSawUI = true;
-  if (!thinking || !ctx.hasUI) return;
-  try {
-    const label = widthAwareThinkingLabel(thinking, pi);
-    thinkingLive.text = thinking;
-    thinkingLive.ui = ctx.ui;
-    thinkingLive.width = currentColumns();
-    setLast(label);
-    if (label === thinkingLabelSent) return;
-    thinkingLabelSent = label;
-    ctx.ui.setHiddenThinkingLabel(label);
-  } catch {
-    // Label update is cosmetic; never break the turn.
-  }
-}
-
 export default function (pi: ExtensionAPI) {
   const cwd = process.cwd();
-  let lastThinkingLabel: string | undefined;
   try {
     collapseLastHidden = (pi?.getSettings?.()?.hideThinkingBlock ?? false) === true;
   } catch {
     collapseLastHidden = undefined;
   }
 
-  // Rebuild the thinking label on terminal resize/zoom: tool rows re-render
-  // at the new width on their own, but the label is a fixed string.
-  // No unload hook exists, so the previous activation's listener is removed
-  // via the shared slot before installing this one.
-  try {
-    const g = globalThis as Record<string, unknown>;
-    const prev = g[RESIZE_SLOT];
-    if (typeof prev === "function") process.stdout?.off?.("resize", prev as (...args: any[]) => void);
-    const onResize = () => {
-      try {
-        const cols = currentColumns();
-        if (cols === undefined || cols === thinkingLive.width) return;
-        const { text, ui } = thinkingLive;
-        if (!text || !ui?.setHiddenThinkingLabel) return;
-        const label = thinkingLabelForWidth(text, cols, liveOutputPad(pi));
-        thinkingLive.width = cols;
-        lastThinkingLabel = label;
-        ui.setHiddenThinkingLabel(label);
-      } catch {
-        // Cosmetic only; never break the loop.
-      }
-    };
-    g[RESIZE_SLOT] = onResize;
-    if (process.stdout?.isTTY && typeof process.stdout.on === "function") {
-      process.stdout.on("resize", onResize);
-    }
-  } catch {
-    // Non-tty hosts (tests, pipes): resizing cannot happen; skip silently.
-  }
-
   pi.registerCommand("collapse", {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: ${lastThinkingLabel ?? "default — no thinking text seen this session"}${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock)${uncollapsedReport(pi)}`,
       );
     },
   });
@@ -283,7 +209,7 @@ export default function (pi: ExtensionAPI) {
       // History is rendered before this event; keep those entries so their
       // rows stay put, but seal the run so live tools start a fresh trace.
       endHistoryPhase("session-start");
-      if (ctx.hasUI && ctx.ui) thinkingLive.ui = ctx.ui;
+      if (ctx.hasUI) collapseSawUI = true;
       const sm = ctx.sessionManager as any;
       const entries =
         typeof sm?.getBranch === "function" ? sm.getBranch() : (sm?.getEntries?.() ?? []);
@@ -291,14 +217,6 @@ export default function (pi: ExtensionAPI) {
       // positions were unknown). Merge contiguous groups now: rows stay
       // where they are, but share one component, so one blank line total.
       applyPlannedRuns(planToolRuns(entries, isOwnTool));
-      applyThinkingLabel(
-        findLatestThinkingText(entries),
-        ctx,
-        (label) => {
-          lastThinkingLabel = label;
-        },
-        pi,
-      );
     } catch {
       // Label update is cosmetic; never break startup.
     }
@@ -321,16 +239,4 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_tree", () => armHistoryPhase("session-tree"));
   // Completion events seal the pass so live turns merge again.
   pi.on("session_tree", () => endHistoryPhase("session-tree"));
-  pi.on("message_end", (event, ctx) => {
-    // No boundary: a tool-only turn merges with the run above it. Turns
-    // that do carry visible content split via message_update instead.
-    applyThinkingLabel(
-      extractThinkingText((event as { message?: unknown }).message as any),
-      ctx,
-      (label) => {
-        lastThinkingLabel = label;
-      },
-      pi,
-    );
-  });
 }
