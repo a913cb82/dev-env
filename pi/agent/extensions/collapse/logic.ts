@@ -350,14 +350,23 @@ export function lsParts(args: { path?: unknown }): { path: string } {
   return { path: typeof args?.path === "string" ? args.path : "" };
 }
 
+/** SGR 23 ends an italic run. Pi renders the hidden-thinking label as
+ *  theme.italic(theme.fg("thinkingText", label)) — the entire label — so the
+ *  count can only leave the italic from inside the label string. Escape
+ *  bytes add no visible width, so alignment is unchanged. */
+const ITALIC_OFF = "\x1b[23m";
+
 /** One-line thinking label sized to the live terminal: middle-truncated
  *  preview with the char count pinned right. No "Thinking" prefix — the
- *  row's position already says what it is. */
+ *  row's position already says what it is. The preview is italic (Pi's
+ *  wrapper); the count is not. */
 export function thinkingLabelForWidth(thinking: string, stdoutColumns?: unknown, outputPad = 1): string {
   const width = labelBudget(stdoutColumns, outputPad);
   const count = formatCharCount(thinking.length);
   const preview = thinkingPreview(thinking, Math.max(8, width - count.length - 1));
-  return padLabel(preview, count, width);
+  const padded = padLabel(preview, count, width);
+  // padLabel always ends with the count; re-insert it after the italic off.
+  return `${padded.slice(0, padded.length - count.length)}${ITALIC_OFF}${count}`;
 }
 
 export function textCharCount(

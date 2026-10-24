@@ -123,6 +123,13 @@ stops matching, the walk bails silently and rows keep Pi's stock
 `Thinking...`; `/collapse` reports `thinking walk: active (N row(s))` or the
 inactive reason. (The pure preview helpers stay in `logic.ts`, tested.)
 
+The count is not italic. Pi renders the label as
+`theme.italic(theme.fg("thinkingText", label))` — the whole string — so the
+extension ends the italic run from inside the label (`SGR 23`) just before the
+count. Escape bytes add no visible width, so the right alignment is unchanged.
+`tests/pi-internals.test.sh` pins that Pi wrapper: if it changes, the count
+stops leaving the italic and the test says so.
+
 **Live preview while thinking.** The label is also written on
 `message_update`, so the preview (and its char count) grows as the model
 thinks instead of flashing stock `Thinking...` until the turn settles. Rows

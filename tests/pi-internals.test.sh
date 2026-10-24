@@ -49,6 +49,7 @@ assert(T.MouseRegion && T.MouseRegion.name === 'MouseRegion', 'pi-tui MouseRegio
 const assistSrc = fs.readFileSync('$ROOT/dist/modes/interactive/components/assistant-message.js', 'utf8');
 assert(assistSrc.includes('contentContainer'), 'assistant row exposes contentContainer (spacer surgery anchor)');
 assert(assistSrc.includes('thinkingBlocks.length === 0'), 'no thinking region renders without text (no stock-label window)');
+assert(assistSrc.includes('theme.italic(theme.fg(') && assistSrc.includes('hiddenThinkingLabel)), this.outputPad'), 'thinking label is italicized whole (SGR 23 marks the count)');
 const mode = fs.readFileSync('$ROOT/dist/modes/interactive/interactive-mode.js', 'utf8');
 assert(mode.includes('chatContainer'), 'chatContainer anchor in interactive-mode');
 assert(mode.includes('setHiddenThinkingLabel'), 'global label fan-out anchor in interactive-mode');
