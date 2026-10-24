@@ -12,12 +12,27 @@ preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 Three levels, one meaning each:
 
 - **Bold** is identity — the tool name (violet, red when the tool failed), and
-  for `bash`/`powershell` the whole command.
+  each command word of a `bash`/`powershell` row: the first word after the
+  start, `;`, `&`, `&&`, `||`, or `|`. The prompt itself (`$`, `PS>`) is the
+  tool, so it keeps the violet accent.
 - **Plain** is the one specific thing the row acts on — file name, search
-  pattern.
-- **Dim** is everything else — the `›` gutter, directories, line ranges,
-  timeouts, output sizes (right-aligned), and the summary of any tool without
-  a dedicated renderer.
+  pattern, path leaf, bare argument, the text inside quotes.
+- **Dim** is everything else — the `›` gutter, directories, operators,
+  flags, numbers, `$VAR` expansions, line ranges, timeouts, output sizes
+  (right-aligned), and the summary of any tool without a dedicated renderer.
+
+```
+› read /a/b.txt:5-10                                  5.3k ch
+› $ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k ch
+```
+
+`bash`/`powershell` rows are tokenized rather than styled by position:
+`cd /path/to/thing && cat > /tmp/real/thing` reads as **`cd`**, dim
+`/path/to/`, `thing`, dim `&&`, **`cat`**, dim `>`, dim `/tmp/real/`,
+`thing`. Quoted operators are not syntax, and a mid-command `>` only dims —
+it never promotes the following word to a command. Styling stops at 192
+tokens / 2048 characters (the row can never show more), so a pathological
+command cannot slow a repaint.
 
 Long rows cut in the middle, so the head and the count survive.
 

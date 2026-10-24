@@ -193,14 +193,14 @@ function textResult(chars) {
     check("read failure red bold", line.includes("<b:error>read </b>"), JSON.stringify(line));
   }
 
-  // 5. bash collapsed call: `$ first` bold, rest plain
+  // 5. bash collapsed call: prompt accent bold, command word bold
   {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" } });
     const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
     check("bash prefix dim", isRow(line), JSON.stringify(line));
-    check("bash head bold", line.includes("<b:accent>$ timeout</b>"), JSON.stringify(line));
-    check("bash command bold", line.includes("<b> 25 ls some/dist</b>") && !line.includes("<error>"), JSON.stringify(line));
+    check("bash prompt accent", line.includes("<b:accent>$</b> <b>timeout</b>"), JSON.stringify(line));
+    check("bash command bold", line.includes("<b>timeout</b>") && !line.includes("<error>"), JSON.stringify(line));
   }
 
   // 5b. env assignments: only the variable name is highlighted
@@ -208,7 +208,7 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "PIN=/x ls /y" } });
     const line = bash.renderCall(ctx.args, theme, ctx).render(80)[0];
-    check("bash env name accent", line.includes("<b:accent>$ PIN</b>"), JSON.stringify(line));
+    check("bash env name accent", line.includes("<b:accent>$</b> <b:accent>PIN</b><dim>=/x</>"), JSON.stringify(line));
     check("bash env value not accent", line.includes("=/x") && !line.includes("<b:accent>=/x"), JSON.stringify(line));
   }
 
@@ -217,7 +217,7 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" }, isError: true, state: { count: 100 } });
     const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
-    check("bash failure red bold", line.includes("<b:error>$ timeout</b>"), JSON.stringify(line));
+    check("bash failure red bold", line.includes("<b:error>$</b> <b>timeout</b>"), JSON.stringify(line));
   }
 
   // 7. Pi-expanded rest is still one row; a click opens the stock box
@@ -339,8 +339,8 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const cmd = `run ${"x".repeat(100)} end`;
     const { ctx } = callContext({ args: { command: cmd }, state: { count: 10 } });
-    const line = bash.renderCall(ctx.args, theme, ctx).render(50)[0];
-    check("row middle keeps head", line.includes("$ ru"), JSON.stringify(line));
+    const line = bash.renderCall(ctx.args, ansiTheme, ctx).render(50)[0];
+    check("row middle keeps head", plainText(line).includes("$ ru"), JSON.stringify(plainText(line)));
     check("row middle keeps tail", line.includes("end"), JSON.stringify(line).slice(-60));
     check("row middle cuts middle", line.includes("…"), JSON.stringify(line));
   }
@@ -431,7 +431,7 @@ function textResult(chars) {
     const ps = pi.tools.get("powershell");
     const { ctx: psCtx } = callContext({ args: { command: "Get-ChildItem" }, state: { count: 300 } });
     const psLine = ps.renderCall(psCtx.args, theme, psCtx).render(100)[0];
-    check("powershell row", psLine.includes("<b:accent>PS> Get-ChildItem</b>"), JSON.stringify(psLine));
+    check("powershell row", psLine.includes("<b:accent>PS></b> <b>Get-ChildItem</b>"), JSON.stringify(psLine));
   }
 
   // 9. message_end reconciles per-row labels but never the global setter
@@ -2293,6 +2293,59 @@ function textResult(chars) {
     const { ctx: cctx } = callContext({ args: { query: "find the thing" }, toolCallId: "fmt-custom" });
     const customRow = wrapped.renderCall(cctx.args, theme, { ...cctx, args: { query: "find the thing" } }).render(100)[0];
     check("generic summary dim", customRow.includes("<dim>find the thing</>"), customRow);
+  }
+
+  // 65. bash token grammar: prompt accent, command words bold, path leaves
+  // plain, syntax/flags/numbers/dirs dim.
+  {
+    const row = (name, args) => {
+      resetTrace();
+      const tool = piW.tools.get(name);
+      const { ctx } = callContext({ args, toolCallId: `bash-${name}-${args.command ?? ""}` });
+      return tool.renderCall(ctx.args, theme, { ...ctx, args }).render(400)[0];
+    };
+    const A = "<dim>› </><b:accent>$</b>";
+    const PS = "<dim>› </><b:accent>PS></b>";
+    check(
+      "bash chain styles each part",
+      row("bash", { command: "cd /path/to/thing && cat > /tmp/real/thing | tail -n 3" }) ===
+        `${A} <b>cd</b> <dim>/path/to/</>thing <dim>&&</> <b>cat</b> <dim>></> <dim>/tmp/real/</>thing <dim>|</> <b>tail</b> <dim>-n</> <dim>3</>`,
+      row("bash", { command: "cd /path/to/thing && cat > /tmp/real/thing | tail -n 3" }),
+    );
+    check(
+      "bash args stay plain, flags dim",
+      row("bash", { command: "npm test -- --watch=false" }) === `${A} <b>npm</b> test <dim>--</> <dim>--watch=false</>`,
+      row("bash", { command: "npm test -- --watch=false" }),
+    );
+    check(
+      "bash assignment name accent, value dim",
+      row("bash", { command: "PIN=/x ls /y" }) === `${A} <b:accent>PIN</b><dim>=/x</> <b>ls</b> <dim>/</>y`,
+      row("bash", { command: "PIN=/x ls /y" }),
+    );
+    check(
+      "bash quoted argument keeps quotes dim",
+      row("bash", { command: 'echo "hello world" > /tmp/out/thing.txt' }) ===
+        `${A} <b>echo</b> <dim>"</>hello world<dim>"</> <dim>></> <dim>/tmp/out/</>thing.txt`,
+      row("bash", { command: 'echo "hello world" > /tmp/out/thing.txt' }),
+    );
+    check(
+      "bash url stays one plain token",
+      row("bash", { command: "curl https://api.example.com/v1/x" }) === `${A} <b>curl</b> https://api.example.com/v1/x`,
+      row("bash", { command: "curl https://api.example.com/v1/x" }),
+    );
+    check(
+      "bash redirect fd and target",
+      row("bash", { command: "make 2>/dev/null" }) === `${A} <b>make</b> <dim>2></><dim>/dev/</>null`,
+      row("bash", { command: "make 2>/dev/null" }),
+    );
+    check(
+      "powershell prompt and pipeline",
+      row("powershell", { command: "Get-ChildItem | Select-Object Name" }) ===
+        `${PS} <b>Get-ChildItem</b> <dim>|</> <b>Select-Object</b> Name`,
+      row("powershell", { command: "Get-ChildItem | Select-Object Name" }),
+    );
+    check("bash empty command dim ellipsis", row("bash", { command: "   " }) === `${A} <dim>…</>` , row("bash", { command: "   " }));
+    check("bash keeps timeout hint dim", row("bash", { command: "ls", timeout: 25 }).endsWith("<dim> (timeout 25s)</>"), row("bash", { command: "ls", timeout: 25 }));
   }
 
   if (failures > 0) {

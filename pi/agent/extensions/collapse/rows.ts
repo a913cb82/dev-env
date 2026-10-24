@@ -3,15 +3,16 @@
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import {
-  firstWord,
   genericToolSummary,
   formatCharCount,
   lsParts,
   readLineParts,
   searchParts,
+  bashSegments,
   splitDirBase,
   summarizeBashCommand,
   textCharCount,
+  type BashSegment,
 } from "./logic.js";
 import { isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
@@ -114,24 +115,35 @@ function pathLeft(theme: Theme, name: string, rawPath: unknown, isError: boolean
   return `${toolHead(theme, `${name} `, isError)}${dirStyled}${base}`;
 }
 
+function renderBashSegment(theme: Theme, segment: BashSegment): string {
+  switch (segment.kind) {
+    case "space":
+      return " ";
+    case "op":
+    case "dim":
+      return theme.fg("dim", segment.text);
+    case "accent":
+      return theme.style(segment.text, { fg: "accent", bold: true });
+    case "cmd":
+      return theme.style(segment.text, { bold: true });
+    case "plain":
+      return segment.text;
+    case "path":
+      return `${segment.dir ? theme.fg("dim", segment.dir) : ""}${segment.base}`;
+  }
+}
+
 function shellLeft(theme: Theme, prompt: string, args: any, isError: boolean): string {
   const summary = summarizeBashCommand(typeof args?.command === "string" ? args.command : "");
-  const head = firstWord(summary);
-  // VAR=value prefixes: the variable name rides in the accent head, the
-  // assignment stays in the bold command body.
-  const eq = head.indexOf("=");
-  const headName = eq > 0 ? head.slice(0, eq) : head;
-  const headSuffix = eq > 0 ? head.slice(eq) : "";
-  const rest = head ? summary.slice(head.length) : summary;
-  const headStyled = summary
-    ? toolHead(theme, `${prompt} ${headName}`, isError)
-    : toolHead(theme, `${prompt} `, isError) + theme.fg("dim", "…");
-  // The command is the row's identity, so it is bold end to end; only the
-  // timeout hint is metadata.
-  const body = summary ? theme.style(`${headSuffix}${rest}`, { bold: true }) : "";
+  // The prompt is the tool: accent + bold, and nothing else. The command
+  // words are bold, path leaves plain, and the syntax between them dim.
+  const head = toolHead(theme, prompt, isError);
+  const body = summary
+    ? bashSegments(summary).map((segment) => renderBashSegment(theme, segment)).join("")
+    : theme.fg("dim", "…");
   const timeout =
     typeof args?.timeout === "number" ? theme.fg("dim", ` (timeout ${args.timeout}s)`) : "";
-  return `${headStyled}${body}${timeout}`;
+  return `${head} ${body}${timeout}`;
 }
 
 function searchLeft(theme: Theme, name: string, args: any, isError: boolean): string {

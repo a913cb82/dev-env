@@ -7,9 +7,10 @@
 //   › read /path/to/file:10-20                    5.3k ch
 //   › $ timeout 25 ls some/dist                   0.1k ch
 // Three levels, one meaning each: BOLD is identity (the tool name, and the
-// whole command for bash/powershell), PLAIN is the one specific thing acted
-// on (file name, search pattern), DIM is everything else (gutter, dirs,
-// ranges, timeouts, sizes, generic summaries). Violet carries the head
+// command word of every segment of a bash/powershell command), PLAIN is the
+// one specific thing acted on (file name, search pattern, path leaf, bare
+// argument), DIM is everything else (gutter, dirs, operators, flags,
+// numbers, ranges, timeouts, sizes, generic summaries). Violet carries the head
 // because some terminals render SGR-1 weight indistinguishably; red replaces
 // it when the tool failed. Rows truncate in the middle so head and tail
 // survive; the count stays at the right edge.
@@ -103,7 +104,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 40;
+const COLLAPSE_REVISION = 41;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";

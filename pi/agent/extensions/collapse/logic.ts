@@ -52,6 +52,172 @@ export function firstWord(command: string): string {
   return collapseWhitespace(command).split(" ")[0] ?? "";
 }
 
+export type BashSegment =
+  | { kind: "space"; text: string }
+  | { kind: "op"; text: string }
+  | { kind: "cmd"; text: string }
+  | { kind: "plain"; text: string }
+  | { kind: "dim"; text: string }
+  | { kind: "accent"; text: string }
+  | { kind: "path"; dir: string; base: string };
+
+const CONTROL_OPS = new Set(["&&", "||", "|&", "|", ";", ";;", "&", "(", "{"]);
+const ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+const URL_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+const NUMBER_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+const QUOTED_RE = /^(['"])([\s\S]*)\1$/;
+const OPERATOR_CHARS = new Set(["&", "|", ";", "<", ">", "(", ")", "{", "}"]);
+
+/** Split a shell command into words, whitespace, and operators without ever
+ *  treating an operator inside quotes as syntax. Whitespace collapses to one
+ *  space: rows show a summarized command anyway, and stable spacing keeps
+ *  rendering cheap. */
+function tokenizeBash(command: string): { kind: "space" | "op" | "word"; text: string }[] {
+  const tokens: { kind: "space" | "op" | "word"; text: string }[] = [];
+  const fdRedirect = /\d+(?:>&\d+|>>|>|<)/y;
+  const operator = /&&|\|\||\|&|;;|>>|<<<|<<|>|<|\||;|&|\(|\)|\{|\}/y;
+  let index = 0;
+  while (index < command.length) {
+    const char = command[index];
+    if (/\s/.test(char)) {
+      tokens.push({ kind: "space", text: " " });
+      index++;
+      while (index < command.length && /\s/.test(command[index])) index++;
+      continue;
+    }
+    fdRedirect.lastIndex = index;
+    const fd = fdRedirect.exec(command);
+    if (fd) {
+      tokens.push({ kind: "op", text: fd[0] });
+      index += fd[0].length;
+      continue;
+    }
+    operator.lastIndex = index;
+    const op = operator.exec(command);
+    if (op) {
+      tokens.push({ kind: "op", text: op[0] });
+      index += op[0].length;
+      continue;
+    }
+    let end = index;
+    let quote: string | null = null;
+    while (end < command.length) {
+      const current = command[end];
+      if (quote) {
+        if (current === quote) quote = null;
+        end++;
+        continue;
+      }
+      if (current === "'" || current === '"') {
+        quote = current;
+        end++;
+        continue;
+      }
+      if (current === "\\") {
+        end += 2;
+        continue;
+      }
+      if (/\s/.test(current) || OPERATOR_CHARS.has(current)) break;
+      end++;
+    }
+    if (end === index) {
+      tokens.push({ kind: "word", text: command[index] });
+      index++;
+      continue;
+    }
+    tokens.push({ kind: "word", text: command.slice(index, end) });
+    index = end;
+  }
+  return tokens;
+}
+
+/** Inside a word: a URL or a path leaf is the one specific thing (plain), a
+ *  bare word is a plain argument, and only the directory part is dim. */
+function innerSegments(text: string): BashSegment[] {
+  if (URL_RE.test(text)) return [{ kind: "plain", text }];
+  if (text.includes("/")) {
+    const { dir, base } = splitDirBase(text);
+    return [{ kind: "path", dir, base }];
+  }
+  return [{ kind: "plain", text }];
+}
+
+function wordSegments(word: string): BashSegment[] {
+  const quoted = QUOTED_RE.exec(word);
+  if (quoted) {
+    const [, mark, inner] = quoted;
+    return [{ kind: "dim", text: mark }, ...innerSegments(inner), { kind: "dim", text: mark }];
+  }
+  return innerSegments(word);
+}
+
+function argumentSegments(word: string): BashSegment[] {
+  if (word === "-" || word === "--" || word.startsWith("-")) {
+    const eq = word.indexOf("=");
+    const value = eq > 0 ? word.slice(eq + 1) : "";
+    if (value.includes("/")) {
+      return [{ kind: "dim", text: word.slice(0, eq + 1) }, ...innerSegments(value)];
+    }
+    return [{ kind: "dim", text: word }];
+  }
+  if (NUMBER_RE.test(word)) return [{ kind: "dim", text: word }];
+  if (word.startsWith("$") || word.startsWith("`")) return [{ kind: "dim", text: word }];
+  return wordSegments(word);
+}
+
+/** Style plan for a bash/powershell row: the first word of each simple
+ *  command is the command (bold), path leaves are plain, and the rest —
+ *  operators, flags, numbers, expansions, directories — is dim. */
+/** Style budget: rows truncate to the terminal width, so styling megabytes of
+ *  a pathological command only burns repaint time (one margined call per
+ *  token). Anything past this is one dim tail plus an ellipsis. */
+const BASH_STYLE_BUDGET = 2048;
+
+const BASH_STYLE_TOKENS = 192;
+
+export function bashSegments(command: string): BashSegment[] {
+  const text = command ?? "";
+  const clipped = text.length > BASH_STYLE_BUDGET;
+  const allTokens = tokenizeBash(clipped ? text.slice(0, BASH_STYLE_BUDGET) : text);
+  const tokens = allTokens.slice(0, BASH_STYLE_TOKENS);
+  // Skip classification of the overflow but keep its text: joining token
+  // texts reproduces the summarized command exactly.
+  const overflow = allTokens
+    .slice(BASH_STYLE_TOKENS)
+    .map((token) => token.text)
+    .join("");
+  const segments: BashSegment[] = [];
+  let expectCommand = true;
+  for (const token of tokens) {
+    if (token.kind === "space") {
+      segments.push({ kind: "space", text: " " });
+      continue;
+    }
+    if (token.kind === "op") {
+      segments.push({ kind: "op", text: token.text });
+      if (CONTROL_OPS.has(token.text)) expectCommand = true;
+      continue;
+    }
+    if (expectCommand) {
+      const assignment = ASSIGNMENT_RE.exec(token.text);
+      if (assignment) {
+        // VAR=value before the command: the name carries the accent, the
+        // assignment itself is metadata and stays quiet.
+        segments.push({ kind: "accent", text: assignment[1] });
+        segments.push({ kind: "dim", text: `=${assignment[2]}` });
+        continue;
+      }
+      segments.push({ kind: "cmd", text: token.text });
+      expectCommand = false;
+      continue;
+    }
+    segments.push(...argumentSegments(token.text));
+  }
+  if (overflow) segments.push({ kind: "dim", text: `${overflow.trimEnd()}…` });
+  else if (clipped) segments.push({ kind: "dim", text: "…" });
+  return segments;
+}
+
 export function summarizeBashCommand(command: string): string {
   // No fixed cap: the row component truncates to the live terminal width at
   // render time, so only collapse whitespace here. Truncating early would cut
