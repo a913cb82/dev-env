@@ -1170,10 +1170,11 @@ function textResult(chars) {
       expanded: false, showImages: true, isError: false,
     });
     const row = wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })).render(90);
-    check("empty summary shows name only", row.length === 1 && plainText(row[0]) === "▏check_subagents", JSON.stringify(row));
-    // opened (clicked) rows show the same name-only call line
+    // No telling argument: show Pi's own key=value line, not an empty row.
+    check("unspecified args show the args line", row.length === 1 && plainText(row[0]) === "▏check_subagents wait=true timeoutMs=120000", JSON.stringify(row));
+    // opened (clicked) rows show the same call line
     const opened = wrapped.renderCall({ wait: true }, theme, { ...ctx("e1", { wait: true }), state: {} }).render(90);
-    check("opened name-only row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
+    check("opened args-line row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
   }
 
   // 25. post-reload history merges contiguous groups: the rebuild renders
@@ -2762,6 +2763,55 @@ function textResult(chars) {
     traceLib.traceSync(entry, { path: "/a/big", content }, ctx);
     check("a middle-only change is not (it cannot show)", traceLib.traceSync(entry, { path: "/a/big", content: "x".repeat(100000) + "y" + "x".repeat(99999) }, ctx) === false, "middle");
   }
+}
+
+// ---------------------------------------------------------------------------
+// 72. Standard third-party tools: the four subagent argument shapes get rows
+//     that name what they act on (target/targets/task), not a grey blob.
+// ---------------------------------------------------------------------------
+{
+  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const handlers = new Map();
+  const piS = {
+    registerTool: () => {},
+    registerCommand: () => {},
+    on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+    getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+  };
+  (mod.default ?? mod)(piS);
+  await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+  const mk = (name) => mod.collapseDefinition({
+    name,
+    description: name,
+    parameters: {},
+    async execute() { return { content: [{ type: "text", text: "ok" }] }; },
+  }, piS);
+  const ctx = (id, args) => ({
+    args, toolCallId: id, invalidate: () => {}, lastComponent: undefined, state: {},
+    cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+    expanded: false, showImages: true, isError: false,
+  });
+
+  const spawnArgs = { task: "Review the collapse extension for performance", name: "review", model: "m" };
+  const checkArgs = { targets: ["review", "tester"], wait: true };
+  const sendArgs = { target: "review", message: "Stop and report", mode: "interrupt" };
+  const cancelArgs = { target: "review" };
+  const spawn = mk("spawn_agent");
+  spawn.renderCall(spawnArgs, theme, ctx("s1", spawnArgs));
+  mk("check_subagents").renderCall(checkArgs, theme, ctx("s2", checkArgs));
+  mk("send_to_subagent").renderCall(sendArgs, theme, ctx("s3", sendArgs));
+  mk("cancel_subagent").renderCall(cancelArgs, theme, ctx("s4", cancelArgs));
+  // Every call above joined the spawn's run; the owner renders all four rows.
+  const lines = spawn
+    .renderCall(spawnArgs, theme, ctx("s1", spawnArgs))
+    .render(120)
+    .map(plainText);
+  check("spawn row names the agent", lines[0]?.includes("spawn_agent review"), lines[0]);
+  check("spawn row hides the raw task pair", !lines[0]?.includes("task="), lines[0]);
+  check("check row lists targets", lines[1]?.includes("check_subagents review, tester"), lines[1]);
+  check("send row names the target", lines[2]?.includes("send_to_subagent review"), lines[2]);
+  check("send row names the target, not the message", lines[2]?.includes("send_to_subagent review") && !lines[2]?.includes("Stop and report"), lines[2]);
+  check("cancel row names the target", lines[3]?.includes("cancel_subagent review"), lines[3]);
 }
 
   if (failures > 0) {

@@ -351,9 +351,23 @@ function check(name, cond, extra) {
     check("generic uses prompt first line", g({ prompt: "Do a thing\nand more" }) === "Do a thing", g({ prompt: "Do a thing\nand more" }));
     check("generic prefers command", g({ command: "  ls   -la  /tmp " }) === "ls -la /tmp", g({ command: "  ls   -la  /tmp " }));
     check("generic uses path", g({ path: "/a/b.txt" }) === "/a/b.txt", g({ path: "/a/b.txt" }));
-    check("generic falls back to first string", g({ whatever: "value" }) === "value", g({ whatever: "value" }));
+    check("generic falls back to the args line", g({ whatever: "value" }) === 'whatever="value"', g({ whatever: "value" }));
     check("generic empty for nothing", g({}) === "", g({}));
     check("generic collapses whitespace", g({ description: "a\n\n  b" }) === "a b", g({ description: "a\n\n  b" }));
+  }
+
+  // genericToolSummary: standard third-party argument shapes. target/targets
+  // name WHAT a tool acts on (like name); task is a prompt; when nothing is
+  // telling, show Pi's own `key=value` call line rather than drop the args.
+  {
+    const g = logic.genericToolSummary;
+    check("generic uses target over message", g({ target: "review", message: "Stop now" }) === "review", g({ target: "review", message: "Stop now" }));
+    check("generic joins a targets array", g({ targets: ["review", "tester"], wait: true }) === "review, tester", g({ targets: ["review", "tester"], wait: true }));
+    check("generic accepts one target string", g({ targets: "review" }) === "review", g({ targets: "review" }));
+    check("generic uses task's first line", g({ task: "Do the thing\nand more" }) === "Do the thing", g({ task: "Do the thing\nand more" }));
+    check("generic prefers name over task", g({ name: "review", task: "Do the thing" }) === "review", g({ name: "review", task: "Do the thing" }));
+    check("generic args line shows true flags", g({ wait: true }) === "wait=true", g({ wait: true }));
+    check("generic args line is bounded", g({ body: "x".repeat(5000) }).length <= 120, String(g({ body: "x".repeat(5000) }).length));
   }
 
   // planToolRuns: group contiguous history tools so the rebuild layout
