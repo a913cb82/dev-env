@@ -39,11 +39,11 @@ Toggling `ctrl+o` re-depths an open row without another click; clicking it
 again closes it. Both depths are byte-identical to a real
 `ToolExecutionComponent` (pinned by tests).
 
-**Thinking-row detach (on by default, opt out).** Pi's thinking row is
+**Thinking-row detach (opt-in experiment, default off).** Pi's thinking row is
 unconditional given visible thinking, so the only way to merge thinking into
 the gapless tool block is to detach the whole assistant component via the
-public `removeChild` — no message edits, no patching. On by default; opt out with
-`COLLAPSE_HIDE_THINKING=0`. Two rules keep it safe: the SAFE predicate
+public `removeChild` — no message edits, no patching. Enable with
+`COLLAPSE_HIDE_THINKING=1`. Two rules keep it safe: the SAFE predicate
 (`isSafeToDetach`, a mirror of Pi's own renderer — no text, all runs hidden,
 clean stop, has tools) means a detach never hides anything but hidden-label
 rows; and the replacement preview row (first row of the trace, click to
