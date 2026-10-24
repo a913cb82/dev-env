@@ -9,7 +9,7 @@
  * stops matching, everything below bails to stock behavior (never throws).
  */
 import { Container, type Component } from "@earendil-works/pi-tui";
-import { extractThinkingText, thinkingLabelForWidth } from "./logic.js";
+import { ROW_RAIL, extractThinkingText, thinkingLabelForWidth } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 
@@ -74,6 +74,110 @@ export function isThinkingRow(node: unknown): node is {
   );
 }
 
+
+/** Escape-free text, for comparing a rendered line with the label it holds.
+ *  Rows can start with SGR (styles) and OSC (Pi's shell-integration marks). */
+function plain(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/** Length of the escape sequences that precede the pad cell: Pi writes OSC
+ *  marks (133;A/B/C) around message parts, so the pad is not always at 0. */
+function leadingEscapes(line: string): number {
+  let i = 0;
+  for (;;) {
+    const rest = line.slice(i);
+    const match =
+      /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(rest) ??
+      /^\x1b\[[0-9;]*m/.exec(rest);
+    if (!match) return i;
+    i += match[0].length;
+  }
+}
+
+/** The ANSI that opens a line's visible text (Pi styles the label with
+ *  italic + thinkingText). Reused for the rail so it matches its row. */
+function leadingStyle(line: string, from: number): string {
+  let i = from;
+  while (i < line.length) {
+    const match = /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(line.slice(i)) ??
+      /^\x1b\[[0-9;]*m/.exec(line.slice(i));
+    if (!match) break;
+    i += match[0].length;
+  }
+  return line.slice(from, i);
+}
+
+/** Put the run rail in the pad cell of the hidden-thinking line only. Rows
+ *  are Pi's `Text` at `outputPad`, so the rail must replace that cell rather
+ *  than be prefixed to the label: same width, content still on column 2, and
+ *  the label Pi renders is otherwise untouched. Anything unexpected (no
+ *  matching line, visible thinking, no pad) returns the stock lines. */
+function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
+  try {
+    if (!isHiddenThinking(pi)) return lines;
+    const label = row?.hiddenThinkingLabel;
+    if (typeof label !== "string" || label === "") return lines;
+    const pad = typeof row?.outputPad === "number" ? row.outputPad : liveOutputPad(pi);
+    if (pad < 1) return lines;
+    const want = " ".repeat(pad) + plain(label);
+    const spaces = " ".repeat(pad);
+    const at = new Map<number, number>();
+    let hit = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (typeof line !== "string") continue;
+      if (plain(line).trimEnd() !== want.trimEnd()) continue;
+      const start = leadingEscapes(line);
+      if (line.slice(start, start + pad) !== spaces) continue;
+      at.set(i, start);
+      hit = i;
+      break;
+    }
+    // No matching line: hand back the very same array (renders are hot).
+    if (hit < 0) return lines;
+    // Replace only the first pad cell: the rest of the pad, the label and its
+    // style stay exactly where Pi put them.
+    const out = lines.slice();
+    const start = at.get(hit) ?? 0;
+    out[hit] =
+      lines[hit].slice(0, start) +
+      leadingStyle(lines[hit], start + pad) +
+      ROW_RAIL +
+      "\x1b[0m" +
+      lines[hit].slice(start + pad);
+    return out;
+  } catch {
+    return lines;
+  }
+}
+
+const RAILED = Symbol("collapseRowRail");
+
+/** Shadow one row's render so its thinking line joins the run's left margin.
+ *  Instance-only and fail-open: the shadow keeps calling the row's own
+ *  render and only edits the line that is exactly this row's label. */
+export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
+  try {
+    if (!row || typeof row !== "object") return false;
+    const target = row as Record<string | symbol, unknown> & { render?: unknown };
+    if (target[RAILED] === true) return false;
+    const render = target.render;
+    if (typeof render !== "function") return false;
+    const orig = render.bind(row);
+    target.render = (width: number): string[] => {
+      const lines = orig(width);
+      return railLines(lines, row, pi);
+    };
+    target[RAILED] = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Every assistant row under this subtree, in render order. */
 function collectRows(node: unknown, out: unknown[]): void {
   if (!node || typeof node !== "object") return;
@@ -111,6 +215,7 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
     let labeled = 0;
     for (const row of rows) {
       if (!isThinkingRow(row)) continue;
+      installRowRail(row, pi);
       const message = row.lastMessage as { role?: unknown; content?: unknown };
       if (message?.role !== "assistant") continue;
       const cached = labeledFor.get(row);
@@ -185,6 +290,7 @@ export function reconcileStreamingLabel(
     let written = 0;
     for (const row of rows) {
       if (!isThinkingRow(row)) continue;
+      installRowRail(row, pi);
       const own = row.lastMessage as { role?: unknown; content?: unknown };
       if (own?.role !== "assistant") continue;
       const live =

@@ -65,7 +65,11 @@ const ansiTheme = {
   style: (text, opts) => `\x1b[1m${opts?.fg ? "" : ""}${text}\x1b[22m`,
 };
 
-const plainText = (line) => String(line).replace(/\x1b\[[0-9;]*m/g, "").replace(/<[^>]*>/g, "");
+// SGR plus OSC (Pi marks message parts with OSC 133; rows can carry them).
+const plainText = (line) => String(line)
+  .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+  .replace(/\x1b\[[0-9;]*m/g, "")
+  .replace(/<[^>]*>/g, "");
 const isRow = (line) => plainText(line).startsWith("▏");
 
 // Marker theme: visible styling assertions without ANSI.
@@ -2461,14 +2465,126 @@ function textResult(chars) {
   check("count still ends one column inside the edge",
     plainText(tool).replace(/\s+$/, "").length === 58, `${plainText(tool).replace(/\s+$/, "").length}`);
 
-  const preview = line({ rail: false });
-  check("thinking preview has no rail", !plainText(preview).includes(RAIL) && plainText(preview).startsWith(" "), JSON.stringify(plainText(preview).slice(0, 6)));
 
   const noPad = line({ pad: 0 });
   check("no pad: no rail, content on column 1", !plainText(noPad).includes(RAIL) && plainText(noPad).startsWith("$"), JSON.stringify(plainText(noPad).slice(0, 6)));
 
   const plainRow = new CollapsedLine("<accent>$</><b>ls</b>", "<dim>1.0k ch</>", 1).render(60)[0];
   check("theme-less row still gets the rail glyph", plainText(plainRow).startsWith(RAIL));
+
+  if (before === undefined) delete process.stdout.columns;
+  else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
+}
+
+
+// ---------------------------------------------------------------------------
+// 69. Thinking rows carry the same rail, by replacing Pi's pad cell.
+// ---------------------------------------------------------------------------
+{
+  const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+  const tuiLib = await jiti.import("@earendil-works/pi-tui");
+  check("labels.ts exports the row-rail installer", typeof labelsLib.installRowRail === "function");
+
+  // Pi's Text: pad spaces, then the italic+fg styled label, padded to width.
+  const STYLE = "\x1b[3m\x1b[38;5;240m";
+  const RESET = "\x1b[0m";
+  const text = "weigh the options ".repeat(40);
+  const rowOf = (opts = {}) => {
+    const row = {
+      lastMessage: { role: "assistant", content: opts.content ?? [{ type: "thinking", thinking: text }] },
+      hiddenThinkingLabel: "",
+      renderLabel: undefined,
+      isStreaming: false,
+      outputPad: opts.pad ?? 1,
+      setHiddenThinkingLabel(label) { row.hiddenThinkingLabel = label; },
+      updateContent() {},
+      render(width) {
+        const label = row.renderLabel ?? row.hiddenThinkingLabel;
+        // Pi writes OSC 133 marks around parts; the label row carries them.
+        const line = "\x1b]133;B\x07\x1b]133;C\x07" + " ".repeat(row.outputPad) + STYLE + label + RESET;
+        return [" plain prose line", line + " ".repeat(Math.max(0, width - tuiLib.visibleWidth(line)))];
+      },
+    };
+    return row;
+  };
+
+  const before = process.stdout.columns;
+  Object.defineProperty(process.stdout, "columns", { value: 100, configurable: true, writable: true });
+  const pi = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+  const fresh = async (rows) => {
+    const module = await jiti.import(path.join(HERE, "labels.ts"));
+    module.captureWalkerTui({ children: rows });
+    return module;
+  };
+
+  {
+    const row = rowOf();
+    const module = await fresh([row]);
+    module.reconcileThinkingLabels(pi);
+    check("walker labeled the row", row.hiddenThinkingLabel.length > 0, JSON.stringify(row.hiddenThinkingLabel));
+    const lines = row.render(100);
+    const visible = plainText(lines[1]);
+    check("thinking row opens with the rail", visible.startsWith("▏"), JSON.stringify(visible.slice(0, 6)));
+    check("rail sits on column 1, label still starts on column 2",
+      tuiLib.visibleWidth(lines[1].slice(0, lines[1].indexOf("w"))) === 1 && visible.indexOf("w") === 1,
+      JSON.stringify(visible.slice(0, 6)));
+    check("OSC marks survive the rail", lines[1].includes("\x1b]133;B\x07\x1b]133;C\x07".slice(0, 7)) && lines[1].indexOf("\x1b]133;C\x07") < lines[1].indexOf("▏"), JSON.stringify(lines[1].slice(0, 20)));
+    check("rail reuses the row's own style", lines[1].includes(STYLE + "▏" + RESET + STYLE), JSON.stringify(lines[1].slice(0, 40)));
+    check("thinking row keeps its width", tuiLib.visibleWidth(lines[1]) === 100, `${tuiLib.visibleWidth(lines[1])}`);
+    check("thinking count still ends on the label column", visible.trimEnd().length === 98, `${visible.trimEnd().length}`);
+    check("prose lines are untouched", lines[0] === " plain prose line", JSON.stringify(lines[0]));
+  }
+
+  {
+    const row = rowOf();
+    const module = await fresh([row]);
+    module.reconcileThinkingLabels(pi);
+    module.reconcileThinkingLabels(pi);
+    check("second pass keeps one rail", plainText(row.render(100)[1]).split("▏").length === 2, JSON.stringify(plainText(row.render(100)[1]).slice(0, 8)));
+  }
+
+  {
+    const row = rowOf();
+    const module = await fresh([row]);
+    module.reconcileThinkingLabels(pi);
+    const label = row.hiddenThinkingLabel;
+    row.renderLabel = "a different label";
+    check("mismatched line falls back to stock",
+      !plainText(row.render(100)[1]).includes("▏") && row.render(100)[1].includes("a different label"),
+      JSON.stringify(plainText(row.render(100)[1]).slice(0, 8)));
+    row.renderLabel = undefined;
+    row.hiddenThinkingLabel = label;
+  }
+
+  {
+    // Toggling thinking visible must drop the rail on the next render.
+    const settings = { outputPad: 1, hideThinkingBlock: true };
+    const livePi = { getSettings: () => settings };
+    const row = rowOf();
+    const module = await fresh([row]);
+    module.reconcileThinkingLabels(livePi);
+    check("hidden thinking has the rail", plainText(row.render(100)[1]).startsWith("▏"), JSON.stringify(plainText(row.render(100)[1]).slice(0, 6)));
+    settings.hideThinkingBlock = false;
+    check("visible thinking has no rail", !plainText(row.render(100)[1]).includes("▏"), JSON.stringify(plainText(row.render(100)[1]).slice(0, 8)));
+  }
+
+  {
+    const row = rowOf({ pad: 0 });
+    const module = await fresh([row]);
+    row.hiddenThinkingLabel = "some label";
+    module.installRowRail(row, { getSettings: () => ({ outputPad: 0, hideThinkingBlock: true }) });
+    check("pad 0 keeps the stock row", !plainText(row.render(100)[1]).includes("▏"), JSON.stringify(plainText(row.render(100)[1]).slice(0, 8)));
+  }
+
+  {
+    // Streaming: the shadow reads the label live, so a new preview re-rails.
+    const row = rowOf();
+    const module = await fresh([row]);
+    row.isStreaming = true;
+    module.reconcileStreamingLabel(pi, undefined, Date.now() + 1000);
+    check("streaming row is labeled", row.hiddenThinkingLabel.length > 0, JSON.stringify(row.hiddenThinkingLabel));
+    check("streaming row carries the rail", plainText(row.render(100)[1]).startsWith("▏"), JSON.stringify(plainText(row.render(100)[1]).slice(0, 6)));
+  }
 
   if (before === undefined) delete process.stdout.columns;
   else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });

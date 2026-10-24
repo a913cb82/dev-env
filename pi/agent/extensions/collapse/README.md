@@ -42,19 +42,16 @@ Every row's first glyph lands on column 2 — the same column as Pi's prose
 after it, so it costs no width and the content still starts on column 2. A
 run of rows therefore reads as one block — a continuous left margin, like a
 blockquote — and a row still expands into its stock cell without its text
-moving sideways. Thinking previews (the detach experiment) do not carry the
-rule: it marks tool runs. With `outputPad = 0` the row starts on column 1 and
-no rule is drawn, because it would push the content out of alignment. Tool
-rows end their count on the same column as the thinking rows' count, one
-column short of the edge: Pi renders thinking labels in a `Text` and a label
-that exactly fills the line word-wraps its trailing count, so both keep that
-margin. Both derive that column from `process.stdout.columns` — the source
-the label is sized from — not from the render width alone, because Pi can
-hand a component a width one column narrower than the terminal; the target
-is clamped to the render width so a narrow host never overflows. A label is
-rebuilt when the measured width changes (the poll reconciles per row on
-message + width + pad), so a resize re-fits it instead of leaving a stale
-label that wraps.
+moving sideways.
+
+Tool rows draw the rule themselves (dim, in their own line). Thinking rows
+are Pi's `Text`, so the rule replaces that row's pad cell at render time
+(instance-only shadow, current label only, fail-open): same width, label
+still on column 2, and the rule takes the row's own style — Pi styles the
+whole label with `thinkingText`, so the margin stays visually even. Rows
+carrying Pi's OSC 133 marks keep them. With `outputPad = 0` no rule is
+drawn: content already starts on column 1, and a rule would push it out of
+alignment.
 
 ## Behaviour
 

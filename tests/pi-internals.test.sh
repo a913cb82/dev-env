@@ -50,6 +50,24 @@ const assistSrc = fs.readFileSync('$ROOT/dist/modes/interactive/components/assis
 assert(assistSrc.includes('contentContainer'), 'assistant row exposes contentContainer (spacer surgery anchor)');
 assert(assistSrc.includes('thinkingBlocks.length === 0'), 'no thinking region renders without text (no stock-label window)');
 assert(assistSrc.includes('theme.italic(theme.fg(') && assistSrc.includes('hiddenThinkingLabel)), this.outputPad'), 'thinking label is italicized whole (count needs an in-label italic-off)');
+// The extension puts the run rail in the hidden-label row's pad cell: that
+// needs the pad to be emitted BEFORE the label's ANSI, and the row to stay
+// exactly as wide as the stock one.
+const TM = require('$ROOT/dist/modes/interactive/theme/theme.js');
+TM.initTheme('light');
+const trimAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+const railMsg = { role: 'assistant', content: [{ type: 'thinking', thinking: 'weigh the options' }] };
+const railRow = new C.AssistantMessageComponent(railMsg, true, undefined, 'RAIL-PROBE', 1, []);
+const railLines = railRow.render(60);
+const railLine = railLines.find((l) => trimAnsi(l).includes('RAIL-PROBE'));
+assert(railLine !== undefined, 'hidden label renders a line');
+// Pi marks message parts with OSC 133 (BEL-terminated); the pad cell
+// follows the last mark, which is where the extension puts its rail.
+const BEL = String.fromCharCode(7);
+const padAt = railLine.lastIndexOf(BEL) + 1;
+assert(railLine[padAt] === ' ', 'pad cell precedes the label ANSI (rail can replace it)');
+assert(trimAnsi(railLine.slice(padAt)).indexOf('RAIL-PROBE') === 1, 'label text starts on column 2');
+assert(T.visibleWidth(railLine) === 60, 'label row fills the render width');
 // chalk 6 rewrites every copy of its own close code in its input into
 // close+open, so a bare SGR 23 cannot end italic inside the label. The
 // extension uses 23;23, which chalk leaves alone.

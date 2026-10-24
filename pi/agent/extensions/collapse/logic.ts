@@ -1,6 +1,11 @@
 // Pure formatting helpers for the collapse extension (collapsed tool and
 // thinking rows). Dependency-free so tests load it without the Pi bundle.
 
+/** One-cell left rule that groups a run of collapsed rows. It lives in
+ *  column 1 and replaces the leading pad cell, so content still starts on
+ *  column 2 — see the rows.ts render. */
+export const ROW_RAIL = "\u258f";
+
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
   return `${(n / 1000).toFixed(1)}k ch`;

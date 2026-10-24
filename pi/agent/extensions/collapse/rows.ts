@@ -2,18 +2,7 @@
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import {
-  genericToolSummary,
-  formatCharCount,
-  lsParts,
-  readLineParts,
-  searchParts,
-  bashSegments,
-  splitDirBase,
-  summarizeBashCommand,
-  textCharCount,
-  type BashSegment,
-} from "./logic.js";
+import { ROW_RAIL, bashSegments, formatCharCount, genericToolSummary, lsParts, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment } from "./logic.js";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
@@ -53,18 +42,12 @@ function truncateMiddleWidth(text: string, maxWidth: number): string {
  *  Fills to width-outputPad, not width: thinking rows are indented by
  *  Pi's outputPad, so their counts end at W-pad — ending tool rows there
  *  too keeps both counts on the same column. */
-/** Left rule that marks a collapsed tool run: one dim cell in column 1, so
- *  the row's first glyph still lands on column 2 (see the render comment). */
-const ROW_RAIL = "\u258f";
-
 export class CollapsedLine implements Component {
   constructor(
     private left: string,
     private right: string,
     private pad = 1,
     private theme?: Theme,
-    /** false for rows that are not part of a tool run (thinking previews). */
-    private rail = true,
   ) {}
 
   /** Column 1 carries the rail, columns after it stay padding. With no pad
@@ -72,9 +55,8 @@ export class CollapsedLine implements Component {
    *  there would push the content out of alignment: none is drawn. */
   private prefix(): string {
     const pad = " ".repeat(Math.max(0, this.pad));
-    if (!this.rail || this.pad < 1) return pad;
-    const glyph = this.theme ? this.theme.fg("dim", ROW_RAIL) : ROW_RAIL;
-    return glyph + pad.slice(1);
+    if (this.pad < 1) return pad;
+    return (this.theme ? this.theme.fg("dim", ROW_RAIL) : ROW_RAIL) + pad.slice(1);
   }
 
   render(width: number): string[] {
@@ -294,7 +276,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     const open = isRunThinkingOpen(runId);
     const thinkingRow = open
       ? new Text(hiddenThinking, liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi), theme, false);
+      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;
