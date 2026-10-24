@@ -97,7 +97,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 29;
+const COLLAPSE_REVISION = 30;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -284,10 +284,14 @@ export default function (pi: ExtensionAPI) {
   // own rows, so they merge like the built-ins; anything else still splits.
   const isOwnTool = (name: string): boolean =>
     !!makeLeftByName[name] || wrappedToolNames().includes(name);
-  pi.on("tool_execution_start", (event) =>
-    traceOnToolExecutionStart(event, isOwnTool),
-  );
-  pi.on("user_bash", () => traceBoundary("user-bash"));
+  pi.on("tool_execution_start", (event) => {
+    traceOnToolExecutionStart(event, isOwnTool);
+  });
+  // Pi validates user_bash results (undefined or a valid result object):
+  // never leak traceBoundary's return value through the arrow body.
+  pi.on("user_bash", () => {
+    traceBoundary("user-bash");
+  });
   // Anything that rebuilds the transcript from history arms the history pass.
   pi.on("session_compact", () => armHistoryPhase("session-compact"));
   pi.on("session_before_switch", () => armHistoryPhase("session-switch"));

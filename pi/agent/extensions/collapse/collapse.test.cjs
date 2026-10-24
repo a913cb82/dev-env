@@ -1512,6 +1512,31 @@ function textResult(chars) {
     detach.resetDetachState?.();
   }
 
+  // 33. event handlers leak no return values Pi validates (user_bash
+  // rejected traceBoundary's string: "Invalid user_bash handler result").
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const handlers = new Map();
+    const piL = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    for (const [name, fns] of handlers) {
+      for (const fn of fns) {
+        let r;
+        try {
+          r = fn({ message: { role: "assistant", content: [] } }, { hasUI: false, ui: {}, sessionManager: { getEntries: () => [] } });
+          if (r && typeof r.then === "function") await r;
+        } catch { continue; }
+        check(`handler ${name} returns undefined`, r === undefined, `${name} returned ${JSON.stringify(r)}`);
+      }
+    }
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
