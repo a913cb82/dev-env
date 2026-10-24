@@ -2002,6 +2002,33 @@ function textResult(chars) {
     modW.captureWalkerTui({ children: [] });
   }
 
+  // 59. wrap status distinguishes cumulative work from an idle last pass
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-tot" });
+    read.renderCall(ctx.args, theme, ctx);
+    const prevTool = toolComp("t-b10", "self", ["", "› prev"]);
+    const fake = toolComp("t-tot", "self", ["", "› read /a"]);
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
+    modW.captureWalkerTui({ children: [prevTool, fake, row] });
+    const num = (text, re) => Number(re.exec(text)?.[1] ?? NaN);
+    const before = modW.wrapStatus();
+    const baseWrapped = num(before, /total (\d+) wrapped/);
+    const baseSpacers = num(before, /total \d+ wrapped, (\d+) spacer/);
+    modW.wrappingPass(piW);
+    const first = modW.wrapStatus();
+    // Second pass has nothing left to do; the report must still show the work
+    // done, not just this pass's zeros (which read as "wrap is broken").
+    modW.wrappingPass(piW);
+    const second = modW.wrapStatus();
+    check("pass tallies the work", num(first, /total (\d+) wrapped/) >= baseWrapped + 1 && /last pass 1 new/.test(first), first);
+    check("pass tallies spacers", num(first, /total \d+ wrapped, (\d+) spacer/) >= baseSpacers + 1, first);
+    check("idle pass still shows totals", num(second, /total (\d+) wrapped/) === num(first, /total (\d+) wrapped/) && /last pass 0 new/.test(second), second);
+    check("idle pass names the already count", /1 already/.test(second), second);
+    modW.captureWalkerTui({ children: [] });
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

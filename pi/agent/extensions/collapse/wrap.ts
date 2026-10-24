@@ -76,6 +76,11 @@ const installedRowSyncs = new WeakMap<object, InstalledRowSync>();
  *  during a render storm collapse into a single immediate pass). */
 let scheduledPass: { pi: ExtensionAPI } | undefined;
 
+/** Cumulative work since activation. Per-pass counts alone read as "the
+ *  wrap is broken" once everything is already healed and a pass reports
+ *  zeros, so the diagnostic shows both. */
+const wrapTotals = { wrapped: 0, spacers: 0, synced: 0 };
+
 /** Sync an assistant row's `updateContent`: after Pi rebuilds the children
  *  (streaming delta, click-toggle), re-drop the leading spacer when the
  *  live gate still holds. The gate re-evaluates per call, so a toggle to
@@ -522,7 +527,12 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
         }
       }
     }
-    wrapOutcome = `active (${counts.wrapped} wrapped, ${counts.spacers} spacers dropped)`;
+    // Tallies are cumulative across passes: an idle pass reports zeros here
+    // but the totals still show the work that holds the layout together.
+    wrapTotals.wrapped += counts.wrapped;
+    wrapTotals.spacers += counts.spacers;
+    wrapTotals.synced += counts.synced;
+    wrapOutcome = `active (total ${wrapTotals.wrapped} wrapped, ${wrapTotals.spacers} spacer(s), ${wrapTotals.synced} synced; last pass ${counts.wrapped} new, ${counts.already} already)`;
   } catch {
     wrapOutcome = "inactive (walk failed)";
   }
