@@ -536,6 +536,16 @@ export function genericToolRow(args: unknown): GenericRow {
  *  rows above their own context. toolResult entries are skipped: they render
  *  inside the tool component, never between rows. Returns toolCallId groups
  *  in transcript order; entries the planner cannot place keep single runs. */
+/** Whether a message renders a block in the transcript between tool rows.
+ *  Custom messages with `display: false` are hidden entirely, and Pi never
+ *  renders system messages — a run must not split across either, or the split
+ *  shows as a blank line with nothing between the rows. */
+export function isVisibleMessage(role: unknown, display?: unknown): boolean {
+  if (role === "system") return false;
+  if (role === "custom") return display !== false;
+  return true;
+}
+
 export function planToolRuns(
   entries: Array<{ type?: unknown; message?: unknown }> | undefined | null,
   isOwnTool: (name: string) => boolean,
@@ -555,12 +565,18 @@ export function planToolRuns(
   };
   if (!Array.isArray(entries)) return groups;
   for (const entry of entries) {
-    if (!entry || entry.type !== "message") continue;
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.type === "custom_message") {
+      const custom = entry as { display?: unknown };
+      if (isVisibleMessage("custom", custom.display)) boundary();
+      continue;
+    }
+    if (entry.type !== "message") continue;
     const message = entry.message as { role?: unknown; content?: unknown } | undefined;
     if (!message || typeof message !== "object") continue;
     if (message.role === "toolResult") continue;
     if (message.role !== "assistant" || !Array.isArray(message.content)) {
-      boundary();
+      if (isVisibleMessage(message.role)) boundary();
       continue;
     }
     // Visible content before the last tool call of this message splits;

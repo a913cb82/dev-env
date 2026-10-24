@@ -93,7 +93,10 @@ emits one blank line per run instead of one per tool. A run continues across
 turn boundaries; only a turn whose *visible* content (prose or a thinking
 block) renders above its tools starts a new one. Rows therefore stay adjacent
 to whatever is actually on screen, and consecutive tool-only turns are
-gapless.
+gapless. A message that renders nothing — a custom message with
+`display: false` (extension notifications) or a system message — never starts
+a run: splitting there would leave a blank line with no content between the
+rows.
 
 **Render wrap.** The run owner's component still carries Pi's hardcoded
 leading blank line, which no renderer can suppress — so the extension shadows

@@ -434,6 +434,26 @@ function check(name, cond, extra) {
       JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("assistant", [think("  "), call("b", "bash")])])) === '[["a","b"]]');
     check("missing ids are skipped",
       JSON.stringify(plan([msg("assistant", [call("a", "read"), { type: "toolCall", name: "bash" }])])) === '[["a"]]');
+    // Invisible blocks must not split: a split would leave a blank line with
+    // nothing between the rows.
+    check("hidden custom messages do not split",
+      JSON.stringify(plan([
+        msg("assistant", [call("a", "read")]),
+        { type: "custom_message", customType: "subagent-results", display: false, content: "x" },
+        msg("assistant", [call("b", "bash")]),
+      ])) === '[["a","b"]]');
+    check("visible custom messages split",
+      JSON.stringify(plan([
+        msg("assistant", [call("a", "read")]),
+        { type: "custom_message", customType: "note", display: true, content: "hi" },
+        msg("assistant", [call("b", "bash")]),
+      ])) === '[["a"],["b"]]');
+    check("system messages do not split",
+      JSON.stringify(plan([
+        msg("assistant", [call("a", "read")]),
+        msg("system", [text("sys")]),
+        msg("assistant", [call("b", "bash")]),
+      ])) === '[["a","b"]]');
   }
 
   // isSafeToDetach: detach hides nothing but hidden-thinking label rows.

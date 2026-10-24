@@ -1,7 +1,7 @@
 // Tool-run registry: which adjacent tool calls share one rendered component,
 // and where runs are split. See index.ts for the behaviour this implements.
 import type { Box, Component } from "@earendil-works/pi-tui";
-import { hasLeadingVisibleContent } from "./logic.js";
+import { hasLeadingVisibleContent, isVisibleMessage } from "./logic.js";
 
 export interface CollapseState {
   count?: number;
@@ -304,12 +304,14 @@ export function traceOnMessageStart(event: unknown): void {
   try {
     // Any lifecycle event means the transcript is no longer being rebuilt.
     traceHistoryPhase = false;
-    const role = (event as { message?: { role?: string } })?.message?.role;
+    const message = (event as { message?: { role?: string; display?: unknown } })?.message;
+    const role = message?.role;
     if (role === "assistant") {
       messageSeq++;
-    } else if (role !== "toolResult") {
+    } else if (role !== "toolResult" && isVisibleMessage(role, message?.display)) {
       // toolResult messages are not transcript blocks: they render inside the
-      // tool component that produced them, so they never split a run.
+      // tool component that produced them, so they never split a run. Neither
+      // do messages that render nothing at all.
       traceBoundary(`message:${role ?? "?"}`);
     }
   } catch {

@@ -2983,6 +2983,39 @@ function textResult(chars) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 75. An invisible message must not split a run: nothing renders between the
+//     rows, so the split would leave a blank line with no content
+//     (subagent-results notifications are custom messages with display:false).
+// ---------------------------------------------------------------------------
+{
+  const traceLib = await jiti.import(path.join(HERE, "trace.ts"));
+  traceLib.resetTraceState();
+  const def = { name: "bash", renderCall: () => null, renderResult: () => null };
+  const ctx = { isError: false, isPartial: false, executionStarted: true, argsComplete: true, state: {} };
+  const owner = (id) => {
+    const entry = traceLib.traceUpsert("bash", id, def);
+    traceLib.traceSync(entry, { command: "ls" }, ctx);
+    return entry;
+  };
+  const a = owner("a");
+  traceLib.traceOnMessageStart({ message: { role: "custom", customType: "subagent-results", display: false } });
+  const b = owner("b");
+  check("hidden custom message keeps the run", b.runId === a.runId && traceLib.traceOwnerId(a.runId) === "a", `${a.runId}/${b.runId}`);
+  traceLib.traceOnMessageStart({ message: { role: "system", content: "sys" } });
+  const c = owner("c");
+  check("system message keeps the run", c.runId === a.runId, `${a.runId}/${c.runId}`);
+  traceLib.traceOnMessageStart({ message: { role: "custom", customType: "note", display: true } });
+  const d = owner("d");
+  check("visible custom message splits", d.runId !== a.runId, `${a.runId}/${d.runId}`);
+  traceLib.traceOnMessageStart({ message: { role: "user", content: "hi" } });
+  const e = owner("e");
+  check("user message splits", e.runId !== d.runId, `${d.runId}/${e.runId}`);
+  traceLib.traceOnMessageStart({ message: { role: "custom", customType: "x" } });
+  const f = owner("f");
+  check("custom message without display splits", f.runId !== e.runId, `${e.runId}/${f.runId}`);
+}
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
