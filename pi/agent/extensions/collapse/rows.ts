@@ -15,6 +15,13 @@ import {
 } from "./logic.js";
 import { isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
+  isRunHidden,
+  isRunThinkingOpen,
+  runThinkingText,
+  thinkingRowPreview,
+  toggleRunThinking,
+} from "./detach.js";
+import {
   traceEntries,
   traceOwnerId,
   traceOwnerPoke,
@@ -214,6 +221,24 @@ function buildOpenedRow(
 function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI): Component {
   const trace = new Container();
   const piExpanded = !!ownerCtx?.expanded;
+  // Replacement for a detached Pi thinking row (fail-open: renders only
+  // when the detach pass confirmed this run's row is gone — a missed
+  // detach degrades to the stock Pi row, never a duplicate).
+  const hiddenThinking = isRunHidden(runId) ? runThinkingText(runId) : undefined;
+  if (hiddenThinking) {
+    const open = isRunThinkingOpen(runId);
+    const thinkingRow = open
+      ? new Text(hiddenThinking, liveOutputPad(pi), 0)
+      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi));
+    trace.addChild(
+      new MouseRegion(thinkingRow, (event: any) => {
+        if (!event || event.type !== "click") return undefined;
+        toggleRunThinking(runId);
+        tracePokeOwner(runId);
+        return { handled: true };
+      }),
+    );
+  }
   for (const id of traceRuns.get(runId) ?? []) {
     const entry = traceEntries.get(id);
     if (!entry) continue;

@@ -300,3 +300,57 @@ export function planToolRuns(
   boundary();
   return groups;
 }
+
+/** Detach-safety predicate: detaching this assistant component from the
+ *  transcript tree hides nothing but hidden-thinking label rows (plus the
+ *  ignorable blank spacers Pi puts around them). Mirror of
+ *  AssistantMessageComponent.updateContent: text renders per non-blank
+ *  block; consecutive thinking blocks coalesce into runs (blank-only runs
+ *  are skipped and never consume a run index); toolCall/image blocks never
+ *  render; length/aborted/error lines render per stopReason. Requires at
+ *  least one hidden thinking run, otherwise there is nothing to hide.
+ */
+export function isSafeToDetach(
+  message: {
+    content?: Array<{ type?: string; text?: string; thinking?: string }>;
+    stopReason?: string;
+  } | null | undefined,
+  hideThinkingBlock: boolean,
+  thinkingVisibilityOverrides?: Map<number, boolean> | Record<number, boolean> | null,
+): boolean {
+  const content = message?.content;
+  if (!Array.isArray(content)) return false;
+  let hasVisibleText = false;
+  let hasToolCalls = false;
+  let runIndex = 0;
+  let hiddenRuns = 0;
+  for (let i = 0; i < content.length; i++) {
+    const block = content[i];
+    if (block?.type === "text" && (block.text ?? "").trim() !== "") {
+      hasVisibleText = true;
+    } else if (block?.type === "toolCall") {
+      hasToolCalls = true;
+    } else if (block?.type === "thinking") {
+      let nonBlank = false;
+      for (; i < content.length; i++) {
+        const peer = content[i];
+        if (peer?.type !== "thinking") break;
+        if ((peer.thinking ?? "").trim() !== "") nonBlank = true;
+      }
+      i--;
+      if (!nonBlank) continue;
+      const override =
+        thinkingVisibilityOverrides instanceof Map
+          ? thinkingVisibilityOverrides.get(runIndex)
+          : thinkingVisibilityOverrides?.[runIndex];
+      if ((override ?? hideThinkingBlock) !== true) return false;
+      runIndex++;
+      hiddenRuns++;
+    }
+  }
+  if (hasVisibleText) return false;
+  if (hiddenRuns === 0) return false;
+  if (message?.stopReason === "length") return false;
+  if (!hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
+  return true;
+}

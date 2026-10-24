@@ -329,6 +329,47 @@ function check(name, cond, extra) {
       JSON.stringify(plan([msg("assistant", [call("a", "read"), { type: "toolCall", name: "bash" }])])) === '[["a"]]');
   }
 
+  // isSafeToDetach: detach hides nothing but hidden-thinking label rows.
+  // Mirror of assistant-message.js updateContent; blank runs never consume an index.
+  {
+    const think = (t) => ({ type: "thinking", thinking: t });
+    const text = (t) => ({ type: "text", text: t });
+    const tool = (id) => ({ type: "toolCall", id, name: "read", arguments: {} });
+    const safe = logic.isSafeToDetach;
+    check("thinking+tools hidden detaches",
+      safe({ content: [think("plan"), tool("a")], stopReason: "toolUse" }, true) === true, "");
+    check("visible thinking never detaches",
+      safe({ content: [think("plan"), tool("a")], stopReason: "toolUse" }, false) === false, "");
+    check("visible text blocks detach",
+      safe({ content: [think("plan"), text("hello"), tool("a")], stopReason: "toolUse" }, true) === false, "");
+    check("blank text is not visible text",
+      safe({ content: [think("plan"), text("   "), tool("a")], stopReason: "toolUse" }, true) === true, "");
+    check("tools-only has nothing to hide",
+      safe({ content: [tool("a")], stopReason: "toolUse" }, true) === false, "");
+    check("thinking-only is content-safe (host check lives in the detach pass)",
+      safe({ content: [think("plan")], stopReason: "stop" }, true) === true, "");
+    check("length stop keeps its error line",
+      safe({ content: [think("plan"), tool("a")], stopReason: "length" }, true) === false, "");
+    check("aborted with tools stays suppressed",
+      safe({ content: [think("plan"), tool("a")], stopReason: "aborted" }, true) === true, "");
+    check("aborted without tools keeps its line",
+      safe({ content: [think("plan")], stopReason: "aborted" }, true) === false, "");
+    check("error without tools keeps its line",
+      safe({ content: [think("plan")], stopReason: "error" }, true) === false, "");
+    check("blank thinking runs do not count",
+      safe({ content: [think("   "), think("plan"), tool("a")], stopReason: "toolUse" }, true) === true, "");
+    check("all-blank thinking is nothing to hide",
+      safe({ content: [think("  "), tool("a")], stopReason: "toolUse" }, true) === false, "");
+    check("click-opened run blocks detach",
+      safe({ content: [think("plan"), tool("a")], stopReason: "toolUse" }, true, new Map([[0, false]])) === false, "");
+    check("split runs both hidden still detach",
+      safe({ content: [think("a"), tool("x"), think("b"), tool("c")], stopReason: "toolUse" }, true, new Map([[0, true]])) === true, "");
+    check("second run open blocks detach",
+      safe({ content: [think("a"), tool("x"), think("b"), tool("c")], stopReason: "toolUse" }, true, new Map([[1, false]])) === false, "");
+    check("missing content is unsafe",
+      safe({}, true) === false, "");
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

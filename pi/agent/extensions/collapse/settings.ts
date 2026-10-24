@@ -32,3 +32,14 @@ export function currentColumns(): number | undefined {
   return typeof process.stdout?.columns === "number" ? process.stdout.columns : undefined;
 }
 
+/** Detach-hiding of thinking rows (collapse r27 experiment): strictly
+ *  opt-in via env, default off. No Pi setting exists for this, so an env
+ *  flag keeps the experiment out of the settings schema entirely. */
+export function isDetachEnabled(): boolean {
+  try {
+    return process.env.COLLAPSE_HIDE_THINKING === "1";
+  } catch {
+    return false;
+  }
+}
+

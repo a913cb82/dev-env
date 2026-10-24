@@ -93,6 +93,19 @@ function check(name, cond, extra) {
 	// Deterministic macrotask flush (file scope): observes microtask-only
 	// resolution without any clock. Freeze-safe, unlike elapsed-time bounds.
 	const tick = () => new Promise((resolveTick) => setImmediate(resolveTick));
+	// Fork gate for FAKE_* env handoff: startSubagent returns before the async
+	// fork, and the fork spreads process.env synchronously before publishing
+	// record.pid. Deleting the var is only safe once the pid is visible —
+	// an immediate delete can land first under load and the child boots
+	// without the setting. Polls disk (5s cap), never throws.
+	const waitForFork = async (dir, runId) => {
+		for (let i = 0; i < 200; i++) {
+			const row = registry.readRecords(dir).find((r) => r.runId === runId);
+			if (row?.pid) return row;
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		return registry.readRecords(dir).find((r) => r.runId === runId);
+	};
 	const agentDir = path.join(sandbox, "agent");
 	fs.mkdirSync(agentDir, { recursive: true });
 	let s = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} });
@@ -1457,6 +1470,7 @@ function check(name, cond, extra) {
 			const resumeResult = await meshSend.execute("mesh-resume", { target: "/mesh-child/mesh-rgrand", message: "continue" }, undefined, undefined, { cwd: sandbox, scopedModels: [], ui: {} });
 			check("terminal deep resume reports resumed", resumeResult.content[0].text.includes("Resumed"), resumeResult.content[0].text);
 			resumedRecord = registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-rgrand");
+			await waitForFork(meshAgentDir, "mesh-rgrand");
 		} finally {
 			if (savedCommand === undefined) delete process.env.PI_SUBAGENT_COMMAND;
 			else process.env.PI_SUBAGENT_COMMAND = savedCommand;
@@ -2139,6 +2153,7 @@ function check(name, cond, extra) {
 	process.env.FAKE_MODE = "split-utf8";
 	process.env.FAKE_TEXT = "unicode 😀 survives";
 	const unicodeRec = await spawn.startSubagent({ task: "unicode", name: "unicode-child" }, baseCtx());
+	await waitForFork(spawnAgentDir, unicodeRec.runId);
 	delete process.env.FAKE_MODE;
 	delete process.env.FAKE_TEXT;
 	let unicodeDone;
@@ -2345,6 +2360,7 @@ function check(name, cond, extra) {
 	check("wrap-up steer fires at maxTurns", wrapDone?.status === "completed" && (wrapDone.latestText ?? "").includes("turn limit"), wrapDone && `${wrapDone.status} ${wrapDone.latestText}`);
 	process.env.FAKE_DELAY_MS = "2000";
 	const graceRec = await spawn.startSubagent({ task: "grace-me", name: "turn-grace-child" }, turnCtx(1, 0));
+	await waitForFork(spawnAgentDir, graceRec.runId);
 	delete process.env.FAKE_DELAY_MS;
 	let graceDone;
 	for (let i = 0; i < 200; i++) {
@@ -2373,6 +2389,7 @@ function check(name, cond, extra) {
 	process.env.FAKE_DELAY_MS = "100";
 	const immediateRec = await spawn.startSubagent({ task: "initial", name: "immediate-child" }, baseCtx());
 	const immediateAccepted = await spawn.sendSubagentMessage(immediateRec, "immediate steer");
+	await waitForFork(spawnAgentDir, immediateRec.runId);
 	delete process.env.FAKE_DELAY_MS;
 	for (let i = 0; i < 100; i++) {
 		const row = registry.readRecords(spawnAgentDir).find((r) => r.runId === immediateRec.runId);
@@ -2413,6 +2430,7 @@ function check(name, cond, extra) {
 		{ task: "never starts", name: "timeout-child" },
 		{ ...baseCtx(), rpcRequestTimeoutMs: 1000, rpcStartupTimeoutMs: 100 },
 	);
+	await waitForFork(spawnAgentDir, timeoutRec.runId);
 	delete process.env.FAKE_MODE;
 	let timeoutDone;
 	for (let i = 0; i < 100; i++) {
@@ -2471,8 +2489,9 @@ function check(name, cond, extra) {
 	process.env.FAKE_MODE = "close-stdin";
 	const writeRec = await spawn.startSubagent(
 		{ task: "cannot write", name: "write-child" },
-		{ ...baseCtx(), rpcRequestTimeoutMs: 2000, rpcStartupTimeoutMs: 2000 },
+		{ ...baseCtx(), rpcRequestTimeoutMs: 300_000, rpcStartupTimeoutMs: 300_000 },
 	);
+	await waitForFork(spawnAgentDir, writeRec.runId);
 	delete process.env.FAKE_MODE;
 	let writeDone;
 	for (let i = 0; i < 100; i++) {
@@ -2489,6 +2508,7 @@ function check(name, cond, extra) {
 				{ task: "image payload", name: `${mode}-${limit ?? "default"}` },
 				{ ...baseCtx(), persistAfterSettled: false, settings: { ...baseCtx().settings, rpcMaxLineChars: limit } },
 			);
+			await waitForFork(spawnAgentDir, rec.runId);
 			delete process.env.FAKE_MODE;
 			let done;
 			for (let i = 0; i < 200; i++) {
@@ -2510,6 +2530,7 @@ function check(name, cond, extra) {
 		{ task: "too much stdout", name: "oversized-child" },
 		{ ...baseCtx(), stdoutLineLimit: 512 },
 	);
+	await waitForFork(spawnAgentDir, oversizedRec.runId);
 	delete process.env.FAKE_MODE;
 	delete process.env.FAKE_LINE_LENGTH;
 	let oversizedDone;
@@ -2522,6 +2543,7 @@ function check(name, cond, extra) {
 
 	process.env.FAKE_EXIT = "1";
 	const failRec = await spawn.startSubagent({ task: "fail", name: "failer" }, { ...baseCtx(), onSettled: (r) => settled.push(r.status) });
+	await waitForFork(spawnAgentDir, failRec.runId);
 	delete process.env.FAKE_EXIT;
 	for (let i = 0; i < 100; i++) {
 		polled = registry.readRecords(spawnAgentDir).find((r) => r.runId === failRec.runId);
@@ -2574,6 +2596,7 @@ function check(name, cond, extra) {
 	// Cancel stops the child process; resume restarts it from the transcript.
 	process.env.FAKE_DELAY_MS = "5000";
 	const slowRec = await spawn.startSubagent({ task: "slow", name: "slowpoke" }, { ...baseCtx() });
+	await waitForFork(spawnAgentDir, slowRec.runId);
 	delete process.env.FAKE_DELAY_MS;
 	let slowRow;
 	for (let i = 0; i < 100; i++) {
@@ -2672,6 +2695,48 @@ function check(name, cond, extra) {
 		try { process.kill(-pidProbe.pid, "SIGTERM"); } catch { pidProbe.kill("SIGTERM"); }
 		await new Promise((resolve) => pidProbe.once("close", resolve));
 	}
+
+	// Startup-parked messages survive single-chunk settlement: the fake
+	// answers the prompt and settles in ONE stdout write, so the parent
+	// processes response+settlement in one synchronous chunk. The queued
+	// followup send must not observe the just-settled terminal status and
+	// drop the retained message (it rides the pipe behind the prompt).
+	process.env.FAKE_MODE = "coalesced-settle";
+	const coalRec = await spawn.startSubagent(
+		{ task: "qc", name: "coalesced-child" },
+		baseCtx(),
+	);
+	check("followup parks while starting", await spawn.sendSubagentMessage(coalRec, "coalesced followup", undefined, "followUp") === "starting");
+	await waitForFork(spawnAgentDir, coalRec.runId);
+	delete process.env.FAKE_MODE;
+	let coalDone;
+	for (let i = 0; i < 100; i++) {
+		coalDone = registry.readRecords(spawnAgentDir).find((r) => r.runId === coalRec.runId);
+		if (coalDone?.status === "completed" && coalDone.latestText === "steered: coalesced followup") break;
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	check("single-chunk settlement keeps the parked followup", coalDone?.status === "completed" && coalDone.latestText === "steered: coalesced followup", coalDone && `${coalDone.status} ${coalDone.latestText}`);
+	await spawn.terminateOwnedSubagents([coalRec.runId]);
+
+	// Over-budget settlement is cancelled even when message_end and
+	// agent_settled arrive in one chunk: the async cancel cannot outrun the
+	// synchronous settle, so the settled branch re-checks the turn budget
+	// instead of recording "completed".
+	process.env.FAKE_MODE = "coalesced-settle";
+	const coalCancelRec = await spawn.startSubagent(
+		{ task: "qc-cancel", name: "coalesced-cancel-child" },
+		{ ...baseCtx(), settings: { ...baseCtx().settings, maxTurns: 1, graceTurns: 0 } },
+	);
+	await waitForFork(spawnAgentDir, coalCancelRec.runId);
+	delete process.env.FAKE_MODE;
+	let coalCancelDone;
+	for (let i = 0; i < 100; i++) {
+		coalCancelDone = registry.readRecords(spawnAgentDir).find((r) => r.runId === coalCancelRec.runId);
+		if (coalCancelDone && registry.isTerminalStatus(coalCancelDone.status)) break;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	check("single-chunk over-budget settlement cancels", coalCancelDone?.status === "cancelled", coalCancelDone && `${coalCancelDone.status} ${coalCancelDone.latestText}`);
+	await spawn.terminateOwnedSubagents([coalCancelRec.runId]);
 
 	// queued when the gate is full
 	const held = await spawn.gate.acquire(1);
@@ -3092,6 +3157,7 @@ function check(name, cond, extra) {
 			const savedDelay = process.env.FAKE_DELAY_MS;
 			process.env.FAKE_DELAY_MS = "30000";
 			const liveRec = await spawn.startSubagent({ task: "live grand", name: "live-grand-proc" }, rlSpawnCtx(agentDir, session));
+			await waitForFork(agentDir, liveRec.runId);
 			if (savedDelay === undefined) delete process.env.FAKE_DELAY_MS;
 			else process.env.FAKE_DELAY_MS = savedDelay;
 			let launched;

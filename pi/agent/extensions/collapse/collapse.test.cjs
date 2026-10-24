@@ -1304,6 +1304,214 @@ function textResult(chars) {
     check("final label converges", row.hiddenThinkingLabel.includes("final full"), row.hiddenThinkingLabel);
   }
 
+  // 29. detach pass hides only SAFE+hosted thinking rows (flag-gated, default off).
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map(), commands = new Map();
+    const piL = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: (n, o) => commands.set(n, o),
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const detach = mod;
+    detach.resetDetachState?.();
+    const think = (t) => ({ type: "thinking", thinking: t });
+    const text = (t) => ({ type: "text", text: t });
+    const tool = (id) => ({ type: "toolCall", id, name: "read", arguments: {} });
+    const mkRow = (message) => ({
+      lastMessage: message, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+    });
+    const msgSafe = { role: "assistant", content: [think("plan a"), tool("h1")], stopReason: "toolUse" };
+    const msgText = { role: "assistant", content: [think("plan b"), text("hello"), tool("h2")], stopReason: "toolUse" };
+    const msgLonely = { role: "assistant", content: [think("plan c")], stopReason: "stop" };
+    const rowSafe = mkRow(msgSafe), rowText = mkRow(msgText), rowLonely = mkRow(msgLonely);
+    const chat = { children: [rowSafe, rowText, rowLonely],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    const widgets = [];
+    const entries = [
+      { id: "e1", type: "message", message: msgSafe },
+      { id: "e2", type: "message", message: msgText },
+      { id: "e3", type: "message", message: msgLonely },
+    ];
+    const sessionManager = { getEntries: () => entries };
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    widgets.length = 0;
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager });
+    widgets[0]({ children: [chat] }, {});
+    widgets[0]({ children: [chat] }, {});
+    // flag off by default: nothing detached
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    let r = detach.detachPass(piL, sessionManager);
+    check("flag off detaches nothing", r.detached === 0 && chat.children.length === 3, JSON.stringify(r));
+    // flag on: only the SAFE+hosted row goes (lonely thinking has no host run)
+    process.env.COLLAPSE_HIDE_THINKING = "1";
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const mk = (t, id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    bash.renderCall({ command: "echo host" }, theme, mk(bash, "h1", { command: "echo host" }));
+    bash.renderCall({ command: "echo two" }, theme, mk(bash, "h2", { command: "echo two" }));
+    r = detach.detachPass(piL, sessionManager);
+    check("SAFE+hosted row detached", !chat.children.includes(rowSafe), chat.children.length);
+    check("text row stays mounted", chat.children.includes(rowText), "");
+    check("lonely thinking stays (no host run)", chat.children.includes(rowLonely), "");
+    check("detach recorded", detach.isMessageHidden("e1") === true, "");
+    check("others not recorded", detach.isMessageHidden("e2") === false && detach.isMessageHidden("e3") === false, "");
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    detach.resetDetachState?.();
+  }
+
+  // 30. fail-open coupling: replacement preview renders iff detach confirmed.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piL = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const detach = mod;
+    detach.resetDetachState?.();
+    process.env.COLLAPSE_HIDE_THINKING = "1";
+    const theme = { fg: (c, t) => t, bold: (t) => t, italic: (t) => t, style: (t) => t };
+    const bash = tools.get("bash");
+    const mk = (t, id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const out1 = bash.renderCall({ command: "echo one" }, theme, mk(bash, "f1", { command: "echo one" }));
+    const lines1 = out1.render(100);
+    check("no preview without confirmed detach", !lines1.some((l) => l.includes("plan")), lines1.length);
+    // confirm detach for run of f1 via the recorded id, then re-render builds preview
+    const msg = { role: "assistant", content: [
+      { type: "thinking", thinking: "plan for one" },
+      { type: "toolCall", id: "f1", name: "bash", arguments: {} },
+    ], stopReason: "toolUse" };
+    const fakeParent = { children: [], removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    const row = { lastMessage: msg, hiddenThinkingLabel: "T", updateContent() {}, setHiddenThinkingLabel() {} };
+    fakeParent.children.push(row);
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [fakeParent] }, {});
+    detach.detachPass(piL, { getEntries: () => [{ id: "ef1", type: "message", message: msg }] });
+    const out2 = bash.renderCall({ command: "echo one" }, theme, mk(bash, "f1", { command: "echo one" }));
+    const lines2 = out2.render(100);
+    check("preview appears after confirmed detach", lines2.some((l) => l.includes("plan for one")), lines2.join("|").slice(0, 160));
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    detach.resetDetachState?.();
+  }
+
+  // 31. session_start backfills history rows and stashes text for reload.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map(), commands = new Map();
+    const piL = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: (n, o) => commands.set(n, o),
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const detach = mod;
+    detach.resetDetachState?.();
+    process.env.COLLAPSE_HIDE_THINKING = "1";
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const read = tools.get("read");
+    const mk = (t, id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const histMsg = { role: "assistant", content: [
+      { type: "thinking", thinking: "historical plan" },
+      { type: "toolCall", id: "old1", name: "read", arguments: { path: "/f" } },
+    ], stopReason: "toolUse" };
+    const histRow = { lastMessage: histMsg, hiddenThinkingLabel: "T", updateContent() {}, setHiddenThinkingLabel() {} };
+    const chat = { children: [histRow],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    const widgets = [];
+    const sessionManager = { getEntries: () => [
+      { id: "hid1", type: "message", message: histMsg },
+      { id: "hid1r", type: "message", message: { role: "toolResult", toolCallId: "old1", content: [{ type: "text", text: "ok" }] } },
+    ]};
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager });
+    widgets[0]({ children: [chat] }, {});
+    read.renderCall({ path: "/f" }, theme, mk(read, "old1", { path: "/f" }));
+    const said = [];
+    await commands.get("collapse").handler("", { ui: { notify: (m) => said.push(m) } });
+    check("history row detached at startup", !chat.children.includes(histRow), chat.children.length);
+    check("stash has history text", (detach.runThinkingForTool("old1") ?? "").includes("historical plan"), detach.runThinkingForTool("old1") ?? "(none)");
+    check("collapse reports hidden count", said.join("").includes("hidden:"), said.join("").slice(0, 200));
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    detach.resetDetachState?.();
+  }
+
+  // 32. reload replanning: detach after applyPlannedRuns, or the preview
+  // keys a stale run id (caught live: hidden:1 reported, no preview row).
+  // Same container cleared+rebuilt (production reload shape), so the
+  // session_start detach sees the fresh rows directly.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piL = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const detach = mod;
+    detach.resetDetachState?.();
+    process.env.COLLAPSE_HIDE_THINKING = "1";
+    const theme = { fg: (c, t) => t, bold: (t) => t, italic: (t) => t, style: (t) => t };
+    const read = tools.get("read");
+    const mk = (t, id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const histMsg = { role: "assistant", content: [
+      { type: "thinking", thinking: "reloadable plan" },
+      { type: "toolCall", id: "rr1", name: "read", arguments: { path: "/g" } },
+    ], stopReason: "toolUse" };
+    const entries = [
+      { id: "rid1", type: "message", message: histMsg },
+      { id: "rid1r", type: "message", message: { role: "toolResult", toolCallId: "rr1", content: [{ type: "text", text: "ok" }] } },
+    ];
+    const sm = { getEntries: () => entries };
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    // session 1: handle captured, row detached live.
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: sm });
+    const chat = { children: [],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    const row1 = { lastMessage: histMsg, hiddenThinkingLabel: "T", updateContent() {}, setHiddenThinkingLabel() {} };
+    chat.children.push(row1);
+    widgets[0]({ children: [chat] }, {});
+    read.renderCall({ path: "/g" }, theme, mk(read, "rr1", { path: "/g" }));
+    detach.detachPass(piL, sm);
+    check("session 1 detached", !chat.children.includes(row1), "");
+    // reload: same container cleared+rebuilt with fresh rows, same message
+    // refs (entry.message identity holds); rebuild renders before the event.
+    const row2 = { lastMessage: histMsg, hiddenThinkingLabel: "T", updateContent() {}, setHiddenThinkingLabel() {} };
+    chat.children.push(row2);
+    read.renderCall({ path: "/g" }, theme, mk(read, "rr1", { path: "/g" }));
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: sm });
+    const out = read.renderCall({ path: "/g" }, theme, mk(read, "rr1", { path: "/g" }));
+    const lines = out.render(100).join("\n");
+    check("reload detaches fresh row", !chat.children.includes(row2), chat.children.length);
+    check("preview keys the final run", lines.includes("reloadable plan"), lines.slice(0, 160));
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    detach.resetDetachState?.();
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

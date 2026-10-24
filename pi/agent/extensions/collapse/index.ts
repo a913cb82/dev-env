@@ -48,6 +48,21 @@ import {
   createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+  detachPass,
+  hiddenRunCount,
+  isMessageHidden,
+  noteSessionManager,
+  resetDetachState,
+  runThinkingForTool,
+} from "./detach.js";
+export {
+  detachPass,
+  hiddenRunCount,
+  isMessageHidden,
+  resetDetachState,
+  runThinkingForTool,
+};
+import {
   captureWalkerTui,
   reconcileThinkingLabels,
   walkerStatus,
@@ -82,7 +97,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 26;
+const COLLAPSE_REVISION = 27;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -94,6 +109,7 @@ let collapseLastHidden: boolean | undefined;
 function collapseTick(pi: ExtensionAPI): void {
   try {
     if (!collapseSawUI) return;
+    detachPass(pi);
     const hidden = (pi?.getSettings?.()?.hideThinkingBlock ?? false) === true;
     if (collapseLastHidden === undefined || hidden === collapseLastHidden) {
       collapseLastHidden = hidden;
@@ -117,8 +133,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("collapse", {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
+      detachPass(pi);
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()}${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()}; hidden: ${hiddenRunCount()} run(s)${uncollapsedReport(pi)}`,
       );
     },
   });
@@ -227,12 +244,16 @@ export default function (pi: ExtensionAPI) {
       }
       reconcileThinkingLabels(pi);
       const sm = ctx.sessionManager as any;
+      noteSessionManager(sm);
       const entries =
         typeof sm?.getBranch === "function" ? sm.getBranch() : (sm?.getEntries?.() ?? []);
       // The rebuild rendered one run per history tool (anti-teleport while
       // positions were unknown). Merge contiguous groups now: rows stay
       // where they are, but share one component, so one blank line total.
       applyPlannedRuns(planToolRuns(entries, isOwnTool));
+      // Detach only after planning: applyPlannedRuns reassigns run ids,
+      // and the replacement preview row is keyed by the final run.
+      detachPass(pi, sm);
     } catch {
       // Label update is cosmetic; never break startup.
     }
@@ -250,9 +271,15 @@ export default function (pi: ExtensionAPI) {
     reconcileRows();
   });
   pi.on("message_update", (event) => traceOnMessageUpdate(event));
-  pi.on("message_end", () => reconcileRows());
+  pi.on("message_end", () => {
+    reconcileRows();
+    detachPass(pi);
+  });
   pi.on("tool_execution_start", () => reconcileRows());
-  pi.on("turn_end", () => reconcileRows());
+  pi.on("turn_end", () => {
+    reconcileRows();
+    detachPass(pi);
+  });
   // Tools that opted into collapsing (the global wrap slot) render their
   // own rows, so they merge like the built-ins; anything else still splits.
   const isOwnTool = (name: string): boolean =>

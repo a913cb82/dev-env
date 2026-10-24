@@ -18,7 +18,7 @@ export const WALKER_KEY = "collapse-thinking-walker";
 
 /** Live TUI handle captured from the widget factory; unknown until the
  *  factory first runs (TUI mode only). */
-let walkerTui: any = undefined;
+let capturedTui: any = undefined;
 
 /** Last reconcile outcome, reported by `/collapse`. */
 let walkStatus = "inactive (no TUI handle)";
@@ -33,11 +33,17 @@ export function walkerStatus(): string {
   return walkStatus;
 }
 
+/** The live TUI handle captured by the walker widget (undefined until the
+ *  factory first runs; TUI mode only). The detach pass reuses it. */
+export function walkerTui(): unknown {
+  return capturedTui;
+}
+
 /** Stash the live TUI handle. Called from the widget factory only — never
  *  labels anything (factories run during render; labeling there would loop). */
 export function captureWalkerTui(tui: unknown): void {
   try {
-    if (tui && typeof tui === "object") walkerTui = tui;
+    if (tui && typeof tui === "object") capturedTui = tui;
   } catch {
     // A hostile handle is the same as no handle: stock behavior.
   }
@@ -45,7 +51,7 @@ export function captureWalkerTui(tui: unknown): void {
 
 /** An assistant thinking row, duck-typed (never `instanceof`: jiti breaks it).
  *  Real rows expose all three; anything else is skipped. */
-function isThinkingRow(node: unknown): node is {
+export function isThinkingRow(node: unknown): node is {
   lastMessage: { role?: unknown; content?: unknown };
   hiddenThinkingLabel: unknown;
   setHiddenThinkingLabel(label: string): void;
@@ -82,12 +88,12 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
       walkStatus = "idle (thinking visible)";
       return 0;
     }
-    if (!walkerTui || !Array.isArray((walkerTui as { children?: unknown }).children)) {
+    if (!capturedTui || !Array.isArray((capturedTui as { children?: unknown }).children)) {
       walkStatus = "inactive (no TUI handle)";
       return 0;
     }
     const rows: unknown[] = [];
-    collectRows(walkerTui, rows);
+    collectRows(capturedTui, rows);
     if (rows.length === 0) {
       walkStatus = "inactive (no rows found)";
       return 0;

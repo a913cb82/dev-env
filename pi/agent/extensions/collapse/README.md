@@ -39,6 +39,21 @@ Toggling `ctrl+o` re-depths an open row without another click; clicking it
 again closes it. Both depths are byte-identical to a real
 `ToolExecutionComponent` (pinned by tests).
 
+**Thinking-row detach (experiment, default off).** Pi's thinking row is
+unconditional given visible thinking, so the only way to merge thinking into
+the gapless tool block is to detach the whole assistant component via the
+public `removeChild` — no message edits, no patching. Enable with
+`COLLAPSE_HIDE_THINKING=1`. Two rules keep it safe: the SAFE predicate
+(`isSafeToDetach`, a mirror of Pi's own renderer — no text, all runs hidden,
+clean stop, has tools) means a detach never hides anything but hidden-label
+rows; and the replacement preview row (first row of the trace, click to
+expand the full stashed text) renders iff the detach is confirmed — a miss
+degrades to the stock Pi row, never a duplicate. Detach runs on
+`message_end` / `turn_end` / `session_start` (history backfill) plus the
+1-second poll tick, which heals any rebuild path within a second. Messages
+are never edited, so history, replay, compaction, and reload backfill keep
+full reasoning. `/collapse` reports `hidden: N run(s)`.
+
 **Thinking label.** Per row, via a tree walk — never the global setter.
 Pi's `setHiddenThinkingLabel` applies one string to every assistant row, so
 the extension does not call it at all. Instead it walks the public TUI tree
@@ -85,6 +100,7 @@ unexpected gap, the boundary list names what split them.
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
 | `labels.ts` | tree-walk per-row thinking labels, walker widget, reconcile |
+| `detach.ts` | opt-in thinking-row detach (env-gated experiment, default off) |
 | `logic.ts` | pure helpers (summaries, truncation, label sizing) |
 
 Registry entries are never pruned: `buildTrace` reads them at render time and

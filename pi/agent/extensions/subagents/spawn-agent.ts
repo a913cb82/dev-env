@@ -1199,6 +1199,15 @@ async function runSubagentProcess(
 				if (record.status === "cancelled" || diskCancelled()) {
 					const onDisk = readRecords(context.agentDir).find((r) => r.runId === record.runId);
 					if (onDisk) Object.assign(record, onDisk);
+				} else if (
+					(context.settings.maxTurns ?? 0) > 0 &&
+					turnCount >= (context.settings.maxTurns ?? 0) + (context.settings.graceTurns ?? 5)
+				) {
+					// The async cancel fired at the over-budget message_end cannot
+					// outrun a same-chunk settlement: record the budget outcome
+					// here instead of "completed". The pending cancel still owns
+					// the kill and cleanup; this only fixes the verdict.
+					settle("cancelled", `Turn limit exceeded (${turnCount} turns)`);
 				} else if (state.stopReason === "aborted") {
 					settle("cancelled", "Subagent was aborted");
 				} else if (state.stopReason === "error") {
@@ -1314,19 +1323,20 @@ async function runSubagentProcess(
 			} else {
 				record.sessionFile = await findSessionFile(record.cwd, record.runId);
 			}
-			// Queue parked startup messages synchronously with the prompt send, not
-			// after its response: a fast child can complete in the gap between
-			// response processing and a later drain (same-chunk coalescing), and
-			// the terminal check would then swallow the retained messages.
-		// Queued here they ride messageQueue behind the prompt, ahead of any
-			// possible completion round trip. Wire order stays prompt-first:
-			// send() writes the prompt line synchronously before returning.
+			// Parked startup messages are written synchronously behind the prompt
+			// send (pipe FIFO keeps prompt-first order), NOT via the queued
+			// liveChild.sendMessage: the queue defers past the prompt response,
+			// and a single-chunk response+settlement marks the run terminal
+			// before the queued write runs — the terminal guard then drops the
+			// ("starting"-accepted) message and the swallowed rejection hides
+			// it. The child just answered get_state, so it is alive; a direct
+			// send cannot lose to settlement that has not happened yet.
 			const promptPromise = send({ type: "prompt", message: input.task }, { signal: runSignal, deadline: startupDeadline });
 			const startup = startingChildren.get(record.runId);
 			liveChildren.set(record.runId, liveChild);
 			startingChildren.delete(record.runId);
 			for (const { text, mode } of startup?.messages ?? []) {
-				void liveChild.sendMessage(text, undefined, mode).catch(() => {});
+				void send({ type: "prompt", message: text, streamingBehavior: mode }, { signal: runSignal }).catch(() => {});
 			}
 			await promptPromise;
 			await initialDone;

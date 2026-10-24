@@ -27,7 +27,11 @@ if (process.env.FAKE_ARGS_DIR && process.env.PI_SUBAGENT_RUN_ID) {
 	);
 }
 
-const line = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
+let line = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
+// Test mode coalesced-settle: buffer a command's entire response (response +
+// settlement lines) into ONE stdout write. Pipes deliver small single writes
+// atomically, so the parent processes response+settlement in one synchronous
+// chunk — the shape that exposes startup-flush races deterministically.
 
 let runCount = 0;
 let runActive = false;
@@ -177,13 +181,22 @@ process.stdin.on("data", (chunk) => {
 				line({ type: "response", id: command.id, command: command.type, success: false, error: "fake rejection" });
 				continue;
 			}
-			line({ type: "response", id: command.id, command: command.type, success: true });
-			if (command.message === "ui-request") {
+			const respondAndRun = () => {
+				line({ type: "response", id: command.id, command: command.type, success: true });
+				if (command.message === "ui-request") {
 				pendingUi = true;
 				line({ type: "extension_ui_request", id: "ui-1", method: "select", title: "Choose", options: ["approved", "denied"] });
-			} else {
-				run(command.message, command.streamingBehavior ? "steer" : command.type);
-			}
+				} else {
+					run(command.message, command.streamingBehavior ? "steer" : command.type);
+				}
+			};
+			if (mode === "coalesced-settle" && !delay) {
+				const out = [];
+				const realLine = line;
+				line = (obj) => { out.push(`${JSON.stringify(obj)}\n`); };
+				try { respondAndRun(); } finally { line = realLine; }
+				process.stdout.write(out.join(""));
+			} else respondAndRun();
 		} else if (command.type === "abort" || command.type === "clear_queue") {
 			line({ type: "response", id: command.id, command: command.type, success: true,
 				...(command.type === "clear_queue" ? { data: { steering: [], followUp: [] } } : {}) });
