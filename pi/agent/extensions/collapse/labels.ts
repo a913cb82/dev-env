@@ -27,7 +27,15 @@ let walkStatus = "inactive (no TUI handle)";
  *  steady transcript costs one Map lookup per row per pass and nothing else.
  *  WeakRefs would be purer; a WeakMap cannot be iterated for status, and
  *  entries die with their components anyway. */
-const labeledFor = new WeakMap<object, unknown>();
+/** Per-row label cache: message AND the width/pad it was built for. A
+ *  resize must rebuild the label — a stale, wider label word-wraps its
+ *  count — so width is part of the identity, not just the message. */
+interface LabeledFor {
+  message: unknown;
+  width: number | undefined;
+  pad: number;
+}
+const labeledFor = new WeakMap<object, LabeledFor>();
 
 export function walkerStatus(): string {
   return walkStatus;
@@ -105,15 +113,16 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
       if (!isThinkingRow(row)) continue;
       const message = row.lastMessage as { role?: unknown; content?: unknown };
       if (message?.role !== "assistant") continue;
-      if (labeledFor.get(row) === message) continue;
+      const cached = labeledFor.get(row);
+      if (cached && cached.message === message && cached.width === width && cached.pad === pad) continue;
       const thinking = extractThinkingText(message);
       if (!thinking) {
-        labeledFor.set(row, message);
+        labeledFor.set(row, { message, width, pad });
         continue;
       }
       const label = thinkingLabelForWidth(thinking, width, pad);
       if (row.hiddenThinkingLabel !== label) row.setHiddenThinkingLabel(label);
-      labeledFor.set(row, message);
+      labeledFor.set(row, { message, width, pad });
       labeled++;
     }
     walkStatus = `active (${rows.length} row(s))`;

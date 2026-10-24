@@ -105,7 +105,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 44;
+const COLLAPSE_REVISION = 45;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -119,6 +119,10 @@ function collapseTick(pi: ExtensionAPI): void {
     if (!collapseSawUI) return;
     detachPass(pi);
     wrappingPass(pi);
+    // Also on the poll: a resize changes the label width, and reconcile is
+    // idempotent per row (message + width + pad), so this relabels exactly
+    // the rows whose label no longer fits.
+    reconcileThinkingLabels(pi);
     const hidden = (pi?.getSettings?.()?.hideThinkingBlock ?? false) === true;
     if (collapseLastHidden === undefined || hidden === collapseLastHidden) {
       collapseLastHidden = hidden;

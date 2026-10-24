@@ -39,8 +39,13 @@ Long rows cut in the middle, so the head and the count survive.
 Every row's first glyph lands on column 2 — the same column as Pi's prose
 (`outputPad`), hidden-thinking rows (`Text` pad) and stock tool cells
 (`Box(1, 1)`). There is no gutter glyph: the tool name or `$` is the marker,
-so a row expands into its stock cell without its text moving sideways. The
-char count ends on the same column as the thinking rows' count.
+so a row expands into its stock cell without its text moving sideways. Tool
+rows end their count on the same column as the thinking rows' count, one
+column short of the edge: Pi renders thinking labels in a `Text` and a label
+that exactly fills the line word-wraps its trailing count, so both keep that
+margin. A label is rebuilt when the measured width changes (the poll
+reconciles per row on message + width + pad), so a resize re-fits it instead
+of leaving a stale label that wraps.
 
 ## Behaviour
 
@@ -140,6 +145,10 @@ to right, and which leaves the foreground colour alone. Escape bytes add no
 visible width, so right alignment is unchanged. `tests/pi-internals.test.sh`
 pins both the Pi wrapper and chalk's rewrite, so a change on either side fails
 the test instead of silently bringing the italic back.
+
+The label is sized from `process.stdout.columns` and carries its width in the
+per-row cache, so the first poll after a resize rebuilds it. The one-column
+margin above is what keeps the gap between a resize and that poll invisible.
 
 **Live preview while thinking.** The label is also written on
 `message_update`, so the preview (and its char count) grows as the model

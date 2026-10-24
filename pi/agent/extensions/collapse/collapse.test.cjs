@@ -182,7 +182,7 @@ function textResult(chars) {
     check("read result invalidates", invalidated === 1, String(invalidated));
     const lines = read.renderCall(ctx.args, ansiTheme, { ...ctx, state }).render(100);
     check("read count shown", plainText(lines[0]).endsWith("5.3k ch"), JSON.stringify(plainText(lines[0])));
-    check("read padded to width", plainText(lines[0]).length === 99, `${plainText(lines[0]).length}: ${JSON.stringify(plainText(lines[0]))}`);
+    check("read padded to width", plainText(lines[0]).length === 98, `${plainText(lines[0]).length}: ${JSON.stringify(plainText(lines[0]))}`);
   }
 
   // 4. read failure: tool name red bold
@@ -404,7 +404,7 @@ function textResult(chars) {
       const rows = read.renderCall(rctx.args, ansiTheme, { ...rctx, state }).render(80);
       // Marker theme adds literal tag characters: measure what the terminal sees.
       const visible = plainText(rows[0]);
-      check("pad 0 row fills width", visible.length === 80, `${visible.length}: ${JSON.stringify(visible)}`);
+      check("pad 0 row fills width", visible.length === 79, `${visible.length}: ${JSON.stringify(visible)}`);
     } finally {
       pi._pad = 1;
     }
@@ -461,7 +461,7 @@ function textResult(chars) {
     });
     const lines = read.renderCall(ctx.args, ansiTheme, ctx).render(60);
     check("ansi one line", lines.length === 1, JSON.stringify(lines));
-    check("ansi padded to width", tui.visibleWidth(lines[0]) === 59, `${tui.visibleWidth(lines[0])}: ${JSON.stringify(lines[0])}`);
+    check("ansi padded to width", tui.visibleWidth(lines[0]) === 58, `${tui.visibleWidth(lines[0])}: ${JSON.stringify(lines[0])}`);
     check("ansi keeps count", lines[0].endsWith("\x1b[31m5.3k ch\x1b[0m"), JSON.stringify(lines[0]).slice(-40));
   }
 
@@ -2346,6 +2346,47 @@ function textResult(chars) {
     );
     check("bash empty command dim ellipsis", row("bash", { command: "   " }) === `${A} <dim>…</>` , row("bash", { command: "   " }));
     check("bash keeps timeout hint dim", row("bash", { command: "ls", timeout: 25 }).endsWith("<dim> (timeout 25s)</>"), row("bash", { command: "ls", timeout: 25 }));
+  }
+
+  // 66. resize relabels: a label built for a wider terminal must be rebuilt
+  // when the terminal narrows, otherwise Text word-wraps the count.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const handlers = new Map();
+    const piL = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const widgets = new Map();
+    const ui = { setWidget: (k, f) => widgets.set(k, f), setHiddenThinkingLabel: () => { throw new Error("global setter must not be called"); } };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    const message = { role: "assistant", content: [{ type: "thinking", thinking: "word ".repeat(400) }] };
+    const row = {
+      lastMessage: message,
+      hiddenThinkingLabel: "Thinking...",
+      updateContent() {},
+      setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+    };
+    for (const factory of widgets.values()) factory({ children: [row] }, {});
+    const setColumns = (value) => Object.defineProperty(process.stdout, "columns", { value, configurable: true, writable: true });
+    const visibleLen = (label) => label.replace(/\x1b\[[0-9;]*m/g, "").length;
+    try {
+      setColumns(120);
+      await handlers.get("message_end")[0]({ message }, { hasUI: true, ui });
+      const wide = row.hiddenThinkingLabel;
+      check("wide label sized to terminal", visibleLen(wide) === 117, `${visibleLen(wide)}`);
+      setColumns(80);
+      await handlers.get("message_end")[0]({ message }, { hasUI: true, ui });
+      const narrow = row.hiddenThinkingLabel;
+      check("resize rebuilds label", visibleLen(narrow) === 77, `${visibleLen(narrow)} vs ${visibleLen(wide)}`);
+      check("resize keeps the count", narrow.endsWith("\x1b[23;23m2.0k ch"), JSON.stringify(narrow.slice(-20)));
+    } finally {
+      delete process.stdout.columns;
+    }
   }
 
   if (failures > 0) {

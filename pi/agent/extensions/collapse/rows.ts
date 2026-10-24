@@ -61,7 +61,9 @@ class CollapsedLine implements Component {
   ) {}
 
   render(width: number): string[] {
-    const target = Math.max(8, width - this.pad);
+    // One column inside the edge: the thinking label reserves one for the
+    // same reason (see labelBudget), and both counts must land together.
+    const target = Math.max(8, width - this.pad - 1);
     // No gutter glyph: one leading space puts the first glyph on column 2,
     // the column Pi's prose (outputPad), hidden-thinking rows (Text pad) and
     // stock tool cells (Box(1, 1)) all start on. A row therefore expands

@@ -325,10 +325,13 @@ export function labelBudget(stdoutColumns?: unknown, outputPad = 1): number {
   const cols =
     typeof stdoutColumns === "number" && stdoutColumns > 0 ? Math.floor(stdoutColumns) : 80;
   const pad = outputPad === 0 ? 0 : 1;
-  // Pi renders the label in a Text with `pad` columns on each side, so a label
-  // of cols-2*pad lands its count on the same column as the collapsed tool
-  // rows (width - pad). One column narrower pushed the count one column left.
-  return Math.max(16, cols - 2 * pad);
+  // Pi renders at the terminal width, and the label sits in a Text with `pad`
+  // columns on each side. One column is held back on purpose: a label built
+  // for a wider terminal (before a resize) must not exactly fill the line,
+  // or Text word-wraps the trailing count onto a second line. The resize
+  // relabel removes stale labels; this margin makes even a stale one safe.
+  // Collapsed tool rows end their count on the same column (width-pad-1).
+  return Math.max(16, cols - 1 - 2 * pad);
 }
 
 /** Right-align `right` within `width` after `left`, truncating left if needed. */
