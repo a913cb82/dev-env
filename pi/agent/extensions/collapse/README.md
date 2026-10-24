@@ -23,6 +23,16 @@ block) renders above its tools starts a new one. Rows therefore stay adjacent
 to whatever is actually on screen, and consecutive tool-only turns are
 gapless.
 
+**Render wrap.** The run owner's component still carries Pi's hardcoded
+leading blank line, which no renderer can suppress — so the extension shadows
+the instance's `render` (drop a single leading `""`) and `handleMouse`
+(re-base y by +1, matching Pi's y-1 delegation). Only the run owner is ever
+wrapped; foreign tools, default-shell components, and visible-thinking mode
+are skipped, and visible mode self-bypasses inside the wrapped render, so
+toggling thinking visible restores stock spacing with no unwrap pass. No Pi
+sources are touched and no prototype is modified: the shadows are
+instance-only and reversible. `/collapse` reports `wrap: N wrapped`.
+
 **Transcript rebuilds are safe.** Startup, compaction, session switch, fork and
 tree navigation re-render history. During a rebuild each historical tool gets
 its own run, so old rows never move; live turns below resume merging.
@@ -88,8 +98,8 @@ chrome. `/collapse` lists any tool that never opted in.
 ## Diagnostics
 
 `/collapse` reports the loaded revision, the mode, the newest run's row count,
-recent run boundaries, and the current thinking label. If rows show an
-unexpected gap, the boundary list names what split them.
+recent run boundaries, the current thinking label, and the render-wrap status.
+If rows show an unexpected gap, the boundary list names what split them.
 
 ## Layout
 
@@ -101,6 +111,7 @@ unexpected gap, the boundary list names what split them.
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
 | `labels.ts` | tree-walk per-row thinking labels, walker widget, reconcile |
 | `detach.ts` | opt-in thinking-row detach (env-gated experiment, default off) |
+| `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
 | `logic.ts` | pure helpers (summaries, truncation, label sizing) |
 
 Registry entries are never pruned: `buildTrace` reads them at render time and

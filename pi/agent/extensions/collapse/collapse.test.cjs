@@ -1537,6 +1537,134 @@ function textResult(chars) {
     }
   }
 
+  // 34-38 run on a FRESH activation: the shared reset slot now belongs to
+  // a later import (block 33 reassigns it), so the outer registry keeps
+  // stale runs that fresh ids would join (block 17 hit the same quirk).
+  // A private instance keeps ownership assertions deterministic.
+  const modW = await jiti.import(path.join(HERE, "index.ts"));
+  const piW = createMockPi();
+  (modW.default ?? modW)(piW);
+  resetTrace = modW.resetTraceState ?? resetTrace;
+
+  // 34. render-wrap strips the tool component's leading blank (run owner only)
+  {
+    check("wrappingPass exported", typeof modW.wrappingPass === "function", typeof modW.wrappingPass);
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-wrap" });
+    read.renderCall(ctx.args, theme, ctx); // registers trace entry; t-wrap owns its run
+    const fake = {
+      toolCallId: "t-wrap",
+      getRenderShell: () => "self",
+      render: (_w) => ["", "› read /a"],
+      handleMouse: (e) => (e.y <= 0 || e.y > 1 ? undefined : `hit${e.y - 1}`),
+    };
+    modW.captureWalkerTui({ children: [fake] });
+    const res = modW.wrappingPass(piW);
+    check("owner wrapped", res && res.wrapped === 1, JSON.stringify(res));
+    const out = fake.render(100);
+    check("leading blank stripped", out.length === 1 && out[0] === "› read /a", JSON.stringify(out));
+  }
+
+  // 35. clicks re-base by exactly the stripped line (Pi rejects y<=0, delegates y-1)
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-click" });
+    read.renderCall(ctx.args, theme, ctx);
+    const fake = {
+      toolCallId: "t-click",
+      getRenderShell: () => "self",
+      render: (_w) => ["", "r1", "r2"],
+      handleMouse: (e) => (e.y <= 0 || e.y > 2 ? undefined : `hit${e.y - 1}`),
+    };
+    modW.captureWalkerTui({ children: [fake] });
+    modW.wrappingPass(piW);
+    check("displayed y=0 reaches content row 0", fake.handleMouse({ y: 0 }) === "hit0", String(fake.handleMouse({ y: 0 })));
+    check("displayed y=1 reaches content row 1", fake.handleMouse({ y: 1 }) === "hit1", String(fake.handleMouse({ y: 1 })));
+    check("above-block click hits nothing", fake.handleMouse({ y: -1 }) === undefined, String(fake.handleMouse({ y: -1 })));
+    check("below-block click hits nothing", fake.handleMouse({ y: 2 }) === undefined, String(fake.handleMouse({ y: 2 })));
+  }
+
+  // 36. only the run owner is ever wrapped
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const bash = piW.tools.get("bash");
+    const c1 = callContext({ args: { path: "/a" }, toolCallId: "t-own" });
+    read.renderCall(c1.ctx.args, theme, c1.ctx);
+    bash.renderCall({ command: "ls" }, theme, { ...c1.ctx, args: { command: "ls" }, state: {}, toolCallId: "t-next" });
+    const mkfake = (id, shell) => ({
+      toolCallId: id,
+      getRenderShell: () => shell,
+      render: (_w) => ["", `› ${id}`],
+      handleMouse: (e) => e.y,
+    });
+    const owner = mkfake("t-own", "self");
+    const nonOwner = mkfake("t-next", "self");
+    const foreign = mkfake("t-foreign", "self");
+    const stock = mkfake("t-stock", "default");
+    modW.captureWalkerTui({ children: [owner, nonOwner, foreign, stock] });
+    const res = modW.wrappingPass(piW);
+    check("only owner wrapped", res.wrapped === 1, JSON.stringify(res));
+    check("owner stripped", owner.render(100)[0] === "› t-own", JSON.stringify(owner.render(100)));
+    check("non-owner untouched", nonOwner.render(100)[0] === "", JSON.stringify(nonOwner.render(100)));
+    check("foreign untouched", foreign.render(100)[0] === "", JSON.stringify(foreign.render(100)));
+    check("default-shell untouched", stock.render(100)[0] === "", JSON.stringify(stock.render(100)));
+    // Visible mode: previously wrapped instances self-bypass, nothing new wraps.
+    piW._hidden = false;
+    const resV = modW.wrappingPass(piW);
+    check("visible mode wraps nothing", resV.wrapped === 0, JSON.stringify(resV));
+    check("visible mode restores blank", owner.render(100)[0] === "", JSON.stringify(owner.render(100)));
+    piW._hidden = true;
+  }
+
+  // 37. wrapping is idempotent and reversible
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-re" });
+    read.renderCall(ctx.args, theme, ctx);
+    const fake = {
+      toolCallId: "t-re",
+      getRenderShell: () => "self",
+      render: (_w) => ["", "r1", "r2"],
+      handleMouse: (e) => (e.y <= 0 || e.y > 2 ? undefined : `hit${e.y - 1}`),
+    };
+    modW.captureWalkerTui({ children: [fake] });
+    const res1 = modW.wrappingPass(piW);
+    const res2 = modW.wrappingPass(piW);
+    check("first pass wraps", res1.wrapped === 1, JSON.stringify(res1));
+    check("second pass wraps nothing new", res2.wrapped === 0 && res2.already === 1, JSON.stringify(res2));
+    check("exactly one line stripped", JSON.stringify(fake.render(100)) === JSON.stringify(["r1", "r2"]), JSON.stringify(fake.render(100)));
+    modW.unwrapAll();
+    check("unwrap restores blank", fake.render(100)[0] === "", JSON.stringify(fake.render(100)));
+    check("unwrap restores clicks", fake.handleMouse({ y: 1 }) === "hit0", String(fake.handleMouse({ y: 1 })));
+  }
+
+  // 38. fresh instances wrap after rebuild; empty tree is a no-op
+  {
+    modW.captureWalkerTui({ children: [] });
+    const res = modW.wrappingPass(piW);
+    check("empty tree wraps nothing", res.wrapped === 0, JSON.stringify(res));
+    check("wrap status reported", /wrapped|idle|inactive/.test(modW.wrapStatus()), modW.wrapStatus());
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-new" });
+    read.renderCall(ctx.args, theme, ctx);
+    // Rebuild replaces the instance: a fresh object with the same id wraps.
+    const fresh = {
+      toolCallId: "t-new",
+      getRenderShell: () => "self",
+      render: (_w) => ["", "› read /a"],
+      handleMouse: (e) => e.y,
+    };
+    modW.captureWalkerTui({ children: [fresh] });
+    const res2 = modW.wrappingPass(piW);
+    check("fresh instance wraps", res2.wrapped === 1 && fresh.render(100)[0] === "› read /a", JSON.stringify(res2));
+    modW.captureWalkerTui({ children: [] });
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

@@ -22,6 +22,7 @@ fi
 
 node -e "
 const C = require('$ROOT/dist/modes/interactive/components/assistant-message.js');
+const TE = require('$ROOT/dist/modes/interactive/components/tool-execution.js');
 const T = require('$ROOT/node_modules/@earendil-works/pi-tui/dist/index.js');
 const fs = require('node:fs');
 const assert = (cond, name) => { if (!cond) { console.error('missing: ' + name); process.exit(1); } };
@@ -35,6 +36,12 @@ assert(typeof T.Container.prototype.addChild === 'function', 'Container.addChild
 assert(typeof T.Container.prototype.removeChild === 'function', 'Container.removeChild');
 assert(Array.isArray(new T.Container().children), 'Container.children is a live array');
 assert(typeof T.MouseRegion === 'function', 'pi-tui MouseRegion (thinking click-to-expand)');
+const toolSrc = fs.readFileSync('$ROOT/dist/modes/interactive/components/tool-execution.js', 'utf8');
+assert(typeof TE.ToolExecutionComponent === 'function', 'ToolExecutionComponent export');
+assert(toolSrc.includes('this.toolCallId'), 'tool component exposes toolCallId (wrap identity)');
+assert(toolSrc.includes('getRenderShell'), 'tool component exposes getRenderShell (self-shell gate)');
+assert(toolSrc.includes('lines.push(\"\")'), 'self-shell render prepends one blank line (the stripped line)');
+assert(toolSrc.includes('y - 1'), 'handleMouse delegates y-1 (click re-base anchor)');
 const mode = fs.readFileSync('$ROOT/dist/modes/interactive/interactive-mode.js', 'utf8');
 assert(mode.includes('chatContainer'), 'chatContainer anchor in interactive-mode');
 assert(mode.includes('setHiddenThinkingLabel'), 'global label fan-out anchor in interactive-mode');

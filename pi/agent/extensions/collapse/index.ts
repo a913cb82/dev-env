@@ -69,6 +69,8 @@ import {
   walkerWidget,
   WALKER_KEY,
 } from "./labels.js";
+import { unwrapAll, wrappingPass, wrapStatus } from "./wrap.js";
+export { captureWalkerTui, unwrapAll, wrappingPass, wrapStatus };
 import {
   planToolRuns,
 } from "./logic.js";
@@ -97,7 +99,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 30;
+const COLLAPSE_REVISION = 31;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -110,6 +112,7 @@ function collapseTick(pi: ExtensionAPI): void {
   try {
     if (!collapseSawUI) return;
     detachPass(pi);
+    wrappingPass(pi);
     const hidden = (pi?.getSettings?.()?.hideThinkingBlock ?? false) === true;
     if (collapseLastHidden === undefined || hidden === collapseLastHidden) {
       collapseLastHidden = hidden;
@@ -134,8 +137,9 @@ export default function (pi: ExtensionAPI) {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
       detachPass(pi);
+      wrappingPass(pi);
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()}; hidden: ${hiddenRunCount()} run(s)${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()}; wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s)${uncollapsedReport(pi)}`,
       );
     },
   });
@@ -254,6 +258,7 @@ export default function (pi: ExtensionAPI) {
       // Detach only after planning: applyPlannedRuns reassigns run ids,
       // and the replacement preview row is keyed by the final run.
       detachPass(pi, sm);
+      wrappingPass(pi);
     } catch {
       // Label update is cosmetic; never break startup.
     }
@@ -274,11 +279,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", () => {
     reconcileRows();
     detachPass(pi);
+    wrappingPass(pi);
   });
   pi.on("tool_execution_start", () => reconcileRows());
   pi.on("turn_end", () => {
     reconcileRows();
     detachPass(pi);
+    wrappingPass(pi);
   });
   // Tools that opted into collapsing (the global wrap slot) render their
   // own rows, so they merge like the built-ins; anything else still splits.
