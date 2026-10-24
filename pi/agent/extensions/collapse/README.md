@@ -43,9 +43,13 @@ so a row expands into its stock cell without its text moving sideways. Tool
 rows end their count on the same column as the thinking rows' count, one
 column short of the edge: Pi renders thinking labels in a `Text` and a label
 that exactly fills the line word-wraps its trailing count, so both keep that
-margin. A label is rebuilt when the measured width changes (the poll
-reconciles per row on message + width + pad), so a resize re-fits it instead
-of leaving a stale label that wraps.
+margin. Both derive that column from `process.stdout.columns` — the source
+the label is sized from — not from the render width alone, because Pi can
+hand a component a width one column narrower than the terminal; the target
+is clamped to the render width so a narrow host never overflows. A label is
+rebuilt when the measured width changes (the poll reconciles per row on
+message + width + pad), so a resize re-fits it instead of leaving a stale
+label that wraps.
 
 ## Behaviour
 

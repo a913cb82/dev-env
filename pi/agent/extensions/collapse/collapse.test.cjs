@@ -2389,6 +2389,50 @@ function textResult(chars) {
     }
   }
 
+  // 67. one width source: the thinking label is sized from
+  // process.stdout.columns, so tool counts must end on that same column even
+  // when the row is rendered one column narrower (Pi's chat does that).
+  {
+    const logicLib = await jiti.import(path.join(HERE, "logic.ts"));
+    const tuiLib = await jiti.import("@earendil-works/pi-tui");
+    // Own activation per pad: the shared-trace owner decides which instance
+    // renders, and the row's pad comes from the same settings the label uses.
+    const activation = async (pad) => {
+      const mod = await jiti.import(path.join(HERE, "index.ts"));
+      const pi = { registerTool: (t) => pi.tools.set(t.name, t), tools: new Map(), registerCommand: () => {}, on: () => {},
+        getSettings: () => ({ outputPad: pad, hideThinkingBlock: true }) };
+      (mod.default ?? mod)(pi);
+      return { pi, reset: mod.resetTraceState ?? (() => {}) };
+    };
+    const setColumns = (value) => Object.defineProperty(process.stdout, "columns", { value, configurable: true, writable: true });
+    const end = (line) => plainText(line).replace(/\s+$/, "").length;
+    const labelEnd = (cols, pad) => {
+      const label = logicLib.thinkingLabelForWidth("word ".repeat(400), cols, pad);
+      return pad + plainText(label).length;
+    };
+    try {
+      for (const pad of [1, 0]) {
+        const { pi: piE, reset: resetE } = await activation(pad);
+        for (const [cols, renderWidth] of [[100, 100], [100, 99], [80, 80], [80, 79]]) {
+        setColumns(cols);
+        resetE();
+        const tool = piE.tools.get("bash");
+        const { ctx } = callContext({ args: { command: "ls" }, toolCallId: `edge-${cols}-${renderWidth}-${pad}`, state: { count: 5300 } });
+        const line = tool.renderCall(ctx.args, ansiTheme, { ...ctx, args: { command: "ls" } }).render(renderWidth)[0];
+        const expected = labelEnd(cols, pad);
+        check(
+          `count column matches thinking at cols=${cols} render=${renderWidth} pad=${pad}`,
+          end(line) === expected,
+          `tool ends ${end(line)}, label ends ${expected}, line width ${tuiLib.visibleWidth(line)} vs ${renderWidth}`,
+        );
+        check(`row fits render width at cols=${cols} render=${renderWidth} pad=${pad}`, tuiLib.visibleWidth(line) <= renderWidth, `${tuiLib.visibleWidth(line)} > ${renderWidth}`);
+        }
+      }
+    } finally {
+      delete process.stdout.columns;
+    }
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

@@ -105,7 +105,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 45;
+const COLLAPSE_REVISION = 46;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";

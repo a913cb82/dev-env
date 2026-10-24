@@ -14,7 +14,7 @@ import {
   textCharCount,
   type BashSegment,
 } from "./logic.js";
-import { isHiddenThinking, liveOutputPad } from "./settings.js";
+import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
   isRunThinkingOpen,
@@ -61,9 +61,13 @@ class CollapsedLine implements Component {
   ) {}
 
   render(width: number): string[] {
-    // One column inside the edge: the thinking label reserves one for the
-    // same reason (see labelBudget), and both counts must land together.
-    const target = Math.max(8, width - this.pad - 1);
+    // The thinking label is sized from the terminal columns, but Pi can hand
+    // a component a width one column narrower. Both counts must land on the
+    // same column, so derive the target from the SAME source the label uses
+    // (labelBudget: pad + (cols-1-2*pad) is the label's last column), and
+    // clamp to the render width so a narrower host never overflows.
+    const cols = currentColumns();
+    const target = Math.max(8, Math.min(width, (cols ?? width) - 1 - this.pad));
     // No gutter glyph: one leading space puts the first glyph on column 2,
     // the column Pi's prose (outputPad), hidden-thinking rows (Text pad) and
     // stock tool cells (Box(1, 1)) all start on. A row therefore expands
