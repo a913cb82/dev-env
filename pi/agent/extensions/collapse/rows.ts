@@ -195,7 +195,27 @@ function buildOpenedRow(
   const callInner =
     entry.original.renderCall(entry.args, theme, fake) ?? new Text("", 0, 0);
   entry.collapseCall = callInner;
-  if (!needsBox) return callInner;
+  if (!needsBox) {
+    // Self-shell tools (edit) compose call and result inside Pi's own
+    // container, and their renderers are STATEFUL ACROSS THE PAIR: edit's
+    // renderResult writes the diff into the call component stashed in
+    // context.state and rebuilds it (its own output is usually empty).
+    // Skipping the result renderer therefore loses the diff entirely —
+    // expanding shows a bare header.
+    if (!entry.hasResult) return callInner;
+    const resultInner =
+      entry.original.renderResult(
+        entry.result,
+        { expanded, isPartial: entry.isPartial },
+        theme,
+        { ...fake, lastComponent: entry.collapseResult },
+      ) ?? new Text("", 0, 0);
+    entry.collapseResult = resultInner;
+    const self = new Container();
+    self.addChild(callInner);
+    self.addChild(resultInner);
+    return self;
+  }
   const box = stockBox(theme, entry, entry.isPartial, entry.isError);
   box.clear();
   box.addChild(callInner);

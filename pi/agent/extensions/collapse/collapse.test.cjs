@@ -2029,6 +2029,76 @@ function textResult(chars) {
     modW.captureWalkerTui({ children: [] });
   }
 
+  // 60. expanding a self-shell tool (edit) shows its result, byte-identical
+  // to a real ToolExecutionComponent (the diff lives in the RESULT renderer,
+  // so dropping it leaves a header with no body)
+  {
+    resetTrace();
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    agent.initTheme("light");
+    const themeMod = await jiti.import(
+      path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"),
+    );
+    const realTheme = themeMod.loadThemeFromPath(
+      path.join(PI, "dist", "modes", "interactive", "theme", "light.json"),
+      "truecolor",
+    );
+    const edit = piW.tools.get("edit");
+    // A real file, because edit's renderCall kicks off a disk-based preview.
+    const tmpFile = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "collapse-edit-")), "notes.txt");
+    fs.writeFileSync(tmpFile, "alpha line\n");
+    const args = { path: tmpFile, oldText: "alpha line", newText: "beta line" };
+    // The diff edit actually renders comes from details.diff, applied by
+    // renderResult into the CALL component's state.
+    const result = {
+      content: [{ type: "text", text: "Successfully edited " + tmpFile }],
+      details: { diff: "-alpha line\n+beta line", firstChangedLine: 1 },
+    };
+    const { ctx } = callContext({ args, toolCallId: "t-edit" });
+    edit.renderCall(args, realTheme, ctx);
+    edit.renderResult(result, { expanded: false, isPartial: false }, realTheme, { ...ctx, lastComponent: undefined });
+    const rest = edit.renderCall(args, realTheme, ctx).render(100);
+    check("edit rest is one row", rest.length === 1, JSON.stringify(rest));
+    const row = edit.renderCall(args, realTheme, ctx).children[0];
+    row.onMouse({ type: "click", button: "left" });
+    const opened = edit.renderCall(args, realTheme, ctx).render(100);
+    const stock = (() => {
+      const c = new agent.ToolExecutionComponent(
+        "edit", "stockE", args, { showImages: true, imageWidthCells: 60 },
+        agent.createEditToolDefinition(path.dirname(tmpFile)), { requestRender() {} }, path.dirname(tmpFile),
+      );
+      c.setExpanded(false);
+      c.markExecutionStarted();
+      c.setArgsComplete();
+      c.updateResult(result, false);
+      return c.render(100).slice(1);
+    })();
+    const joined = opened.join("\n");
+    check("edit expanded shows the change", /beta/.test(joined), joined.slice(0, 200));
+    const firstDiff = opened.findIndex((line, i) => line !== stock[i]);
+    check("edit expanded matches stock", JSON.stringify(opened) === JSON.stringify(stock), `line ${firstDiff}: ${JSON.stringify(opened[firstDiff])} VS ${JSON.stringify(stock[firstDiff])}`);
+
+    // ctrl+o (Pi expanded) must hold the same line, at the deeper cell.
+    const ctxX = { ...callContext({ args, toolCallId: "t-edit-x", expanded: true }).ctx };
+    edit.renderCall(args, realTheme, ctxX);
+    edit.renderResult(result, { expanded: true, isPartial: false }, realTheme, { ...ctxX, lastComponent: undefined });
+    edit.renderCall(args, realTheme, ctxX).children[0].onMouse({ type: "click", button: "left" });
+    const openedX = edit.renderCall(args, realTheme, ctxX).render(100);
+    const stockX = (() => {
+      const c = new agent.ToolExecutionComponent(
+        "edit", "stockX", args, { showImages: true, imageWidthCells: 60 },
+        agent.createEditToolDefinition(path.dirname(tmpFile)), { requestRender() {} }, path.dirname(tmpFile),
+      );
+      c.setExpanded(true);
+      c.markExecutionStarted();
+      c.setArgsComplete();
+      c.updateResult(result, false);
+      return c.render(100).slice(1);
+    })();
+    check("edit deep cell shows the change", /beta/.test(openedX.join("\n")), openedX.join("\n").slice(0, 200));
+    check("edit deep cell matches stock", JSON.stringify(openedX) === JSON.stringify(stockX), `line ${openedX.findIndex((l, i) => l !== stockX[i])}`);
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

@@ -65,7 +65,14 @@ cell at the depth Pi currently asks for:
 
 Toggling `ctrl+o` re-depths an open row without another click; clicking it
 again closes it. Both depths are byte-identical to a real
-`ToolExecutionComponent` (pinned by tests).
+`ToolExecutionComponent` (pinned by tests, `edit` included).
+
+An opened row runs the tool's own call *and* result renderers even for
+self-shell tools. That is not optional: Pi's renderers can be stateful
+across the pair — `edit` writes its diff into the call component stashed in
+`context.state` from inside `renderResult`, whose own output is usually
+empty. Skipping the result renderer would leave an expanded `edit` row as a
+bare header with no diff.
 
 **Thinking-row detach (opt-in experiment, default off).** Pi's thinking row is
 unconditional given visible thinking, so the only way to merge thinking into
