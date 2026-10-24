@@ -4,9 +4,9 @@ Compacts Pi's transcript into one-line tool rows and a one-line thinking
 preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 
 ```
-› read /home/abrai/dev-env/src/app.ts:10-20            5.3k ch
-› $ timeout 25 ls some/dist                            0.1k ch
-› grep flushTimers src/                                1.2k ch
+ read /home/abrai/dev-env/src/app.ts:10-20           5.3k ch
+ $ timeout 25 ls some/dist                           0.1k ch
+ grep flushTimers src/                               1.2k ch
 ```
 
 Three levels, one meaning each:
@@ -17,13 +17,13 @@ Three levels, one meaning each:
   tool, so it keeps the violet accent.
 - **Plain** is the one specific thing the row acts on — file name, search
   pattern, path leaf, bare argument, the text inside quotes.
-- **Dim** is everything else — the `›` gutter, directories, operators,
+- **Dim** is everything else — directories, operators,
   flags, numbers, `$VAR` expansions, line ranges, timeouts, output sizes
   (right-aligned), and the summary of any tool without a dedicated renderer.
 
 ```
-› read /a/b.txt:5-10                                  5.3k ch
-› $ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k ch
+ read /a/b.txt:5-10                                 5.3k ch
+ $ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k ch
 ```
 
 `bash`/`powershell` rows are tokenized rather than styled by position:
@@ -35,6 +35,12 @@ tokens / 2048 characters (the row can never show more), so a pathological
 command cannot slow a repaint.
 
 Long rows cut in the middle, so the head and the count survive.
+
+Every row's first glyph lands on column 2 — the same column as Pi's prose
+(`outputPad`), hidden-thinking rows (`Text` pad) and stock tool cells
+(`Box(1, 1)`). There is no gutter glyph: the tool name or `$` is the marker,
+so a row expands into its stock cell without its text moving sideways. The
+char count ends on the same column as the thinking rows' count.
 
 ## Behaviour
 

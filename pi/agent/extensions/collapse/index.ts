@@ -3,9 +3,10 @@
 // sections; the toggle is read live from settings, so the next render pass
 // follows it immediately (no reload).
 //
-// Each row is a marker, not a prompt:
-//   › read /path/to/file:10-20                    5.3k ch
-//   › $ timeout 25 ls some/dist                   0.1k ch
+// Each row is a marker, not a prompt. One leading space puts the first
+// glyph on column 2, where Pi's prose, thinking rows and stock cells start:
+//    read /path/to/file:10-20                    5.3k ch
+//    $ timeout 25 ls some/dist                   0.1k ch
 // Three levels, one meaning each: BOLD is identity (the tool name, and the
 // command word of every segment of a bash/powershell command), PLAIN is the
 // one specific thing acted on (file name, search pattern, path leaf, bare
@@ -104,7 +105,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 43;
+const COLLAPSE_REVISION = 44;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";

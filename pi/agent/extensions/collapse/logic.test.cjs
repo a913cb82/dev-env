@@ -201,12 +201,12 @@ function check(name, cond, extra) {
   }
 
   // labelBudget / padLabel (label must be exactly columns-3: pad + scrollbar)
-  check("budget wide", logic.labelBudget(200) === 197, logic.labelBudget(200));
-  check("budget fallback", logic.labelBudget(undefined) === 77, logic.labelBudget(undefined));
+  check("budget wide", logic.labelBudget(200) === 198, logic.labelBudget(200));
+  check("budget fallback", logic.labelBudget(undefined) === 78, logic.labelBudget(undefined));
   check("budget narrow", logic.labelBudget(10) === 16, logic.labelBudget(10));
-  check("budget zero", logic.labelBudget(0) === 77, logic.labelBudget(0));
-  check("budget pad 0", logic.labelBudget(200, 0) === 199, logic.labelBudget(200, 0));
-  check("budget pad 0 fallback", logic.labelBudget(undefined, 0) === 79, logic.labelBudget(undefined, 0));
+  check("budget zero", logic.labelBudget(0) === 78, logic.labelBudget(0));
+  check("budget pad 0", logic.labelBudget(200, 0) === 200, logic.labelBudget(200, 0));
+  check("budget pad 0 fallback", logic.labelBudget(undefined, 0) === 80, logic.labelBudget(undefined, 0));
   check(
     "pad fit",
     logic.padLabel("ab", "12", 10) === "ab      12",
@@ -260,18 +260,18 @@ function check(name, cond, extra) {
 
     const short = logic.thinkingLabelForWidth("hello", 80);
     check("label no prefix", visible(short).startsWith("hello"), JSON.stringify(short));
-    check("label short fills width", visible(short).length === 77, `${visible(short).length}`);
+    check("label short fills width", visible(short).length === 78, `${visible(short).length}`);
     check("label short count", short.endsWith("\x1b[23;23m0.0k ch"), JSON.stringify(short.slice(-20)));
     check("label only count leaves italic", (short.match(/\x1b\[23;23m/g) ?? []).length === 1 && short.endsWith("\x1b[23;23m0.0k ch"), JSON.stringify(short.slice(-20)));
-    check("label visible matches plain pad", visible(short) === logic.padLabel("hello", "0.0k ch", 77), JSON.stringify(visible(short)));
+    check("label visible matches plain pad", visible(short) === logic.padLabel("hello", "0.0k ch", 78), JSON.stringify(visible(short)));
 
     const long = logic.thinkingLabelForWidth("a".repeat(1500), 100);
-    check("label long fills width", visible(long).length === 97, `${visible(long).length}`);
+    check("label long fills width", visible(long).length === 98, `${visible(long).length}`);
     check("label long has middle cut", !long.startsWith("Thinking") && long.includes("…"), JSON.stringify(long.slice(0, 60)));
     check("label long ends count", long.endsWith("\x1b[23;23m1.5k ch"), JSON.stringify(long.slice(-20)));
     // preview keeps head and tail around the middle cut
-    const expectedPreview = `${"a".repeat(44)}…${"a".repeat(44)}`;
-    check("label pad 0 wider", visible(logic.thinkingLabelForWidth("hello", 80, 0)).length === 79, `${visible(logic.thinkingLabelForWidth("hello", 80, 0)).length}`);
+    const expectedPreview = `${"a".repeat(45)}…${"a".repeat(44)}`;
+    check("label pad 0 wider", visible(logic.thinkingLabelForWidth("hello", 80, 0)).length === 80, `${visible(logic.thinkingLabelForWidth("hello", 80, 0)).length}`);
     check("label long middle exact", long.startsWith(expectedPreview), JSON.stringify(long.slice(0, 100)));
   }
 

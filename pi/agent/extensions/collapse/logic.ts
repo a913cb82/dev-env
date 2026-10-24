@@ -325,7 +325,10 @@ export function labelBudget(stdoutColumns?: unknown, outputPad = 1): number {
   const cols =
     typeof stdoutColumns === "number" && stdoutColumns > 0 ? Math.floor(stdoutColumns) : 80;
   const pad = outputPad === 0 ? 0 : 1;
-  return Math.max(16, cols - 1 - 2 * pad);
+  // Pi renders the label in a Text with `pad` columns on each side, so a label
+  // of cols-2*pad lands its count on the same column as the collapsed tool
+  // rows (width - pad). One column narrower pushed the count one column left.
+  return Math.max(16, cols - 2 * pad);
 }
 
 /** Right-align `right` within `width` after `left`, truncating left if needed. */

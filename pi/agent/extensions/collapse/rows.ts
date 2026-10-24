@@ -58,18 +58,16 @@ class CollapsedLine implements Component {
     private left: string,
     private right: string,
     private pad = 1,
-    /** Marks the row with a dim `›` gutter. Optional: a row built without a
-     *  theme (tests, foreign callers) still renders, just undimmed. */
-    private theme?: Theme,
   ) {}
 
   render(width: number): string[] {
     const target = Math.max(8, width - this.pad);
-    const prefixPlain = "› ";
-    // Width math uses the PLAIN prefix: dimming adds escape bytes, and the
-    // layout must not depend on them.
-    const prefixWidth = visibleWidth(prefixPlain);
-    const prefix = this.theme ? this.theme.fg("dim", prefixPlain) : prefixPlain;
+    // No gutter glyph: one leading space puts the first glyph on column 2,
+    // the column Pi's prose (outputPad), hidden-thinking rows (Text pad) and
+    // stock tool cells (Box(1, 1)) all start on. A row therefore expands
+    // into its stock cell without its text moving sideways.
+    const prefix = " ";
+    const prefixWidth = 1;
     const rightWidth = visibleWidth(this.right);
     const leftWidth = visibleWidth(this.left);
     let left = this.left;
@@ -272,7 +270,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     const open = isRunThinkingOpen(runId);
     const thinkingRow = open
       ? new Text(hiddenThinking, liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi), theme);
+      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi));
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -287,7 +285,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     if (!entry) continue;
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
-      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi), theme);
+      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi));
     trace.addChild(
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -371,7 +369,7 @@ export function collapseTool(
       }
       const toolCallId = context?.toolCallId;
       const entry = traceUpsert(original.name, toolCallId, original);
-      if (!entry) return new CollapsedLine(makeLeft(theme, args, !!context?.isError), countSuffix(theme, context?.state ?? {}), liveOutputPad(pi), theme);
+      if (!entry) return new CollapsedLine(makeLeft(theme, args, !!context?.isError), countSuffix(theme, context?.state ?? {}), liveOutputPad(pi));
       const changed = traceSync(entry, args, context);
       if (traceOwnerId(entry.runId) !== entry.id) {
         if (changed) tracePokeOwner(entry.runId);

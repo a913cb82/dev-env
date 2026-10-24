@@ -66,7 +66,7 @@ const ansiTheme = {
 };
 
 const plainText = (line) => String(line).replace(/\x1b\[[0-9;]*m/g, "").replace(/<[^>]*>/g, "");
-const isRow = (line) => plainText(line).startsWith("\u203a ");
+const isRow = (line) => { const t = plainText(line); return t.startsWith(" ") && !t.startsWith("  ") && !t.includes("\u203a"); };
 
 // Marker theme: visible styling assertions without ANSI.
 const theme = {
@@ -156,7 +156,7 @@ function textResult(chars) {
     const lines = read.renderCall(ctx.args, theme, ctx).render(80);
     check("read one line", lines.length === 1, JSON.stringify(lines));
     const line = lines[0];
-    check("read prefix dim", isRow(line), JSON.stringify(line));
+    check("read starts at column 2", isRow(line), JSON.stringify(line));
     check("read tool bold", line.includes("<b:accent>read "), JSON.stringify(line));
     check("read dir dim", line.includes("<dim>/path/to/</>"), JSON.stringify(line));
     check("read base plain", line.includes("</>file") && !line.includes("<b>file"), JSON.stringify(line));
@@ -198,7 +198,7 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" } });
     const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
-    check("bash prefix dim", isRow(line), JSON.stringify(line));
+    check("bash starts at column 2", isRow(line), JSON.stringify(line));
     check("bash prompt accent", line.includes("<b:accent>$</b> <b>timeout</b>"), JSON.stringify(line));
     check("bash command bold", line.includes("<b>timeout</b>") && !line.includes("<error>"), JSON.stringify(line));
   }
@@ -1166,7 +1166,7 @@ function textResult(chars) {
       expanded: false, showImages: true, isError: false,
     });
     const row = wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })).render(90);
-    check("empty summary shows name only", row.length === 1 && plainText(row[0]) === "› check_subagents", JSON.stringify(row));
+    check("empty summary shows name only", row.length === 1 && plainText(row[0]) === " check_subagents", JSON.stringify(row));
     // opened (clicked) rows show the same name-only call line
     const opened = wrapped.renderCall({ wait: true }, theme, { ...ctx("e1", { wait: true }), state: {} }).render(90);
     check("opened name-only row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
@@ -2266,7 +2266,7 @@ function textResult(chars) {
       ["read", { path: "/a/b.txt" }], ["bash", { command: "ls -la" }],
       ["grep", { pattern: "x", path: "/a" }], ["ls", { path: "/a" }],
     ]) {
-      check(`${name} prefix is dim`, plainText(row(name, args)).startsWith("› "), row(name, args));
+      check(`${name} starts at column 2`, plainText(row(name, args)).startsWith(" ") && !plainText(row(name, args)).startsWith("  ") && !plainText(row(name, args)).includes("›"), row(name, args));
     }
     // tool head carries accent + bold
     for (const [name, args, head] of [
@@ -2304,8 +2304,8 @@ function textResult(chars) {
       const { ctx } = callContext({ args, toolCallId: `bash-${name}-${args.command ?? ""}` });
       return tool.renderCall(ctx.args, theme, { ...ctx, args }).render(400)[0];
     };
-    const A = "<dim>› </><b:accent>$</b>";
-    const PS = "<dim>› </><b:accent>PS></b>";
+    const A = " <b:accent>$</b>";
+    const PS = " <b:accent>PS></b>";
     check(
       "bash chain styles each part",
       row("bash", { command: "cd /path/to/thing && cat > /tmp/real/thing | tail -n 3" }) ===
