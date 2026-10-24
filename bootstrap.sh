@@ -4,7 +4,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="$HOME/.pi/agent"
-PI_VERSION="1.0.0" # pinned Pi release; bump deliberately
+PI_VERSION="1.0.0" # floor Pi release: bootstrap installs at least this, but never downgrades a newer `pi update`
 KETCH_VERSION="v0.20.0" # pinned ketch release; bump deliberately
 CHECK_ONLY="${1:-}"
 
@@ -103,12 +103,26 @@ install_pi() {
   rm -f "$installer"
 }
 
+# Plain X.Y.Z out of `pi --version`, or 0.0.0 when absent/unparseable.
+pi_version() {
+  local v=""
+  if pi_bin >/dev/null 2>&1; then
+    v=$("$(pi_bin)" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+  fi
+  printf '%s' "${v:-0.0.0}"
+}
+
+# True when the installed Pi is at least the given release.
+pi_at_least() {
+  [ "$(printf '%s\n%s\n' "$1" "$(pi_version)" | sort -V | head -n 1)" = "$1" ]
+}
+
 if [ -z "$CHECK_ONLY" ]; then
   if ! pi_bin >/dev/null; then install_pi; fi
   hash -r
-  bin=$(pi_bin) || { echo "ERROR: Pi install failed" >&2; exit 1; }
-  if [ "$("$bin" --version 2>/dev/null || true)" != "$PI_VERSION" ]; then
-    echo "Pinning Pi to $PI_VERSION"
+  pi_bin >/dev/null || { echo "ERROR: Pi install failed" >&2; exit 1; }
+  if ! pi_at_least "$PI_VERSION"; then
+    echo "Installing Pi $PI_VERSION (found $(pi_version))"
     export PATH="$HOME/.local/share/pi-node/current/bin:$PATH"
     release="$PI/install/releases/$PI_VERSION"
     mkdir -p "$release"
@@ -118,13 +132,9 @@ if [ -z "$CHECK_ONLY" ]; then
     # The launcher reads this with `read`, which fails at EOF when the file
     # has no trailing newline.
     printf '%s\n' "$PI_VERSION" > "$PI/install/current-version"
-    find "$PI/install/releases" -mindepth 1 -maxdepth 1 ! -name "$PI_VERSION" -exec rm -rf {} +
-    bin=$(pi_bin)
   fi
-  if [ "$("$bin" --version 2>/dev/null || true)" != "$PI_VERSION" ]; then
-    echo "ERROR: Pi reports $("$bin" --version 2>/dev/null || echo 'no version'); expected $PI_VERSION" >&2
-    exit 1
-  fi
+  # Other releases are left alone: a newer `pi update` is the user's choice.
+  pi_at_least "$PI_VERSION" || { echo "ERROR: Pi reports $(pi_version); need >= $PI_VERSION" >&2; exit 1; }
 fi
 mkdir -p "$PI/skills" "$PI/extensions"
 link "$REPO/pi/agent/AGENTS.md" "$PI/AGENTS.md"

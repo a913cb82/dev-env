@@ -103,6 +103,19 @@ chmod +x "$BIN"/*
 [ "$(cat "$HOME/installer-tty")" = no-tty ] || fail "installer kept the controlling terminal"
 [ -f "$HOME/.pi/agent/install/current-version" ] || fail "current-version missing"
 [ "$(cat "$HOME/.pi/agent/install/current-version")" = 1.0.0 ] || fail "Pi was not pinned"
+# A user-run `pi update` plants a newer release: re-running bootstrap must
+# neither downgrade nor wipe it.
+mkdir -p "$HOME/.pi/agent/install/releases/9.9.9/node_modules/.bin"
+cat > "$HOME/.pi/agent/install/releases/9.9.9/node_modules/.bin/pi" <<'P'
+#!/bin/sh
+echo 9.9.9
+P
+chmod +x "$HOME/.pi/agent/install/releases/9.9.9/node_modules/.bin/pi"
+printf '%s\n' 9.9.9 > "$HOME/.pi/agent/install/current-version"
+"$REPO/bootstrap.sh" >"$TMP/bootstrap2.log" 2>&1 || { cat "$TMP/bootstrap2.log" >&2; fail "bootstrap after pi update failed"; }
+[ "$(cat "$HOME/.pi/agent/install/current-version")" = 9.9.9 ] || fail "bootstrap downgraded a pi update"
+[ -x "$HOME/.pi/agent/install/releases/9.9.9/node_modules/.bin/pi" ] || fail "bootstrap wiped the updated release"
+[ -d "$HOME/.pi/agent/install/releases/1.0.0" ] || fail "bootstrap wiped the pinned release"
 [ "$(wc -l < "$HOME/.pi/agent/install/current-version")" -eq 1 ] \
   || fail "current-version has no trailing newline"
 [ "$(readlink "$HOME/.pi/agent/subagents.json")" = "$REPO/pi/agent/subagents.json" ] \

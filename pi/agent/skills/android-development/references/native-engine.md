@@ -1,8 +1,9 @@
 # Native Engines
 
-How to bundle, start, and debug a prebuilt native engine (KataGo, Leela
-Zero, an `.so` plus models) inside an app. Each entry cost real debugging
-time.
+Optional specialization — only if you bundle a prebuilt native engine
+(`.so` plus models/configs) inside the app. Worked examples: KataGo, Leela Zero.
+Each entry below cost real debugging time on such a project. Skip this file
+entirely for pure-JVM/Kotlin apps.
 
 ## Vendoring
 
@@ -21,9 +22,8 @@ time.
 - Start through the system linker:
   `/system/bin/linker64 <path>/lib.so <args>`. argv reaches the engine.
   PT_INTERP and the executable bit do not matter.
-- Vendor binaries may check their cwd or package path. One real gate works
-  like this. It reads `readlink(/proc/self/cwd)`. It compares the first 27
-  bytes against `/data/data/<package>`. On mismatch it exits 0 with no
+- Vendor binaries may check their cwd or package path. Observed gate example: it reads `readlink(/proc/self/cwd)`,
+  compares the leading bytes against `/data/data/<package>`, and on mismatch exits 0 with no
   output. Exit 0 plus empty stderr is the signature of a deliberate gate,
   not a crash.
 - Neutralize a gate with a byte patch. Then check the patch:
@@ -55,10 +55,9 @@ time.
 ## Protocol Conformance
 
 - Match the binary's version, not the project's master docs. Read the
-  matching tag. Field sets and command names differ between releases. One
-  version printed rich text analysis lines (`scoreLead`, `prior`). Another
-  printed rounded integers. One accepted `kata-genmove`. The next removed
-  it.
+  matching tag. Field sets and command names differ between releases. Observed examples:
+  one version printed rich text analysis lines while another printed rounded integers;
+  one accepted a genmove command the next removed.
 - Streaming commands print their response header once and never end
   it. Drain the queue before the next command. If you do not, that command
   consumes a stale header and succeeds with the wrong payload.
@@ -75,10 +74,9 @@ time.
 ## Packaging
 
 - `aapt2` decompresses assets whose name ends in `.gz` and strips the
-  suffix. `assets/models/net.bin.gz` lands in the APK as
+  suffix. Example: `assets/models/net.bin.gz` lands in the APK as
   `assets/models/net.bin` (uncompressed). Then `assets.open` throws a bare
-  FileNotFoundException. The failure surfaces as a red error card on the
-  phone. Ship model files under a plain name.
+  FileNotFoundException. Ship model files under a plain name.
 - Check the APK entries, not the source tree. Run
   `unzip -l app.apk | grep asset`.
 - Staging needs a revision marker. File size and mtime lie across rebuilds

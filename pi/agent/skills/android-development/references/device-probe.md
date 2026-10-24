@@ -5,22 +5,27 @@ install costs much more. One probe costs seconds.
 
 ## run-as Probe Scripts
 
+Template (substitute your package, lib dir, and argv):
+
 ```bash
 cat > /tmp/probe.sh <<'EOF'
 F=/data/data/<pkg>/files
-export LD_LIBRARY_PATH=$F/katago:/system/lib64
+export LD_LIBRARY_PATH=$F/<lib-dir>:/system/lib64
 export HOME=$F
 cd /data/data
-timeout 120 /system/bin/linker64 $F/katago/lib.so <args> < /data/local/tmp/in.txt
+timeout 120 /system/bin/linker64 $F/<lib-dir>/<lib>.so <args> < /data/local/tmp/in.txt
 echo "EXIT=$?"
 EOF
 adb push /tmp/probe.sh /data/local/tmp/probe.sh
 adb shell "run-as <pkg> sh /data/local/tmp/probe.sh"
 ```
 
-- `run-as` requires a debuggable build. A release app (like the reference
+Worked example: `F=/data/data/<pkg>/files`, `LD_LIBRARY_PATH=$F/katago:/system/lib64`,
+argv for the bundled engine `.so`.
+
+- `run-as` requires a debuggable build. A release app (like a reference
   app you decompile) refuses it: `package not debuggable`.
-- Probes run as the app uid with the app's private paths, so engine gates,
+- Probes run as the app uid with the app's private paths, so gates,
   permissions, and file layouts behave exactly as in-app.
 - Read probe output with `run-as <pkg> cat <file>`. The OS denies a plain
   `adb shell cat` on app data.
@@ -28,7 +33,8 @@ adb shell "run-as <pkg> sh /data/local/tmp/probe.sh"
 
 ## FIFO Harness for stdin Protocols
 
-For engines that speak on stdin and stdout:
+Only for components that speak on stdin/stdout. For others, use the run-as
+script above plus logcat.
 
 ```bash
 mkfifo $F/in
@@ -41,11 +47,11 @@ echo "command" >&8
 
 - Poll with a deadline. Print the seconds per step. The harness is then
   also a benchmark.
-- Grep for an exact token (`^play `) because headers, warnings, and results
+- Grep for an exact token (example: `^play `) because headers, warnings, and results
   share the same stream.
 - Keep one command per line. Check quoting locally before blaming the
-  engine. A JSON payload with one extra brace looks identical in a log tail
-  and produces a parse error that reads like an engine fault.
+  component. Example: a JSON payload with one extra brace looks identical in a log tail
+  and produces a parse error that reads like a component fault.
 - Clear the output file between steps (`> $F/out`). Match on the exact id
   or token. Substring matches return stale lines.
 
@@ -53,8 +59,8 @@ echo "command" >&8
 
 - `adb exec-out screencap -p > shot.png` works on any screen, locked or not.
 - Take a screenshot after every tap step. Sheet layouts shift when you
-  add or remove sections. Blind coordinates then hit the wrong control. One
-  blind sequence silently changed a saved rank setting and started a second
+  add or remove sections. Blind coordinates then hit the wrong control. Example from one
+  project: one blind sequence silently changed a saved setting and started a second
   game.
 - For text controls, prefer real bounds from `uiautomator dump /dev/stdout`
   over screen-fraction math.
@@ -68,8 +74,7 @@ echo "command" >&8
 
 - Dump first: `adb logcat -d > dump.txt`. Then clear deliberately.
 - Filter by tag plus a phase marker. Keep one tag per subsystem.
-- Check that the build marker appears (`build versionCode=...`) so a stale
+- Check that the build marker appears (example: `build versionCode=...`) so a stale
   process cannot pass as the new build.
-- Log the assembled command line, the cwd, the environment path, and the
-  file sizes for every native start. That one line answered most startup
-  questions.
+- For native starts, log the assembled command line, the cwd, the environment path,
+  and the file sizes. That one line answered most startup questions in one project.

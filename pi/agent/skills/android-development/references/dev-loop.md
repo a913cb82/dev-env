@@ -4,8 +4,27 @@ Every iteration runs the same loop. All steps stay PC-side. The goal is zero pho
 
 ## 1. Build and Prove on PC
 
+Discover the project's tasks first — never assume `assembleDebug` exists:
+
 ```bash
-./gradlew ktlintFormat testDebugUnitTest assembleDebug lintDebug
+./gradlew tasks --all 2>/dev/null | grep -iE "spotless|ktlint|test.*UnitTest|assemble.*(Debug|Basic)|lint.*Debug" | head -n 20
+ls app/build/outputs/apk/ 2>/dev/null  # confirms flavors: basic/ vs freenet/, universal/ vs splits/
+```
+
+Formatter (pick the project's own):
+
+- Spotless project: `./gradlew spotlessCheck` (fix: `spotlessApply`). Wraps `ktlint` in one observed project.
+- ktlint project: `./gradlew ktlintCheck` (fix: `ktlintFormat`).
+
+Variants (pick the project's own):
+
+- No flavors: `testDebugUnitTest`, `assembleDebug`, `lintDebug`.
+- Flavored (example: `basic` / `freenet`): `testBasicDebugUnitTest`, `assembleBasicDebug`. CI for one project ran `spotlessCheck` then `assembleBasicDebug`.
+
+Proving command shape (substitute the discovered tasks):
+
+```bash
+./gradlew spotlessCheck testBasicDebugUnitTest assembleBasicDebug lintDebug
 ```
 
 PC proof comes first, always:
@@ -20,7 +39,7 @@ Pure Kotlin modules (no Android imports) carry all decisions: math, timers, stat
 Two rules keep the loop honest:
 
 - When a test fails, check the fixture's own assumptions before the production
-  code. Two real regressions were wrong fixtures, not wrong code.
+  code. Example: two real regressions were wrong fixtures, not wrong code.
 - Change one causal variable per build. Batch only independent changes.
   A build that changes three things answers nothing about any of them.
 
@@ -35,21 +54,20 @@ Check md5. Commit on device. Check that it landed. See
 [install template](../templates/install-poll.sh):
 
 ```bash
-adb push app.apk /data/local/tmp/app.apk          # ~1s even at 80 MB
+APK=$(ls app/build/outputs/apk/*/*/app-*-universal-debug.apk | head -n1)
+adb push "$APK" /data/local/tmp/app.apk          # ~1s even at 80 MB on healthy USB
 adb shell "pm install -r /data/local/tmp/app.apk"  # ~2-4s, prints Success
-dumpsys package <pkg> | grep lastUpdateTime        # timestamp must move
+adb shell dumpsys package "<pkg>" | grep lastUpdateTime  # timestamp must move
 ```
 
 Budgets. A cap is not a wait. A cap surfaces a wedge. Waiting never fixes one.
+Numbers below are starting points from one project (~80 MB APK, USB via usbipd, Xiaomi 15 Ultra). Measure your own and adjust.
 
-- Rebuild on PC (`assembleDebug`, no adb) in under 30s incremental.
-  Never `clean`.
-- Keep each device step under 10s. Keep the whole push plus install plus
-  check under ~5s.
-- A step that hits its cap is broken, not slow. Diagnose it. Do not re-wait
-  with a bigger number.
+- Rebuild on PC (assemble task, no adb) in under 30s incremental. Never `clean` for a normal loop.
+- Keep each device step under 10s. Keep the whole push plus install plus check under ~5s when healthy.
+- A step that hits its cap is broken, not slow. Diagnose it. Do not re-wait with a bigger number.
 
-Approved caps (expected cost, then the wedge line). Use one step per command.
+Approved caps from that project (expected cost, then the wedge line). Use one step per command.
 Never put one big timeout around a chained command. Put `timeout` on each
 step, so the failing step names itself:
 
@@ -59,16 +77,16 @@ step, so the failing step names itself:
 | push APK (~80 MB) | ~1s | 12s |
 | pm install | 2–4s | 30s |
 | powershell.exe interop (cold VM spin-up) | 10–30s | 90s |
-| assembleDebug incremental | 8–23s | 90s |
-| test + Paparazzi record | 30–60s | 180s |
+| assemble incremental | 8–23s | 90s |
+| test + screenshot-record | 30–60s | 180s |
 
 - No 120s+ caps on adb ops, ever. Only Gradle test/record runs may exceed
   120s, and only under their own cap.
 - Chain steps with `&&` so failure exits before the next step burns time.
-- Over-budget triage, by empirical record: a push past its 12s cap is a
+- Over-budget triage, from one project's transport log: a push past its 12s cap is a
   sick usbip channel, not a slow link. Small transfers keep working, so a
   shell check predicts nothing. Do not spend a step on it. Skip retry
-  (1/3) and kill-server (0/2). Rebind once (`usbipd detach + attach`).
+  (1/3 in that log) and kill-server (0/2). Rebind once (`usbipd detach + attach`).
   If the push still fails after a rebind, the episode is time-bound.
   Wait 2-3 min and retry. Or abandon USB bulk for the install (below).
 - USB bulk can corrupt, not just stall. Full byte counts and exit-0 pushes
@@ -77,12 +95,12 @@ step, so the failing step names itself:
   installing. Local md5 is instant. Remote md5 takes ~2s. Trust nothing else.
 - WiFi adb bypasses sick USB entirely. `adb tcpip 5555` is a tiny command
   that works over a wedged link. Then run
-  `adb connect <wlan-ip>:5555`. About 80 MB pushes in ~7s at 11 MB/s.
+  `adb connect <wlan-ip>:5555`. About 80 MB pushes in ~7s at 11 MB/s in that log.
   Get the IP once per network (`ip addr show wlan0`). It survives USB
   flaps. Use `-s <ip>:5555` for the push/install/check steps.
 - Wireless debugging shows a changing port: read the current `IP:port`
   off the phone's Wireless debugging screen for every reconnect
-  (`:32925`, not `:5555`). A stale port reads as "connection refused"
+  (example `:32925`, not `:5555`). A stale port reads as "connection refused"
   and sends you chasing ghosts. Toggling wireless debugging off and on
   invalidates the pairing — plain `adb connect` then fails until
   re-paired.
@@ -90,18 +108,18 @@ step, so the failing step names itself:
   round-trips. Poll logcat for the app's ready signal instead of `sleep`.
 
 - Updates (`-r`) need no tap. Fresh installs need one on-screen Allow tap.
-- A stuck install with no `AdbInstallActivity` in `logcat` means the phone
+- A stuck install with no installer activity in `logcat` means the phone
   dozes. Wake it with `input keyevent 224`. If it is still stuck, kill the
   stale install client and retry. A wedged session blocks the next install.
 - If a streamed install hangs but shell is alive, split it. Push the APK
   to test the transport. Then commit on device with `pm install`.
-  Real case: an 83 MB APK pushed in 1 s while `adb install` hung
+  Example: an 83 MB APK pushed in 1 s while `adb install` hung
   repeatedly. Direct `pm install` returned Success in seconds. The wrapper
   hung, not the link.
-- HyperOS ignores `screen_off_timeout`. Use `svc power stayon true`
-  while USB-plugged for dev. Revert it with `false` after.
 - A locked phone cannot unlock over `adb`. This is a hard boundary.
-  Plan UI checks for unlocked windows.
+  Plan UI checks for unlocked windows. Screen stay-on: `settings put
+  system screen_off_timeout` is ignored by some skins; use
+  `svc power stayon true` while USB-plugged, revert with `false` after.
 
 Check that the install landed:
 
@@ -109,12 +127,11 @@ Check that the install landed:
   `unzip -p app.apk classes*.dex | strings | grep <marker>`.
 - Check that the APK holds every asset change too. Run
   `unzip -l app.apk | grep <asset>`. aapt2 can rename or transform assets.
-  aapt2 decompresses `*.gz` and strips the suffix. So an asset path that
+  Example: aapt2 decompresses `*.gz` and strips the suffix, so an asset path that
   works in the source tree can fail on device.
 - Check that the device runs it. Run
   `dumpsys package <pkg> | grep lastUpdateTime`.
-- `versionCode` rises per installed build, so `dumpsys` always tells which
-  build is live.
+- `versionCode` should rise per installed build (strategy-dependent — see [env setup](env-setup.md)), so `dumpsys` tells which build is live.
 
 ## 3. Check Without Touching the Phone
 
@@ -131,43 +148,38 @@ adb exec-out screencap -p > shot.png
 ```
 
 Probe discipline. A negative probe proves nothing until its channel is
-validated:
+validated. Examples below are from real incidents — the rules generalize:
 
 - Positive control first. Actuate a known-working control and confirm its
-  log appears before concluding silent code is dead code. Logcat silence
-  indicted a gesture loop that was alive; the injected input never reached
+  log appears before concluding silent code is dead code. Example: logcat silence
+  once indicted a gesture loop that was alive; the injected input never reached
   its composable.
 - Synthetic input is a suspect channel. `adb shell input tap` and `swipe`
   can drive buttons while never reaching other composables on the same
   screen. Confirm a synthetic gesture moves your target's state (screenshot
   the before and after) before trusting anything it does not log.
 - Execution before theory. When a fix changes nothing, prove the new code
-  runs before theorizing about timing. One real case shipped a freezer
+  runs before theorizing about timing. Example: one real case shipped a freezer
   that was never called, then blamed a timer leak that did not exist.
-- When logcat stays inconclusive, draw the state on screen. A dot that
-  shows while a value is frozen broke a deadlock that three logging rounds
+- When logcat stays inconclusive, draw the state on screen. Example: a dot that
+  showed while a value was frozen broke a deadlock that three logging rounds
   did not. Remove the probe with the fix.
 - On-draw text probes can lie about composition state. A `State` read
   inside `onDraw` subscribes the draw without recomposing, so the canvas
-  repaints with fresh probe text over stale captures: one frame then reads
-  as an impossible mixed state (a full hour lost to a "zombie
-  composition" that was a healthy pipeline plus a misleading probe).
-  Prefer logging transitions in event handlers plus body recompose lines
-  plus a change-gated draw-signature log (`ticks@lo,hi`, logged only when
-  it changes). Never treat pixels of probe text as the state of record.
+  repaints with fresh probe text over stale captures. Prefer logging transitions in event handlers plus body recompose lines
+  plus a change-gated draw-signature log, logged only when
+  it changes. Never treat pixels of probe text as the state of record.
 - Before instrumenting a rendering discrepancy, compute the expected
-  rendering from the logged state on PC. Ten seconds of label arithmetic
-  (`rankLabel(12)` is `"8k"`) would have shown the labels correct and
-  convicted the domain spec, saving three installs.
+  rendering from the logged state on PC. Example: ten seconds of label arithmetic
+  would have shown the labels correct and convicted the domain spec, saving three installs.
 - When state, draw, and labels agree with each other but not with your
   expectation, suspect the spec (mapping, thresholds, padding direction),
   not staleness. A pipeline that checks out end to end is telling you the
   design is wrong.
 - Batch all instrumentation into one install when the repro needs user
   gestures. Every install wipes UI state (zoom, scroll, sheets), so each
-  probe round costs a full human repro. Four sequential probe installs
-  (draw text, split text, small text, logcat) should have been one
-  logging build.
+  probe round costs a full human repro. Example: four sequential probe installs
+  (draw text, split text, small text, logcat) should have been one logging build.
 
 - `monkey` opens apps. `am start` opens exact activities. `keyevent 3` goes home.
 - `uiautomator dump` reports which package owns the screen. Use its bounds
@@ -175,12 +187,12 @@ validated:
 - `screencap` works on any screen, locked or not. The agent inspects the
   image. No human eyes are necessary.
 - Never tap from screenshot-scaled coordinates. Dump `uiautomator` bounds
-  first, tap centers, then screenshot-verify the navigation landed. Guessed
+  first, tap centers, then screenshot-verify the navigation landed. Example: guessed
   coordinates hit the wrong control (fourteen wasted taps hit undo instead
   of the chart icon).
 - Take a screenshot after every tap step. Layouts shift between builds.
-  Blind coordinates corrupt user state (a blind sequence changed a saved
-  rank).
+  Blind coordinates hit the wrong control. Example: a blind sequence changed a saved
+  rank in one project.
 - Encode each check as a script: `scripts/verify-<feature>.sh` with
   PASS/FAIL output. Every install then checks itself. This replaces all
   "can you check X" messages. Example shape:
@@ -194,13 +206,13 @@ echo "$LOG" | grep -q "<expected line>" || fail "not detected"
 pass "description"
 ```
 
-## 4. Phone-Active Budget
+## 4. Device-Active Budget
 
-The phone is a scarce resource. The PC is not. Budget phone seconds explicitly:
+The phone is a scarce resource. The PC is not. Budget device seconds explicitly:
 
 - Wrap `adb` calls with `time`.
 - Keep a ledger per session: what ran, active seconds, cumulative total.
-- Stay under 10 minutes total and under 5 minutes per test.
+- Set a cap per project. Starting point from one project: under 10 minutes total and under 5 minutes per test.
 - PC waits (install streaming, sleeps, verdict polling) do not count. Report them separately.
 - Batch independent reads into one `adb` round where possible.
 - Coordinate human taps (unlock, Allow, alarm stop) in one message with exact steps.

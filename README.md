@@ -21,6 +21,11 @@ This section is for PCs that run the environment. It makes no changes to this re
 2. Link new files and prune stale links: `./bootstrap.sh --check-only`
 3. Confirm the state: `./sync.sh --check`
 
+Pi itself updates independently: `pi update` installs the newest release and
+bootstrap never downgrades it (the pin is a floor, not an exact version).
+After `pi update`, verify the extensions' assumptions still hold with
+`./tests/pi-internals.test.sh`, then `./sync.sh --check`.
+
 Use `./bootstrap.sh` without flags only when you also want new tools. It calls `apt-get`, installs uv and Pi if missing, and can ask for `sudo`.
 
 ### After you move the clone
