@@ -2207,6 +2207,33 @@ function textResult(chars) {
     check("custom opened shows result-injected body", /PAYLOAD/.test(opened), opened.slice(0, 160));
   }
 
+  // 63. the count streams: partial results re-run renderResult and the row
+  // repaints with the new size (Pi sends tool_execution_update ->
+  // updateResult(partial, isPartial: true))
+  {
+    resetTrace();
+    const bash = piW.tools.get("bash");
+    const { ctx } = callContext({ args: { command: "seq 1 100" }, toolCallId: "t-stream" });
+    bash.renderCall(ctx.args, theme, ctx);
+    const partial = (chars, isPartial) =>
+      bash.renderResult(
+        { content: [{ type: "text", text: "x".repeat(chars) }], details: {} },
+        { expanded: false, isPartial },
+        theme,
+        { ...ctx, lastComponent: undefined },
+      );
+    partial(120, true);
+    const during = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
+    check("partial output shows a count", /0\.1k ch/.test(during), during);
+    partial(2500, true);
+    const grown = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
+    check("count grows while output streams", /2\.5k ch/.test(grown), grown);
+    partial(4200, false);
+    const settled = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
+    check("final count lands", /4\.2k ch/.test(settled), settled);
+    check("row stays one line", bash.renderCall(ctx.args, theme, ctx).render(80).length === 1, "multi-line");
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);
