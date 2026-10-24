@@ -417,10 +417,14 @@ function textResult(chars) {
     check("powershell row", psLine.includes("<b:accent>PS> Get-ChildItem</b>"), JSON.stringify(psLine));
   }
 
-  // 9. no message_end hook at all: the label is never ours to set
+  // 9. message_end reconciles per-row labels but never the global setter
   {
+    let globalCalls = 0;
+    const ui = { setHiddenThinkingLabel: () => { globalCalls++; } };
     const handlers = pi.handlers.get("message_end") ?? [];
-    check("no message_end subscription", handlers.length === 0, String(handlers.length));
+    check("message_end subscribed", handlers.length === 1, String(handlers.length));
+    await handlers[0]({ message: { role: "assistant", content: [{ type: "text", text: "hi" }] } }, { hasUI: true, ui });
+    check("global setter untouched", globalCalls === 0, String(globalCalls));
   }
 
   // 10. real ANSI: padding/truncation measured by visible width
@@ -1200,6 +1204,104 @@ function textResult(chars) {
       merged[0].includes("<b>a</b>") && merged[1].includes("<b>b</b>"), JSON.stringify(merged));
     const alone = bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })).render(80);
     check("prose-split history stays separate", alone.length === 1 && alone[0].includes("ls"), JSON.stringify(alone));
+  }
+
+  // 26. tree-walk per-row labels: each thinking row shows its own message.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const commands = new Map();
+    const piL = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: (n, o) => commands.set(n, o),
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const widgets = new Map();
+    const ui = { setWidget: (key, factory) => widgets.set(key, factory), setHiddenThinkingLabel: () => { throw new Error("global setter must not be called"); } };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    check("walker widget registered", widgets.size === 1, [...widgets.keys()].join(","));
+    const thinkMsg = (text) => ({ role: "assistant", content: [{ type: "thinking", thinking: text }] });
+    const mkRow = (text) => ({
+      lastMessage: thinkMsg(text),
+      hiddenThinkingLabel: "Thinking...",
+      updateContent() {},
+      setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+    });
+    const rowA = mkRow("alpha thinking here");
+    const rowB = mkRow("beta thinking here with more words");
+    const fakeTui = { children: [{ children: [{ children: [rowA, { junk: true }, rowB] }] }] };
+    for (const factory of widgets.values()) factory(fakeTui, {});
+    await handlers.get("message_end")[0]({ message: thinkMsg("latest") }, { hasUI: true, ui });
+    check("row A shows its own thinking", rowA.hiddenThinkingLabel.includes("alpha"), JSON.stringify(rowA.hiddenThinkingLabel));
+    check("row B shows its own thinking", rowB.hiddenThinkingLabel.includes("beta"), JSON.stringify(rowB.hiddenThinkingLabel));
+    check("rows differ", rowA.hiddenThinkingLabel !== rowB.hiddenThinkingLabel, `${rowA.hiddenThinkingLabel} vs ${rowB.hiddenThinkingLabel}`);
+    let said = "";
+    await commands.get("collapse").handler("", { ui: { notify: (m) => { said = m; } } });
+    check("collapse reports walk status", said.includes("thinking walk:"), said);
+  }
+
+  // 27. walker ignores rows without thinking, junk nodes, and missing handle.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const handlers = new Map();
+    const piL = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const ui = { setWidget: () => {}, setHiddenThinkingLabel: () => { throw new Error("global setter must not be called"); } };
+    // reconcile with no TUI handle captured: silent no-op
+    await handlers.get("message_end")[0]({ message: { role: "assistant", content: [] } }, { hasUI: true, ui });
+    check("no handle no crash", true, "");
+    const plain = {
+      lastMessage: { role: "assistant", content: [{ type: "text", text: "visible" }] },
+      hiddenThinkingLabel: "Thinking...",
+      updateContent() {},
+      setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+    };
+    const widgets = [];
+    const ui2 = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => { throw new Error("nope"); } };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui: ui2, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [plain, { junk: 1 }, null, "str"] }, {});
+    await handlers.get("turn_end")[0]({}, { hasUI: true, ui: ui2 });
+    check("thinking-less row keeps stock", plain.hiddenThinkingLabel === "Thinking...", plain.hiddenThinkingLabel);
+  }
+
+  // 28. labels converge after finalize: partial streaming message, then final.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const handlers = new Map();
+    const piL = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piL);
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => { throw new Error("nope"); } };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    const streaming = { role: "assistant", content: [{ type: "thinking", thinking: "partial" }] };
+    const row = {
+      lastMessage: streaming,
+      hiddenThinkingLabel: "Thinking...",
+      updateContent() {},
+      setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+    };
+    widgets[0]({ children: [row] }, {});
+    await handlers.get("message_end")[0]({ message: streaming }, { hasUI: true, ui });
+    check("streaming label applied", row.hiddenThinkingLabel.includes("partial"), row.hiddenThinkingLabel);
+    row.lastMessage = { role: "assistant", content: [{ type: "thinking", thinking: "final full thought" }] };
+    await handlers.get("turn_end")[0]({}, { hasUI: true, ui });
+    check("final label converges", row.hiddenThinkingLabel.includes("final full"), row.hiddenThinkingLabel);
   }
 
   if (failures > 0) {

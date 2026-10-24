@@ -39,12 +39,17 @@ Toggling `ctrl+o` re-depths an open row without another click; clicking it
 again closes it. Both depths are byte-identical to a real
 `ToolExecutionComponent` (pinned by tests).
 
-**Thinking label.** Untouched: every collapsed row shows Pi's stock
-`Thinking...` default. Pi's hidden label is one global string applied to
-every assistant row, so any preview the extension set would repeat the
-newest turn's thinking on all older rows. Setting nothing keeps every row
-honest. (The pure preview helpers stay in `logic.ts`, tested, for the day
-upstream offers per-row labels.)
+**Thinking label.** Per row, via a tree walk — never the global setter.
+Pi's `setHiddenThinkingLabel` applies one string to every assistant row, so
+the extension does not call it at all. Instead it walks the public TUI tree
+(from the widget factory handle) and sets each thinking row's *own* label
+from its *own* message, on `message_start` / `message_end` /
+`tool_execution_start` / `turn_end` / `session_start` (history backfill).
+Reconciling is idempotent: a row already labeled for its current message is
+skipped, and a clobbered row heals on the next pass. If the tree shape ever
+stops matching, the walk bails silently and rows keep Pi's stock
+`Thinking...`; `/collapse` reports `thinking walk: active (N row(s))` or the
+inactive reason. (The pure preview helpers stay in `logic.ts`, tested.)
 
 **Any tool, not just the built-ins.** Tools from other extensions and MCP
 servers render through the same row pipeline as soon as they hand over their
@@ -79,6 +84,7 @@ unexpected gap, the boundary list names what split them.
 | `rows.ts` | row painting, the stock cell a row opens, tool wrappers, the opt-in slot for foreign tools |
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
+| `labels.ts` | tree-walk per-row thinking labels, walker widget, reconcile |
 | `logic.ts` | pure helpers (summaries, truncation, label sizing) |
 
 Registry entries are never pruned: `buildTrace` reads them at render time and

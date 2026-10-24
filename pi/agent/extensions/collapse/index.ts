@@ -48,6 +48,13 @@ import {
   createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+  captureWalkerTui,
+  reconcileThinkingLabels,
+  walkerStatus,
+  walkerWidget,
+  WALKER_KEY,
+} from "./labels.js";
+import {
   planToolRuns,
 } from "./logic.js";
 import {
@@ -75,7 +82,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 25;
+const COLLAPSE_REVISION = 26;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -111,7 +118,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show collapse extension status (proves this revision is loaded)",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock)${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()}${uncollapsedReport(pi)}`,
       );
     },
   });
@@ -210,6 +217,15 @@ export default function (pi: ExtensionAPI) {
       // rows stay put, but seal the run so live tools start a fresh trace.
       endHistoryPhase("session-start");
       if (ctx.hasUI) collapseSawUI = true;
+      try {
+        ctx.ui?.setWidget?.(WALKER_KEY, (tui: unknown) => {
+          captureWalkerTui(tui);
+          return walkerWidget();
+        });
+      } catch {
+        // No widget host (RPC/print): rows keep the stock label.
+      }
+      reconcileThinkingLabels(pi);
       const sm = ctx.sessionManager as any;
       const entries =
         typeof sm?.getBranch === "function" ? sm.getBranch() : (sm?.getEntries?.() ?? []);
@@ -222,8 +238,21 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("message_start", (event) => traceOnMessageStart(event));
+  // Per-row thinking labels: reconcile whenever rows land (history),
+  // stream (partials), or finalize (message_end runs before Pi's own
+  // finalize, so the deferred triggers below converge on the final text).
+  const reconcileRows = () => {
+    reconcileThinkingLabels(pi);
+  };
+  pi.on("session_start", () => reconcileRows());
+  pi.on("message_start", (event) => {
+    traceOnMessageStart(event);
+    reconcileRows();
+  });
   pi.on("message_update", (event) => traceOnMessageUpdate(event));
+  pi.on("message_end", () => reconcileRows());
+  pi.on("tool_execution_start", () => reconcileRows());
+  pi.on("turn_end", () => reconcileRows());
   // Tools that opted into collapsing (the global wrap slot) render their
   // own rows, so they merge like the built-ins; anything else still splits.
   const isOwnTool = (name: string): boolean =>
