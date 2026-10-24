@@ -2727,6 +2727,43 @@ function textResult(chars) {
   else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
 }
 
+
+// ---------------------------------------------------------------------------
+// 71. Args change detection is bounded: a megabyte of streaming content must
+//     not be re-serialized on every delta.
+// ---------------------------------------------------------------------------
+{
+  const traceLib = await jiti.import(path.join(HERE, "trace.ts"));
+  traceLib.resetTraceState();
+  const def = { name: "write", renderCall: () => null, renderResult: () => null };
+  const ctx = { isError: false, isPartial: true, executionStarted: true, argsComplete: false, state: {} };
+  const entryOf = (id) => traceLib.traceUpsert("write", id, def);
+
+  {
+    const entry = entryOf("small");
+    const first = { path: "/a/b.txt", offset: 1 };
+    check("first small args are a change", traceLib.traceSync(entry, first, ctx) === true, "first");
+    check("same args object is not a change", traceLib.traceSync(entry, first, ctx) === false, "identity");
+    check("changed small args are a change", traceLib.traceSync(entry, { path: "/a/b.txt", offset: 2 }, ctx) === true, "content");
+  }
+
+  {
+    // Large args: the row shows a head and a tail, so those decide a repaint.
+    const entry = entryOf("large");
+    const content = "x".repeat(200000);
+    traceLib.traceSync(entry, { path: "/a/big", content }, ctx);
+    const t0 = Date.now();
+    for (let i = 0; i < 100; i++) traceLib.traceSync(entry, { path: "/a/big", content }, ctx);
+    const ms = (Date.now() - t0) / 100;
+    check("large unchanged args are cheap and not a change", ms < 0.1 && traceLib.traceSync(entry, { path: "/a/big", content }, ctx) === false, ms.toFixed(4) + "ms");
+    check("a different tail is a change", traceLib.traceSync(entry, { path: "/a/big", content: content + "y" }, ctx) === true, "tail");
+    check("a different head is a change", traceLib.traceSync(entry, { path: "/a/big", content: "y" + content.slice(1) }, ctx) === true, "head");
+    // Re-adopt the baseline first: the head check above changed the head.
+    traceLib.traceSync(entry, { path: "/a/big", content }, ctx);
+    check("a middle-only change is not (it cannot show)", traceLib.traceSync(entry, { path: "/a/big", content: "x".repeat(100000) + "y" + "x".repeat(99999) }, ctx) === false, "middle");
+  }
+}
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

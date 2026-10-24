@@ -56,6 +56,34 @@ label carries the extension's own italic-off escape), so prose that repeats
 the same visible text is left alone; the line must also end after the label,
 so a wrapped or stale label simply loses the rule for a frame.
 
+## Performance
+
+The extension must never be the reason Pi feels slow, so every per-event and
+per-frame path is bounded by the transcript or the row width — never by the
+size of a tool argument or a thinking block:
+
+- **Rows** are one string per render (~1µs), truncated to the terminal width.
+  `bash`/`powershell` styling stops at 2048 characters / 192 tokens; the
+  summary collapses at most 4096 raw characters, so a 1MB command costs
+  0.04ms instead of 33ms per repaint.
+- **Thinking labels** are built from the head and tail windows of the block,
+  so a 1MB block relabels in 0.007ms instead of 7.7ms. A resize relabels in
+  place, in the frame it lands (no poll wait, no message rebuild).
+- **Tool arguments** are compared by identity, and above 4096 characters by
+  shape + head + tail (a row is truncated in the middle, so a deep change is
+  invisible anyway): streaming 1MB into `write` costs 0.001ms per delta
+  instead of 3.4ms.
+- **Generic summaries** stringify the head of a long argument, not the whole
+  thing (1MB: 3.4ms → 0.008ms).
+- **Tree passes** (labels, detach, wrap) are O(components): ~0.05ms for 1000
+  components, and they run on events plus one 1s poll — the only periodic
+  work in the extension.
+
+Measured on a 500-row transcript: a thinking delta costs 0.11ms (inline and
+deferred passes), a 2KB `bash` command delta 0.9ms. The rail adds ~0.6µs per
+thinking row per frame (≈0.2% of a core for a screenful). Registries are
+proportional to the transcript (~2.3KB per tool row), not to elapsed time.
+
 ## Behaviour
 
 **One component per run.** Adjacent tool calls share a single component, so Pi

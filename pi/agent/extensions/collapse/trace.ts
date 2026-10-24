@@ -28,7 +28,7 @@ export interface TraceEntry extends CollapseSlots {
   toolName: string;
   original: any;
   args: any;
-  argsJson?: string;
+  argsSig?: string;
   expanded: boolean;
   isError: boolean;
   isPartial: boolean;
@@ -204,6 +204,41 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
 /** Sync live fields into the entry. Returns true when anything observable
  *  changed (so the owner knows to repaint). Poke only on change: poking
  *  unconditionally would invalidate -> re-render -> poke forever. */
+
+/** Exact up to this many characters; beyond it only the head, the tail and
+ *  the lengths are compared. A row is truncated in the middle, so a change
+ *  deep inside a large argument cannot be displayed anyway. */
+const EXACT_ARGS_CHARS = 4096;
+const SIGNATURE_CHARS = 128;
+
+/** Change detection for tool arguments. `JSON.stringify` was O(args) on
+ *  every streaming delta — a `write` streaming a megabyte of content cost
+ *  ~3.4ms per delta — and the only thing it bought was a repaint of a row
+ *  whose visible head and tail had not changed. */
+function argsSignature(args: any): string {
+  try {
+    if (args === null || typeof args !== "object") return JSON.stringify(args ?? null);
+    const keys = Object.keys(args);
+    let total = 0;
+    for (const key of keys) {
+      const value = args[key];
+      if (typeof value === "string") total += value.length;
+    }
+    if (total <= EXACT_ARGS_CHARS) return JSON.stringify(args);
+    let sig = "";
+    for (const key of keys) {
+      const value = args[key];
+      sig +=
+        typeof value === "string"
+          ? `|${key}:${value.length}:${value.slice(0, SIGNATURE_CHARS)}:${value.slice(-SIGNATURE_CHARS)}`
+          : `|${key}:${Array.isArray(value) ? `[${value.length}]` : typeof value}`;
+    }
+    return sig;
+  } catch {
+    return "?";
+  }
+}
+
 export function traceSync(
   entry: TraceEntry,
   args: any,
@@ -215,9 +250,9 @@ export function traceSync(
   // Identity first: Pi hands the same args object back on every render pass,
   // so a re-render costs nothing. Serialize only when the object changed.
   if (entry.args !== args) {
-    const sig = JSON.stringify(args ?? null);
-    if (entry.argsJson !== sig) {
-      entry.argsJson = sig;
+    const sig = argsSignature(args);
+    if (entry.argsSig !== sig) {
+      entry.argsSig = sig;
       changed = true;
     }
     // Adopt the object either way: equal content renders the same, and the

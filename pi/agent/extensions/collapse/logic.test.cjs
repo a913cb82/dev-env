@@ -107,6 +107,59 @@ function check(name, cond, extra) {
     logic.thinkingPreview("about something really long here and more words follow", 20),
   );
 
+  // thinkingPreview is bounded: the label shows ~a line, so collapsing a
+  // megabyte to show 64 chars must not cost the megabyte.
+  {
+    const exact = (text, n) => logic.truncateMiddle(logic.collapseWhitespace(text), n);
+    const samples = [
+      ["plain", "word ".repeat(4000)],
+      ["leading whitespace", "   \n\n  " + "word ".repeat(4000)],
+      ["trailing whitespace", "word ".repeat(4000) + "   \n\n  "],
+      ["long middle run", "head ".repeat(300) + " ".repeat(4000) + " tail".repeat(300)],
+      ["exactly at the window", "x".repeat(1024)],
+      ["just over the window", "x".repeat(1100)],
+    ];
+    for (const [name, text] of samples) {
+      for (const n of [20, 64, 97]) {
+        const got = logic.thinkingPreview(text, n);
+        check(`bounded preview matches the exact one (${name}, ${n})`, got === exact(text, n), JSON.stringify(got) + " vs " + JSON.stringify(exact(text, n)));
+      }
+    }
+    // Pathological: the whole head window is whitespace; the scan must still
+    // find the text and stay exact.
+    const late = " ".repeat(2000) + "the actual words ".repeat(400);
+    check("whitespace head still finds the text", logic.thinkingPreview(late, 64) === exact(late, 64), JSON.stringify(logic.thinkingPreview(late, 64)));
+    // A 5MB block: the exact path collapses all of it (~40ms); bounded is O(1).
+    const huge = "thinking words here ".repeat(260000);
+    const t0 = Date.now();
+    const label = logic.thinkingLabelForWidth(huge, 120, 1);
+    const ms = Date.now() - t0;
+    check("5MB thinking label is bounded", ms < 20 && label.length > 0, `${ms}ms`);
+    const count = logic.formatCharCount(huge.length);
+    const preview = exact(huge, Math.max(8, logic.labelBudget(120, 1) - count.length - 1));
+    check("5MB label matches the exact preview", label.includes(preview), JSON.stringify(label.slice(0, 40)));
+  }
+
+  // Bounded summaries: a row shows one line, so neither a megabyte command
+  // nor a megabyte argument may cost the megabyte per repaint.
+  {
+    const huge = "cd /a && echo hi; ".repeat(60000);
+    const t0 = Date.now();
+    const summary = logic.summarizeBashCommand(huge);
+    const ms = Date.now() - t0;
+    check("huge command summary is bounded", ms < 20, `${ms}ms`);
+    check("huge command summary keeps the head", summary.startsWith("cd /a && echo hi;"), JSON.stringify(summary.slice(0, 20)));
+    check("small command summary is unchanged", logic.summarizeBashCommand("  a\n b  ") === "a b", JSON.stringify(logic.summarizeBashCommand("  a\n b  ")));
+
+    const bigArgs = { path: "/a/b", content: "x".repeat(1024 * 1024) };
+    const t1 = Date.now();
+    const args = logic.summarizeArgs(bigArgs, 80);
+    const ms2 = Date.now() - t1;
+    check("huge argument summary is bounded", ms2 < 10, `${ms2}ms`);
+    check("huge argument summary is still readable", args.startsWith('path="/a/b" content="') && args.length <= 80, JSON.stringify(args));
+    check("small argument summary is unchanged", logic.summarizeArgs({ a: 1, b: "x" }, 80) === 'a=1 b="x"', JSON.stringify(logic.summarizeArgs({ a: 1, b: "x" }, 80)));
+  }
+
   // buildThinkingLabel
   check("label empty", logic.buildThinkingLabel("") === "Thinking… 0.0k ch", JSON.stringify(logic.buildThinkingLabel("")));
   check(

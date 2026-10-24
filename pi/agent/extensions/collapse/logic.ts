@@ -42,8 +42,28 @@ export function truncateEnd(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars - 1)}…`;
 }
 
+/** A collapsed one-line preview: middle-truncated, so it keeps the head AND
+ *  the tail. Collapsing the whole text first would make the label cost
+ *  O(thinking) — a megabyte block took ~8ms, and the label is rebuilt on
+ *  every streaming delta and every resize frame. The preview shows at most
+ *  one line, so only the head and tail windows are collapsed; the window
+ *  doubles when a whitespace-heavy head or tail cannot fill its half, which
+ *  keeps the result byte-identical to the exact path and never costs more
+ *  than the old behaviour. */
 export function thinkingPreview(text: string, maxChars = 64): string {
-  return truncateMiddle(collapseWhitespace(text), maxChars);
+  if (maxChars < 2) return truncateMiddle(collapseWhitespace(text), maxChars);
+  const start = Math.ceil((maxChars - 1) / 2);
+  const end = Math.max(0, maxChars - 1 - start);
+  let window = Math.max(256, maxChars * 4);
+  for (;;) {
+    if (text.length <= window * 2) return truncateMiddle(collapseWhitespace(text), maxChars);
+    const head = collapseWhitespace(text.slice(0, window));
+    const tail = collapseWhitespace(text.slice(-window));
+    if (head.length >= start && tail.length >= end) {
+      return `${head.slice(0, start)}\u2026${end > 0 ? tail.slice(tail.length - end) : ""}`;
+    }
+    window *= 2;
+  }
 }
 
 export function buildThinkingLabel(thinking: string, maxPreview = 64): string {
@@ -223,11 +243,15 @@ export function bashSegments(command: string): BashSegment[] {
   return segments;
 }
 
+/** Raw characters collapsed before the style budget applies. A row shows at
+ *  most one line and styles at most `BASH_STYLE_BUDGET` characters, so
+ *  collapsing more of a pathological command only costs the whole command on
+ *  every repaint (33ms for a megabyte). */
+const BASH_SUMMARY_WINDOW = 4096;
+
 export function summarizeBashCommand(command: string): string {
-  // No fixed cap: the row component truncates to the live terminal width at
-  // render time, so only collapse whitespace here. Truncating early would cut
-  // commands on wide terminals that fit fine.
-  return collapseWhitespace(command ?? "");
+  const text = command ?? "";
+  return collapseWhitespace(text.length > BASH_SUMMARY_WINDOW ? text.slice(0, BASH_SUMMARY_WINDOW) : text);
 }
 
 export interface ReadLineParts {
@@ -253,7 +277,12 @@ export function summarizeArgs(args: unknown, maxChars = 80): string {
   if (typeof args !== "object") return truncateEnd(collapseWhitespace(String(args)), maxChars);
   const entries = Object.entries(args as Record<string, unknown>);
   if (entries.length === 0) return "";
-  const pairs = entries.map(([key, value]) => `${key}=${JSON.stringify(value) ?? String(value)}`);
+  const pairs = entries.map(([key, value]) => {
+    // A row shows 80 characters: stringify the head of a long string instead
+    // of a megabyte of it (a file body costs ~3ms per repaint otherwise).
+    const shown = JSON.stringify(typeof value === "string" ? value.slice(0, 256) : value);
+    return `${key}=${shown ?? String(value)}`;
+  });
   return truncateEnd(pairs.join(" "), maxChars);
 }
 
