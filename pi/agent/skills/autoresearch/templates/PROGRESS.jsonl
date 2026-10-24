@@ -1,0 +1,2 @@
+{"date": "<YYYY-MM-DD>", "id": "<folder>-<sha>", "score": 0.0, "budget": "<tag>", "champion": null}
+{"date": "2026-01-01", "id": "src/parser-d4e5f6", "score": 0.47, "budget": "pytest+bench3-seed0", "champion": "src/parser-a1b2c3"}
