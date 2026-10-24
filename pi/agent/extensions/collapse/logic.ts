@@ -350,11 +350,15 @@ export function lsParts(args: { path?: unknown }): { path: string } {
   return { path: typeof args?.path === "string" ? args.path : "" };
 }
 
-/** SGR 23 ends an italic run. Pi renders the hidden-thinking label as
- *  theme.italic(theme.fg("thinkingText", label)) — the entire label — so the
- *  count can only leave the italic from inside the label string. Escape
- *  bytes add no visible width, so alignment is unchanged. */
-const ITALIC_OFF = "\x1b[23m";
+/** Ends an italic run from inside the label: Pi renders the hidden-thinking
+ *  label as chalk.italic(theme.fg("thinkingText", label)) — the entire label
+ *  — so the count can only escape the italic from within the string. It must
+ *  NOT be a bare SGR 23: chalk 6 rewrites every close code it finds in its
+ *  input into close+open, which would re-enable italic right after the reset.
+ *  `23;23` is the same attribute twice, so chalk does not recognise it as a
+ *  close, terminals process it left to right and end up italic-off, and it
+ *  leaves the foreground color alone. Escape bytes add no visible width. */
+const ITALIC_OFF = "\x1b[23;23m";
 
 /** One-line thinking label sized to the live terminal: middle-truncated
  *  preview with the char count pinned right. No "Thinking" prefix — the

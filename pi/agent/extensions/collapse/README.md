@@ -125,10 +125,15 @@ inactive reason. (The pure preview helpers stay in `logic.ts`, tested.)
 
 The count is not italic. Pi renders the label as
 `theme.italic(theme.fg("thinkingText", label))` — the whole string — so the
-extension ends the italic run from inside the label (`SGR 23`) just before the
-count. Escape bytes add no visible width, so the right alignment is unchanged.
-`tests/pi-internals.test.sh` pins that Pi wrapper: if it changes, the count
-stops leaving the italic and the test says so.
+extension ends the italic run from inside the label, just before the count.
+`SGR 23` cannot do that job: Pi's italic is chalk, and chalk 6 rewrites every
+copy of its own close code in its input into close+open, which re-enables the
+italic immediately. The label therefore uses `SGR 23;23` — the same attribute
+twice, which chalk does not recognise as a close, which terminals apply left
+to right, and which leaves the foreground colour alone. Escape bytes add no
+visible width, so right alignment is unchanged. `tests/pi-internals.test.sh`
+pins both the Pi wrapper and chalk's rewrite, so a change on either side fails
+the test instead of silently bringing the italic back.
 
 **Live preview while thinking.** The label is also written on
 `message_update`, so the preview (and its char count) grows as the model

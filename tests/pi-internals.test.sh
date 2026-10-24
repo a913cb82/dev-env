@@ -49,7 +49,16 @@ assert(T.MouseRegion && T.MouseRegion.name === 'MouseRegion', 'pi-tui MouseRegio
 const assistSrc = fs.readFileSync('$ROOT/dist/modes/interactive/components/assistant-message.js', 'utf8');
 assert(assistSrc.includes('contentContainer'), 'assistant row exposes contentContainer (spacer surgery anchor)');
 assert(assistSrc.includes('thinkingBlocks.length === 0'), 'no thinking region renders without text (no stock-label window)');
-assert(assistSrc.includes('theme.italic(theme.fg(') && assistSrc.includes('hiddenThinkingLabel)), this.outputPad'), 'thinking label is italicized whole (SGR 23 marks the count)');
+assert(assistSrc.includes('theme.italic(theme.fg(') && assistSrc.includes('hiddenThinkingLabel)), this.outputPad'), 'thinking label is italicized whole (count needs an in-label italic-off)');
+// chalk 6 rewrites every copy of its own close code in its input into
+// close+open, so a bare SGR 23 cannot end italic inside the label. The
+// extension uses 23;23, which chalk leaves alone.
+const chalkMod = require('$ROOT/node_modules/chalk/source/index.js');
+const chalk = chalkMod.default ?? chalkMod;
+chalk.level = 3;
+const ESC = String.fromCharCode(27);
+assert(chalk.italic('a' + ESC + '[23m' + 'b').includes(ESC + '[23m' + ESC + '[3m'), 'chalk re-opens after its own close code (bare SGR 23 is useless)');
+assert(!chalk.italic('a' + ESC + '[23;23m' + 'b').includes(ESC + '[23;23m' + ESC + '[3m'), 'split italic-off is not rewritten by chalk (count leaves italic)');
 const mode = fs.readFileSync('$ROOT/dist/modes/interactive/interactive-mode.js', 'utf8');
 assert(mode.includes('chatContainer'), 'chatContainer anchor in interactive-mode');
 assert(mode.includes('setHiddenThinkingLabel'), 'global label fan-out anchor in interactive-mode');
