@@ -2814,6 +2814,101 @@ function textResult(chars) {
   check("cancel row names the target", lines[3]?.includes("cancel_subagent review"), lines[3]);
 }
 
+// ---------------------------------------------------------------------------
+// 73. A tool with no renderers of its own opens to Pi's own stock cell: the
+//     args line, the result preview, and the expanded shapes, byte-identical.
+// ---------------------------------------------------------------------------
+{
+  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const agent = await jiti.import("@earendil-works/pi-coding-agent");
+  const themeMod = await jiti.import(path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"));
+  agent.initTheme("light");
+  const realTheme = themeMod.loadThemeFromPath(
+    path.join(PI, "dist", "modes", "interactive", "theme", "light.json"), "truecolor");
+  const ui = { requestRender() {} };
+  const args = { targets: ["review"], wait: true };
+  const text = "review (completed)\n\nFound three issues.\n1. count clip\n2. rail\n3. resize\n\nFull report.\nmore\nmore\nmore\nmore\nmore\nmore\nend";
+  const result = { content: [{ type: "text", text }], details: {}, isError: false };
+  const bare = {
+    name: "check_subagents", label: "Check", description: "d", parameters: {},
+    async execute() { return result; },
+  };
+  const mkPi = (hidden) => {
+    const handlers = new Map();
+    const stub = {
+      registerTool: () => {}, registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: hidden }),
+    };
+    (mod.default ?? mod)(stub);
+    return { stub, handlers };
+  };
+  const cell = (def, id) => {
+    const c = new agent.ToolExecutionComponent(def.name, id, args, { showImages: true, imageWidthCells: 60 }, def, ui, "/repo");
+    c.markExecutionStarted();
+    c.setArgsComplete();
+    c.updateResult(result, false);
+    return c;
+  };
+  const same = (label, ours, stock) => {
+    const a = ours.render(100);
+    const b = stock.render(100);
+    check(label, JSON.stringify(a) === JSON.stringify(b),
+      `\nours:\n${plainText(a.join("\n"))}\nstock:\n${plainText(b.join("\n"))}`);
+  };
+
+  // Hidden thinking: the clicked row is the cell.
+  {
+    const { stub, handlers } = mkPi(true);
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    const wrapped = mod.collapseDefinition(bare, stub);
+    const ours = cell(wrapped, "w1");
+    const stock = cell(bare, "s1");
+    const rest = ours.render(100);
+    check("bare rest is one row", rest.length === 2 && isRow(rest[1]), JSON.stringify(rest.map(plainText)));
+    check("bare row shows the summary, not the args", plainText(rest[1]).includes("check_subagents review") && !plainText(rest[1]).includes("wait="), plainText(rest[1]));
+    ours.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
+    ours.invalidate();
+    same("bare opened cell is stock (collapsed)", ours, stock);
+    stock.setExpanded(true);
+    ours.setExpanded(true);
+    same("bare opened cell is stock (expanded)", ours, stock);
+  }
+
+  // Visible thinking: collapse is inactive, so the cell must be stock too.
+  {
+    const { stub, handlers } = mkPi(false);
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    const wrapped = mod.collapseDefinition(bare, stub);
+    same("bare visible cell is stock (collapsed)", cell(wrapped, "w2"), cell(bare, "s2"));
+    const ours = cell(wrapped, "w3");
+    const stock = cell(bare, "s3");
+    ours.setExpanded(true);
+    stock.setExpanded(true);
+    same("bare visible cell is stock (expanded)", ours, stock);
+  }
+
+  // Bounds: a huge result previews ten lines; a huge argument stays one line.
+  {
+    const big = { content: [{ type: "text", text: Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n") }], details: {}, isError: false };
+    const longArgs = { body: "x".repeat(5000) };
+    const { stub, handlers } = mkPi(true);
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+    const wrapped = mod.collapseDefinition({ ...bare, name: "big_tool" }, stub);
+    const ctx = (expanded) => ({ args: longArgs, toolCallId: "b1", invalidate: () => {}, lastComponent: undefined, state: {},
+      cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false, expanded, showImages: true, isError: false });
+    const trace = wrapped.renderCall(longArgs, realTheme, ctx(false));
+    const call = trace.render(100).join("\n");
+    check("huge args line is bounded", plainText(call).length <= 102, String(plainText(call).length));
+    wrapped.renderResult(big, { expanded: false, isPartial: false }, realTheme, ctx(false));
+    const rest = wrapped.renderCall(longArgs, realTheme, ctx(false));
+    rest.handleMouse({ type: "click", x: 1, y: 0, width: 100, height: 1 });
+    const shown = plainText(wrapped.renderCall(longArgs, realTheme, ctx(false)).render(100).join("\n"))
+      .split("\n").map((line) => line.trim());
+    check("huge result previews ten lines", shown.includes("line 9") && !shown.includes("line 10") && shown.some((l) => l.includes("4990 more lines")), JSON.stringify(shown.slice(-3)));
+  }
+}
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

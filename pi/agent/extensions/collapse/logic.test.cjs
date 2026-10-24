@@ -153,11 +153,11 @@ function check(name, cond, extra) {
 
     const bigArgs = { path: "/a/b", content: "x".repeat(1024 * 1024) };
     const t1 = Date.now();
-    const args = logic.summarizeArgs(bigArgs, 80);
+    const args = logic.fallbackArgsText(bigArgs, false, 80);
     const ms2 = Date.now() - t1;
     check("huge argument summary is bounded", ms2 < 10, `${ms2}ms`);
     check("huge argument summary is still readable", args.startsWith('path="/a/b" content="') && args.length <= 80, JSON.stringify(args));
-    check("small argument summary is unchanged", logic.summarizeArgs({ a: 1, b: "x" }, 80) === 'a=1 b="x"', JSON.stringify(logic.summarizeArgs({ a: 1, b: "x" }, 80)));
+    check("small argument summary is unchanged", logic.fallbackArgsText({ a: 1, b: "x" }, false, 80) === 'a=1 b="x"', JSON.stringify(logic.fallbackArgsText({ a: 1, b: "x" }, false, 80)));
   }
 
   // buildThinkingLabel
@@ -210,14 +210,33 @@ function check(name, cond, extra) {
     JSON.stringify(logic.readLineParts({})),
   );
 
-  // summarizeArgs
-  check("args null", logic.summarizeArgs(null, 80) === "", JSON.stringify(logic.summarizeArgs(null, 80)));
+  // fallbackArgsText / previewLines: Pi's own fallback cell shapes
+  check("args null", logic.fallbackArgsText(null, false) === "", JSON.stringify(logic.fallbackArgsText(null, false)));
   check(
     "args object",
-    logic.summarizeArgs({ a: 1, b: "x" }, 80) === 'a=1 b="x"',
-    JSON.stringify(logic.summarizeArgs({ a: 1, b: "x" }, 80)),
+    logic.fallbackArgsText({ a: 1, b: "x" }, false) === 'a=1 b="x"',
+    JSON.stringify(logic.fallbackArgsText({ a: 1, b: "x" }, false)),
   );
-  check("args empty obj", logic.summarizeArgs({}, 80) === "", JSON.stringify(logic.summarizeArgs({}, 80)));
+  check("args empty obj", logic.fallbackArgsText({}, false) === "", JSON.stringify(logic.fallbackArgsText({}, false)));
+  check(
+    "args expanded one per line",
+    logic.fallbackArgsText({ a: 1, b: "x", c: [1, 2] }, true) === '  a: 1\n  b: x\n  c: [\n      1,\n      2\n    ]',
+    JSON.stringify(logic.fallbackArgsText({ a: 1, b: "x", c: [1, 2] }, true)),
+  );
+  check(
+    "args expanded indents multi-line values",
+    logic.fallbackArgsText({ body: "a\nb" }, true) === "  body: a\n    b",
+    JSON.stringify(logic.fallbackArgsText({ body: "a\nb" }, true)),
+  );
+  check("args collapsed ellipsis is Pi's", logic.fallbackArgsText({ a: "x".repeat(200) }, false).endsWith("..."), JSON.stringify(logic.fallbackArgsText({ a: "x".repeat(200) }, false).slice(-6)));
+  {
+    const ten = Array.from({ length: 25 }, (_, i) => `line ${i}`).join("\n");
+    const preview = logic.previewLines(ten, false);
+    check("preview is ten lines", preview.lines.length === 10 && preview.lines[9] === "line 9", JSON.stringify(preview.lines.length));
+    check("preview counts the rest", preview.remaining === 15, String(preview.remaining));
+    check("preview expanded is all", logic.previewLines(ten, true).remaining === 0 && logic.previewLines(ten, true).lines.length === 25, "");
+    check("preview short text", logic.previewLines("a\nb", false).remaining === 0, "");
+  }
 
   // extractThinkingText / findLatestThinkingText
   check(

@@ -271,23 +271,35 @@ export function readLineParts(args: {
   return { dir, base, range: formatLineRange(args?.offset, args?.limit) };
 }
 
-/** A generic args line: Pi caps its own fallback call line at 100 chars; 120
- *  leaves room for one more pair without dropping the tail of a typical one. */
-const GENERIC_ARGS_CHARS = 120;
-
-export function summarizeArgs(args: unknown, maxChars = 80): string {
+/** Arguments as Pi's fallback call renderer shows them: one `key=value` line
+ *  when collapsed (capped like Pi, at 100 chars), one `key: value` per line
+ *  when expanded. Bounded: a megabyte argument costs its head only. */
+export function fallbackArgsText(args: unknown, expanded: boolean, maxChars = 100): string {
   if (args == null) return "";
-  if (typeof args === "string") return truncateEnd(collapseWhitespace(args), maxChars);
-  if (typeof args !== "object") return truncateEnd(collapseWhitespace(String(args)), maxChars);
-  const entries = Object.entries(args as Record<string, unknown>);
+  const entries = typeof args === "object" && !Array.isArray(args)
+    ? Object.entries(args as Record<string, unknown>)
+    : [["args", args] as [string, unknown]];
   if (entries.length === 0) return "";
+  if (expanded) {
+    return entries.map(([key, value]) => {
+      const text = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? String(value));
+      return `  ${key}: ${text.replace(/\t/g, "   ").replace(/\r/g, "").split("\n").join("\n    ")}`;
+    }).join("\n");
+  }
   const pairs = entries.map(([key, value]) => {
-    // A row shows 80 characters: stringify the head of a long string instead
-    // of a megabyte of it (a file body costs ~3ms per repaint otherwise).
+    // Stringify the head of a long string instead of a megabyte of it.
     const shown = JSON.stringify(typeof value === "string" ? value.slice(0, 256) : value);
     return `${key}=${shown ?? String(value)}`;
-  });
-  return truncateEnd(pairs.join(" "), maxChars);
+  }).join(" ");
+  return pairs.length > maxChars ? `${pairs.slice(0, maxChars - 3)}...` : pairs;
+}
+
+/** The first lines of a result and how many are left: Pi previews ten lines
+ *  until the cell is expanded. */
+export function previewLines(text: string, expanded: boolean, limit = 10): { lines: string[]; remaining: number } {
+  const all = text.split("\n");
+  const lines = expanded ? all : all.slice(0, limit);
+  return { lines, remaining: all.length - lines.length };
 }
 
 export function extractThinkingText(message: {
@@ -461,7 +473,7 @@ export function genericToolSummary(args: unknown): string {
     const value = squash(firstLineOnly.has(key) ? raw.split("\n")[0] : raw);
     if (value) return value.split(" ").slice(0, 12).join(" ");
   }
-  return summarizeArgs(record, GENERIC_ARGS_CHARS);
+  return fallbackArgsText(record, false);
 }
 
 /** Group history tool calls into shared runs, mirroring the live layout:

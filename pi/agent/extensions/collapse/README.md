@@ -230,16 +230,19 @@ pi.registerTool(typeof wrap === "function" ? wrap(definition) : definition);
 
 `subagents` does exactly this, so `spawn_agent`, `check_subagents`,
 `send_to_subagent` and `cancel_subagent` collapse like `read` or `bash`.
-A definition without renderers gets synthesized ones: the row shows the tool
-name plus its most telling argument, and the expanded cell shows the plain
-result text. "Most telling" means the identity of what the tool acts on
-(`name`, `target`, `targets`, `description`, `title`, `query`, `url`, `path`,
+A definition without renderers gets synthesized ones that mirror Pi's own
+fallbacks, so the opened and visible cells are stock: the call is the
+`key=value` argument line when collapsed and one `key: value` per line when
+expanded, and the result is the output text previewed to ten lines
+(`... (N more lines, ctrl+o to expand)`) or in full when expanded. The row
+itself stays collapse's one-line summary: the tool name plus its most telling
+argument. "Most telling" means the identity of what the tool acts on (`name`,
+`target`, `targets`, `description`, `title`, `query`, `url`, `path`,
 `file_path`, `pattern`, `prompt`, `task`, `message` — first one present wins;
 `targets` is a list and joins with commas). When no argument is telling, the
-row falls back to the same `key=value` line Pi's own call renderer shows, so a
-collapsed row is never emptier than stock. Definitions with their own
-renderers keep them, wrapped in the shared chrome. `/collapse` lists any tool
-that never opted in.
+row falls back to the same `key=value` line, so a collapsed row is never
+emptier than stock. Definitions with their own renderers keep them, wrapped
+in the shared chrome. `/collapse` lists any tool that never opted in.
 
 ## Diagnostics
 

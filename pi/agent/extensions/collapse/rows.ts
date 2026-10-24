@@ -1,8 +1,8 @@
 // Row painting: one collapsed line per tool, and the stock cell a row opens
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { ROW_RAIL, bashSegments, formatCharCount, genericToolSummary, lsParts, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment } from "./logic.js";
+import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
+import { ROW_RAIL, bashSegments, fallbackArgsText, formatCharCount, genericToolSummary, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment } from "./logic.js";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
@@ -167,8 +167,8 @@ function lsLeft(theme: Theme, args: any, isError: boolean): string {
  *  MCP tools): the tool name plus the best argument it has. */
 function genericLeft(theme: Theme, name: string, args: any, isError: boolean): string {
   const summary = genericToolSummary(args);
-  // No summarizable argument (check_subagents {wait} and friends): the name
-  // alone is the row. A "…" placeholder would read as truncated content.
+  // No arguments at all: the name alone is the row. A "…" placeholder would
+  // read as truncated content.
   if (!summary) return toolHead(theme, name, isError);
   return `${toolHead(theme, `${name} `, isError)}${theme.fg("dim", summary)}`;
 }
@@ -457,14 +457,10 @@ export function collapseDefinition(original: any, pi: ExtensionAPI): any {
     ...original,
     renderCall:
       original.renderCall ??
-      ((args: any, theme: Theme) =>
-        new Text(genericLeft(theme, name, args, false), 0, 0)),
+      ((args: any, theme: Theme, context: any) => fallbackCall(name, args, theme, !!context?.expanded)),
     renderResult:
       original.renderResult ??
-      ((result: any, options: any) => {
-        if (!options?.expanded) return new Text("", 0, 0);
-        return new Text(textOf(result), 0, 0);
-      }),
+      ((result: any, options: any, theme: Theme) => fallbackResult(result, theme, !!options?.expanded)),
   };
   const wrapped = collapseTool(
     withRenderers,
@@ -481,5 +477,33 @@ function textOf(result: any): string {
   return content
     .filter((part: any) => part?.type === "text" && typeof part.text === "string")
     .map((part: any) => part.text)
-    .join("\n");
+    .join("\n")
+    .replace(/\r/g, "");
+}
+
+/** Pi's fallback call cell: the tool name and its arguments. Used only for
+ *  tools that ship no renderers of their own, so their opened and visible
+ *  cells stay stock. */
+function fallbackCall(name: string, args: any, theme: Theme, expanded: boolean): Component {
+  const head = theme.fg("toolTitle", theme.bold(name));
+  const body = fallbackArgsText(args, expanded);
+  if (!body) return new Text(head, 0, 0);
+  return new Text(
+    expanded ? `${head}\n${theme.fg("muted", body)}` : `${head} ${theme.fg("muted", body)}`,
+    0,
+    0,
+  );
+}
+
+/** Pi's fallback result cell: the output text, previewed to ten lines until
+ *  the cell is expanded. */
+function fallbackResult(result: any, theme: Theme, expanded: boolean): Component {
+  const text = textOf(result);
+  if (!text) return new Text("", 0, 0);
+  const { lines, remaining } = previewLines(text, expanded);
+  let body = lines.map((line) => theme.fg("toolOutput", line)).join("\n");
+  if (remaining > 0) {
+    body += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+  }
+  return new Text(body, 0, 0);
 }
