@@ -2,7 +2,7 @@
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { ROW_RAIL, bashSegments, fallbackArgsText, formatCharCount, genericToolSummary, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment } from "./logic.js";
+import { ROW_RAIL, bashSegments, fallbackArgsText, formatCharCount, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment } from "./logic.js";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
@@ -163,26 +163,58 @@ function lsLeft(theme: Theme, args: any, isError: boolean): string {
   return `${toolHead(theme, "ls ", isError)}${dir}`;
 }
 
+/** Truncate to a visible width, keeping the head (a pair's `key=` must
+ *  survive; only its value may be cut). */
+function truncateEndWidth(text: string, maxWidth: number): string {
+  if (visibleWidth(text) <= maxWidth) return text;
+  if (maxWidth < 4) return sliceByColumn(text, 0, Math.max(0, maxWidth));
+  return `${sliceByColumn(text, 0, maxWidth - 1)}…`;
+}
+
+/** Room for a row's left side: the same column arithmetic CollapsedLine
+ *  uses, so the label and the count agree on the right edge. */
+function rowBudget(pi: ExtensionAPI, count = ""): number {
+  return Math.max(16, labelBudget(currentColumns(), liveOutputPad(pi)) - visibleWidth(count) - COUNT_GAP);
+}
+
 /** Row text for a tool that ships no collapse renderer (extension tools,
- *  MCP tools): the tool name plus the best argument it has. */
-function genericLeft(theme: Theme, name: string, args: any, isError: boolean): string {
-  const summary = genericToolSummary(args);
-  // No arguments at all: the name alone is the row. A "…" placeholder would
-  // read as truncated content.
-  if (!summary) return toolHead(theme, name, isError);
-  return `${toolHead(theme, `${name} `, isError)}${theme.fg("dim", summary)}`;
+ *  MCP tools): the argument that names the subject (plain), then every other
+ *  argument as a dim `key=value` pair, filled to the row budget and cut at
+ *  the end of the last value. */
+function genericLeft(theme: Theme, name: string, args: any, isError: boolean, budget: number): string {
+  const row = genericToolRow(args);
+  const head = toolHead(theme, row.primary ? `${name} ` : name, isError);
+  let text = `${head}${row.primary}`;
+  let used = visibleWidth(text);
+  for (const pair of row.pairs) {
+    const plain = `${pair.key}=${pair.value}`;
+    const width = visibleWidth(plain);
+    if (used + 1 + width <= budget) {
+      text += ` ${theme.fg("dim", plain)}`;
+      used += 1 + width;
+      continue;
+    }
+    // Fill the remainder with the head of the next value; a three-character
+    // stub reads worse than an ellipsis, so stop short instead.
+    const room = budget - used - 1;
+    if (room >= 12) text += ` ${theme.fg("dim", truncateEndWidth(plain, room))}`;
+    else if (used + 1 <= budget) text += theme.fg("dim", "…");
+    return text;
+  }
+  return text;
 }
 
 /** Row text for any tool: the hand-tuned renderer when we have one, the
- *  generic summary otherwise. */
+ *  generic row otherwise. */
 function makeLeftFor(
   name: string,
   theme: Theme,
   args: any,
   isError: boolean,
+  budget: number,
 ): string {
   const known = makeLeftByName[name];
-  return known ? known(theme, args, isError) : genericLeft(theme, name, args, isError);
+  return known ? known(theme, args, isError) : genericLeft(theme, name, args, isError, budget);
 }
 
 /** Summary builders by tool name, for trace rows owned by another tool. */
@@ -291,7 +323,15 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     if (!entry) continue;
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
-      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi), theme);
+      : (() => {
+          const count = countSuffix(theme, entry);
+          return new CollapsedLine(
+            makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, count)),
+            count,
+            liveOutputPad(pi),
+            theme,
+          );
+        })();
     trace.addChild(
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -345,7 +385,7 @@ function trackCollapse(state: CollapseSlots, context: any): void {
  *  keep stock content, re-boxed in Pi's chrome for default-shell tools. */
 export function collapseTool(
   original: any,
-  makeLeft: (theme: Theme, args: any, isError: boolean) => string,
+  makeLeft: (theme: Theme, args: any, isError: boolean, budget: number) => string,
   pi: ExtensionAPI,
 ): any {
   // edit already draws its own framing (stock self shell): boxing it again
@@ -375,7 +415,10 @@ export function collapseTool(
       }
       const toolCallId = context?.toolCallId;
       const entry = traceUpsert(original.name, toolCallId, original);
-      if (!entry) return new CollapsedLine(makeLeft(theme, args, !!context?.isError), countSuffix(theme, context?.state ?? {}), liveOutputPad(pi), theme);
+      if (!entry) {
+        const count = countSuffix(theme, context?.state ?? {});
+        return new CollapsedLine(makeLeft(theme, args, !!context?.isError, rowBudget(pi, count)), count, liveOutputPad(pi), theme);
+      }
       const changed = traceSync(entry, args, context);
       if (traceOwnerId(entry.runId) !== entry.id) {
         if (changed) tracePokeOwner(entry.runId);
@@ -464,7 +507,7 @@ export function collapseDefinition(original: any, pi: ExtensionAPI): any {
   };
   const wrapped = collapseTool(
     withRenderers,
-    (theme: Theme, args: any, isError: boolean) => makeLeftFor(name, theme, args, isError),
+    (theme: Theme, args: any, isError: boolean, budget: number) => makeLeftFor(name, theme, args, isError, budget),
     pi,
   );
   wrapped.__collapseWrapped = true;

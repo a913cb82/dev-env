@@ -89,10 +89,6 @@ function check(name, cond, extra) {
   check("middle cut", logic.truncateMiddle("abcdefghij", 7) === "abc…hij", logic.truncateMiddle("abcdefghij", 7));
   check("middle tiny", logic.truncateMiddle("abcdef", 3) === "a…f", logic.truncateMiddle("abcdef", 3));
 
-  // truncateEnd
-  check("end short", logic.truncateEnd("hello", 10) === "hello", logic.truncateEnd("hello", 10));
-  check("end cut", logic.truncateEnd("abcdefghij", 7) === "abcdef…", logic.truncateEnd("abcdefghij", 7));
-  check("end tiny", logic.truncateEnd("abcdef", 2) === "a…", logic.truncateEnd("abcdef", 2));
 
   // thinkingPreview
   check(
@@ -362,31 +358,47 @@ function check(name, cond, extra) {
     check("empty content", hv({ role: "assistant", content: [] }) === false);
   }
 
-  // genericToolSummary: makes ANY tool name-able on one row
+  // genericToolRow: makes ANY tool name-able on one row — the argument that
+  // names the subject, plus every other argument as a key=value pair.
   {
-    const g = logic.genericToolSummary;
-    check("generic uses name", g({ name: "api-check" }) === "api-check", g({ name: "api-check" }));
-    check("generic uses description", g({ description: "Check the API" }) === "Check the API", g({ description: "Check the API" }));
-    check("generic uses prompt first line", g({ prompt: "Do a thing\nand more" }) === "Do a thing", g({ prompt: "Do a thing\nand more" }));
-    check("generic prefers command", g({ command: "  ls   -la  /tmp " }) === "ls -la /tmp", g({ command: "  ls   -la  /tmp " }));
-    check("generic uses path", g({ path: "/a/b.txt" }) === "/a/b.txt", g({ path: "/a/b.txt" }));
-    check("generic falls back to the args line", g({ whatever: "value" }) === 'whatever="value"', g({ whatever: "value" }));
-    check("generic empty for nothing", g({}) === "", g({}));
-    check("generic collapses whitespace", g({ description: "a\n\n  b" }) === "a b", g({ description: "a\n\n  b" }));
-  }
+    const g = logic.genericToolRow;
+    const pairs = (args) => g(args).pairs.map((p) => `${p.key}=${p.value}`).join(" ");
+    check("generic uses name", g({ name: "api-check" }).primary === "api-check", g({ name: "api-check" }).primary);
+    check("generic uses description", g({ description: "Check the API" }).primary === "Check the API", g({ description: "Check the API" }).primary);
+    check("generic uses prompt first line", g({ prompt: "Do a thing\nand more" }).primary === "Do a thing", g({ prompt: "Do a thing\nand more" }).primary);
+    check("generic prefers command", g({ command: "  ls   -la  /tmp " }).primary === "ls -la /tmp", g({ command: "  ls   -la  /tmp " }).primary);
+    check("generic uses path", g({ path: "/a/b.txt" }).primary === "/a/b.txt", g({ path: "/a/b.txt" }).primary);
+    check("generic collapses whitespace", g({ description: "a\n\n  b" }).primary === "a b", g({ description: "a\n\n  b" }).primary);
+    check("generic has no primary for nothing", g({}).primary === "" && g({}).pairs.length === 0, JSON.stringify(g({})));
+    check("generic names the primary key", g({ path: "/a", cwd: "/b" }).key === "path", g({ path: "/a", cwd: "/b" }).key);
 
-  // genericToolSummary: standard third-party argument shapes. target/targets
-  // name WHAT a tool acts on (like name); task is a prompt; when nothing is
-  // telling, show Pi's own `key=value` call line rather than drop the args.
-  {
-    const g = logic.genericToolSummary;
-    check("generic uses target over message", g({ target: "review", message: "Stop now" }) === "review", g({ target: "review", message: "Stop now" }));
-    check("generic joins a targets array", g({ targets: ["review", "tester"], wait: true }) === "review, tester", g({ targets: ["review", "tester"], wait: true }));
-    check("generic accepts one target string", g({ targets: "review" }) === "review", g({ targets: "review" }));
-    check("generic uses task's first line", g({ task: "Do the thing\nand more" }) === "Do the thing", g({ task: "Do the thing\nand more" }));
-    check("generic prefers name over task", g({ name: "review", task: "Do the thing" }) === "review", g({ name: "review", task: "Do the thing" }));
-    check("generic args line shows true flags", g({ wait: true }) === "wait=true", g({ wait: true }));
-    check("generic args line is bounded", g({ body: "x".repeat(5000) }).length <= 120, String(g({ body: "x".repeat(5000) }).length));
+    // Every other argument is a pair, in declared order, primary excluded.
+    check("generic keeps the other args", pairs({ name: "api-check", url: "http://x", retries: 2 }) === 'url="http://x" retries=2', pairs({ name: "api-check", url: "http://x", retries: 2 }));
+    check("generic drops the primary from the pairs", !pairs({ name: "a", url: "u" }).includes("name="), pairs({ name: "a", url: "u" }));
+    check("generic pair order is declared", pairs({ name: "a", zebra: 1, alpha: 2 }) === "zebra=1 alpha=2", pairs({ name: "a", zebra: 1, alpha: 2 }));
+
+    // Values are one line: strings flatten and quote; scalars stay bare.
+    check("generic flattens string pairs", pairs({ name: "a", note: "Do it\nnow" }) === 'note="Do it now"', pairs({ name: "a", note: "Do it\nnow" }));
+    check("generic keeps booleans bare", pairs({ name: "a", wait: true }) === "wait=true", pairs({ name: "a", wait: true }));
+    check("generic keeps numbers bare", pairs({ name: "a", max: 2 }) === "max=2", pairs({ name: "a", max: 2 }));
+    check("generic shows arrays as JSON", pairs({ name: "a", tools: ["read", "bash"] }) === 'tools=["read","bash"]', pairs({ name: "a", tools: ["read", "bash"] }));
+    check("generic shows objects as JSON", pairs({ name: "a", opts: { x: 1 } }) === 'opts={"x":1}', pairs({ name: "a", opts: { x: 1 } }));
+    check("generic shows null", pairs({ name: "a", cwd: null }) === "cwd=null", pairs({ name: "a", cwd: null }));
+    check("generic skips undefined", pairs({ name: "a", gone: undefined }) === "", pairs({ name: "a", gone: undefined }));
+    check("generic shows empty strings", pairs({ name: "a", cwd: "" }) === 'cwd=""', pairs({ name: "a", cwd: "" }));
+
+    // The target/targets/task shapes standard tools use.
+    check("generic uses target over message", g({ target: "review", message: "Stop now" }).primary === "review", g({ target: "review", message: "Stop now" }).primary);
+    check("generic joins a targets array", g({ targets: ["review", "tester"], wait: true }).primary === "review, tester", g({ targets: ["review", "tester"], wait: true }).primary);
+    check("generic accepts one target string", g({ targets: "review" }).primary === "review", g({ targets: "review" }).primary);
+    check("generic uses task's first line", g({ task: "Do the thing\nand more" }).primary === "Do the thing", g({ task: "Do the thing\nand more" }).primary);
+    check("generic prefers name over task", g({ name: "review", task: "Do it" }).primary === "review", g({ name: "review", task: "Do it" }).primary);
+
+    // Bounds: a megabyte value costs its head, and a full list stops early.
+    const big = pairs({ name: "a", body: "x".repeat(5000) });
+    check("generic bounds a huge pair", big.length <= 300, String(big.length));
+    const full = g({ name: "a", b1: "x".repeat(5000), b2: "y".repeat(5000), b3: "z".repeat(5000) });
+    check("generic stops collecting early", full.pairs.length === 1, JSON.stringify(full.pairs.map((p) => p.key)));
   }
 
   // planToolRuns: group contiguous history tools so the rebuild layout

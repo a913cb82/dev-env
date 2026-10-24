@@ -2297,7 +2297,10 @@ function textResult(chars) {
     const wrapped = custom({ name: "mcp_thing", parameters: {}, async execute() {} });
     const { ctx: cctx } = callContext({ args: { query: "find the thing" }, toolCallId: "fmt-custom" });
     const customRow = wrapped.renderCall(cctx.args, theme, { ...cctx, args: { query: "find the thing" } }).render(100)[0];
-    check("generic summary dim", customRow.includes("<dim>find the thing</>"), customRow);
+    check("generic primary plain", customRow.includes("find the thing") && !customRow.includes("<dim>find the thing"), customRow);
+    const { ctx: pctx } = callContext({ args: { query: "find the thing", limit: 5 }, toolCallId: "fmt-pair" });
+    const pairRow = wrapped.renderCall(pctx.args, theme, { ...pctx, args: { query: "find the thing", limit: 5 } }).render(100)[0];
+    check("generic pairs dim", pairRow.includes("<dim>limit=5</>"), pairRow);
   }
 
   // 65. bash token grammar: prompt accent, command words bold, path leaves
@@ -2807,10 +2810,10 @@ function textResult(chars) {
     .render(120)
     .map(plainText);
   check("spawn row names the agent", lines[0]?.includes("spawn_agent review"), lines[0]);
-  check("spawn row hides the raw task pair", !lines[0]?.includes("task="), lines[0]);
+  check("spawn row shows the task as a dim pair", lines[0]?.includes("spawn_agent review ") && lines[0]?.includes('task="Review the collapse extension'), lines[0]);
   check("check row lists targets", lines[1]?.includes("check_subagents review, tester"), lines[1]);
   check("send row names the target", lines[2]?.includes("send_to_subagent review"), lines[2]);
-  check("send row names the target, not the message", lines[2]?.includes("send_to_subagent review") && !lines[2]?.includes("Stop and report"), lines[2]);
+  check("send row names the target, then the message", lines[2]?.includes('send_to_subagent review message="Stop and report"'), lines[2]);
   check("cancel row names the target", lines[3]?.includes("cancel_subagent review"), lines[3]);
 }
 
@@ -2866,7 +2869,7 @@ function textResult(chars) {
     const stock = cell(bare, "s1");
     const rest = ours.render(100);
     check("bare rest is one row", rest.length === 2 && isRow(rest[1]), JSON.stringify(rest.map(plainText)));
-    check("bare row shows the summary, not the args", plainText(rest[1]).includes("check_subagents review") && !plainText(rest[1]).includes("wait="), plainText(rest[1]));
+    check("bare row keeps the other args", plainText(rest[1]).includes("check_subagents review wait=true"), plainText(rest[1]));
     ours.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
     ours.invalidate();
     same("bare opened cell is stock (collapsed)", ours, stock);
@@ -2906,6 +2909,77 @@ function textResult(chars) {
     const shown = plainText(wrapped.renderCall(longArgs, realTheme, ctx(false)).render(100).join("\n"))
       .split("\n").map((line) => line.trim());
     check("huge result previews ten lines", shown.includes("line 9") && !shown.includes("line 10") && shown.some((l) => l.includes("4990 more lines")), JSON.stringify(shown.slice(-3)));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 74. Generic rows fill the width: the primary plain, every other argument a
+//     dim key=value pair, cut at the end of the last value that fits.
+// ---------------------------------------------------------------------------
+{
+  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const tui = await jiti.import("@earendil-works/pi-tui");
+  const agent = await jiti.import("@earendil-works/pi-coding-agent");
+  const themeMod = await jiti.import(path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"));
+  agent.initTheme("light");
+  const realTheme = themeMod.loadThemeFromPath(
+    path.join(PI, "dist", "modes", "interactive", "theme", "light.json"), "truecolor");
+  const handlers = new Map();
+  const piR = {
+    registerTool: () => {}, registerCommand: () => {},
+    on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+    getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+  };
+  (mod.default ?? mod)(piR);
+  await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
+  const mk = (name) => mod.collapseDefinition({
+    name, description: name, parameters: {},
+    async execute() { return { content: [{ type: "text", text: "ok" }] }; },
+  }, piR);
+  const ctx = (id, args) => ({
+    args, toolCallId: id, invalidate: () => {}, lastComponent: undefined, state: {},
+    cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+    expanded: false, showImages: true, isError: false,
+  });
+  const setColumns = (value) => Object.defineProperty(process.stdout, "columns", { value, configurable: true, writable: true });
+  const rowFor = (name, args, width, result) => {
+    mod.resetTraceState?.();
+    const tool = mk(name);
+    const c = ctx("row-" + name, args);
+    tool.renderCall(args, realTheme, c);
+    if (result) tool.renderResult({ content: [{ type: "text", text: result }], details: {} }, { expanded: false, isPartial: false }, realTheme, c);
+    return tool.renderCall(args, realTheme, c).render(width)[0] ?? "";
+  };
+  const spawnArgs = { task: "Review the collapse extension for performance regressions", name: "review", model: "anthropic/claude-sonnet-4", thinking: "high", tools: ["read", "bash", "grep"], maxDepth: 2 };
+  try {
+    setColumns(120);
+    const wide = rowFor("spawn_agent", spawnArgs, 120);
+    const wideText = plainText(wide);
+    check("spawn row uses the width", wideText.length >= 100, String(wideText.length));
+    check("spawn row keeps the task whole", wideText.includes('task="Review the collapse extension for performance regressions"'), wideText);
+    check("spawn row cuts inside a value", wideText.endsWith("…") && /model="[^"]*…$/.test(wideText), JSON.stringify(wideText.slice(-24)));
+    check("spawn row fits the width", tui.visibleWidth(wide) <= 120, String(tui.visibleWidth(wide)));
+
+    const counted = rowFor("spawn_agent", spawnArgs, 120, "x".repeat(1300));
+    check("counted row still fits", tui.visibleWidth(counted) <= 120, String(tui.visibleWidth(counted)));
+    check("counted row ends with its count", plainText(counted).trimEnd().endsWith("1.3k ch"), JSON.stringify(plainText(counted).slice(-12)));
+
+    setColumns(80);
+    const narrow = rowFor("spawn_agent", spawnArgs, 80);
+    const narrowText = plainText(narrow);
+    check("narrow row keeps the head", narrowText.startsWith("▏spawn_agent review"), narrowText);
+    check("narrow row still shows a pair", narrowText.includes('task="'), narrowText);
+    check("narrow row fits the width", tui.visibleWidth(narrow) <= 80, String(tui.visibleWidth(narrow)));
+
+    setColumns(120);
+    const checkRow = plainText(rowFor("check_subagents", { targets: ["review"], wait: true }, 120));
+    check("check row shows targets and wait", checkRow.includes("check_subagents review wait=true"), checkRow);
+    const sendRow = plainText(rowFor("send_to_subagent", { target: "review", message: "Stop and report what you have so far", mode: "interrupt" }, 120));
+    check("send row shows target, message, mode", sendRow.includes('send_to_subagent review message="Stop and report what you have so far" mode="interrupt"'), sendRow);
+    const cancelRow = plainText(rowFor("cancel_subagent", { target: "review" }, 120));
+    check("cancel row is the target alone", cancelRow.trimEnd().endsWith("▏cancel_subagent review") || cancelRow.startsWith("▏cancel_subagent review"), cancelRow);
+  } finally {
+    delete process.stdout.columns;
   }
 }
 

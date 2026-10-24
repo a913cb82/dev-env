@@ -63,6 +63,8 @@ per-frame path is bounded by the transcript or the row width — never by the
 size of a tool argument or a thinking block:
 
 - **Rows** are one string per render (~1µs), truncated to the terminal width.
+  A generic row builds its primary + pairs in 0.005ms, and still 0.007ms when
+  the arguments contain 7MB of text.
   `bash`/`powershell` styling stops at 2048 characters / 192 tokens; the
   summary collapses at most 4096 raw characters, so a 1MB command costs
   0.04ms instead of 33ms per repaint.
@@ -235,14 +237,19 @@ fallbacks, so the opened and visible cells are stock: the call is the
 `key=value` argument line when collapsed and one `key: value` per line when
 expanded, and the result is the output text previewed to ten lines
 (`... (N more lines, ctrl+o to expand)`) or in full when expanded. The row
-itself stays collapse's one-line summary: the tool name plus its most telling
-argument. "Most telling" means the identity of what the tool acts on (`name`,
-`target`, `targets`, `description`, `title`, `query`, `url`, `path`,
-`file_path`, `pattern`, `prompt`, `task`, `message` — first one present wins;
-`targets` is a list and joins with commas). When no argument is telling, the
-row falls back to the same `key=value` line, so a collapsed row is never
-emptier than stock. Definitions with their own renderers keep them, wrapped
-in the shared chrome. `/collapse` lists any tool that never opted in.
+itself stays collapse's one-line summary. The argument that names what the
+tool acts on is hoisted and shown plain (`name`, `target`, `targets`,
+`description`, `title`, `query`, `url`, `path`, `file_path`, `pattern`,
+`prompt`, `task`, `message` — first one present wins; `targets` joins with
+commas); every other argument follows as a dim `key=value` pair in the tool's
+declared order, filled to the row width and cut inside the last value, never
+mid-key. Values are one line: strings flatten and quote, numbers and booleans
+stay bare, collections are compact JSON, `undefined` is skipped. A long value
+costs its head only, and pair collection stops at 512 characters, so a row is
+never built from a megabyte. When no argument is telling, the pairs alone are
+the row, so a collapsed row is never emptier than stock. Definitions with
+their own renderers keep them, wrapped in the shared chrome. `/collapse` lists
+any tool that never opted in.
 
 ## Diagnostics
 

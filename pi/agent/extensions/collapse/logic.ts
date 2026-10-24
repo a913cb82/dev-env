@@ -36,11 +36,6 @@ export function truncateMiddle(text: string, maxChars: number): string {
   return `${text.slice(0, start)}…${text.slice(text.length - end)}`;
 }
 
-export function truncateEnd(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  if (maxChars < 2) return text.slice(0, maxChars);
-  return `${text.slice(0, maxChars - 1)}…`;
-}
 
 /** A collapsed one-line preview: middle-truncated, so it keeps the head AND
  *  the tail. Collapsing the whole text first would make the label cost
@@ -440,40 +435,98 @@ export function textCharCount(
   return total;
 }
 
-/** Best one-line summary of arbitrary tool args, for tools that ship no
- *  collapse renderer of their own (extension and MCP tools). Prefers the
- *  argument that reads like an intent, then falls back to the first string. */
-/** Row summary for a tool with no hand-tuned renderer: its most telling
- *  argument by name, else Pi's own `key=value` call line. The fallback keeps a
- *  row from being emptier than Pi's stock call renderer, which always shows
- *  the arguments. */
-export function genericToolSummary(args: unknown): string {
-  const squash = (value: unknown): string =>
-    typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
-  const record = args as Record<string, unknown>;
-  const command = squash(record.command) || squash(record.cmd);
-  if (command) return summarizeBashCommand(command);
-  // Prompts and messages are multi-line: their first line is the intent.
-  const firstLineOnly = new Set(["prompt", "message", "task"]);
-  const targetList = (value: unknown): string =>
-    (Array.isArray(value) ? value : [value])
-      .map((item) => squash(item))
-      .filter(Boolean)
-      .join(", ");
-  // Order = how telling the argument is: what the tool acts on (name, target,
-  // targets), then what it is, then where, then the payload.
-  for (const key of ["name", "target", "targets", "description", "title", "query", "url", "path", "file_path", "pattern", "prompt", "task", "message"]) {
-    if (key === "targets") {
-      const joined = targetList(record.targets);
-      if (joined) return joined.split(" ").slice(0, 12).join(" ");
-      continue;
-    }
-    const raw = typeof record[key] === "string" ? (record[key] as string) : "";
-    const value = squash(firstLineOnly.has(key) ? raw.split("\n")[0] : raw);
-    if (value) return value.split(" ").slice(0, 12).join(" ");
+/** One argument of a generic row, rendered as a single-line `key=value`
+ *  pair. `value` is already serialized (quoted strings, bare numbers,
+ *  compact JSON for collections). */
+export interface GenericPair {
+  key: string;
+  value: string;
+}
+
+/** A generic row's content: the argument that names what the tool acts on
+ *  (`key`/`primary`), and every other argument. */
+export interface GenericRow {
+  key: string;
+  primary: string;
+  pairs: GenericPair[];
+}
+
+/** A row shows the head of a value; never stringify a whole megabyte. */
+const ROW_VALUE_CHARS = 256;
+/** Stop collecting pairs once they can no longer fit any sane row. */
+const ROW_PAIRS_CHARS = 512;
+/** A row's primary argument is a glance, not a paragraph. */
+const ROW_PRIMARY_WORDS = 12;
+/** The first telling argument wins: what the tool acts on, then what it is,
+ *  then where, then the payload. */
+const ROW_PRIMARY_KEYS = [
+  "name", "target", "targets", "description", "title", "query", "url",
+  "path", "file_path", "pattern", "prompt", "task", "message",
+];
+/** Prompts and messages are multi-line: their first line is the intent. */
+const ROW_FIRST_LINE = new Set(["prompt", "message", "task"]);
+
+/** Rows are one line: flatten whitespace before quoting, so a multi-line
+ *  message reads as prose instead of `\n` escapes. */
+export function rowValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return JSON.stringify(value.slice(0, ROW_VALUE_CHARS).replace(/\s+/g, " ").trim());
   }
-  return fallbackArgsText(record, false);
+  if (value === undefined) return undefined;
+  if (value === null) return "null";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  const json = JSON.stringify(value);
+  return json === undefined ? undefined : json;
+}
+
+/** The remaining arguments as pairs, in the tool's declared order, skipping
+ *  the one promoted to the primary. Bound: values are sliced, and the pair
+ *  list stops once it exceeds any row. */
+function rowPairs(
+  record: Record<string, unknown>,
+  skip: string,
+  cap = ROW_PAIRS_CHARS,
+): GenericPair[] {
+  const pairs: GenericPair[] = [];
+  let used = 0;
+  for (const [key, value] of Object.entries(record)) {
+    if (key === skip) continue;
+    const text = rowValue(value);
+    if (text === undefined) continue;
+    if (used + key.length + text.length > cap) break;
+    pairs.push({ key, value: text });
+    used += key.length + text.length + 2;
+  }
+  return pairs;
+}
+
+/** A generic row for a tool that ships no renderer: the primary argument
+ *  plain, every other argument as a dim `key=value` pair. */
+export function genericToolRow(args: unknown): GenericRow {
+  const empty: GenericRow = { key: "", primary: "", pairs: [] };
+  if (!args || typeof args !== "object" || Array.isArray(args)) return empty;
+  const record = args as Record<string, unknown>;
+  const squash = (value: unknown): string =>
+    typeof value === "string" ? value.slice(0, 4096).replace(/\s+/g, " ").trim() : "";
+  const command = squash(record.command) || squash(record.cmd);
+  if (command) {
+    return { key: "command", primary: summarizeBashCommand(command), pairs: rowPairs(record, "command") };
+  }
+  for (const key of ROW_PRIMARY_KEYS) {
+    const value =
+      key === "targets"
+        ? (Array.isArray(record.targets) ? record.targets : [record.targets])
+            .map((item) => squash(item))
+            .filter(Boolean)
+            .join(", ")
+        : squash(ROW_FIRST_LINE.has(key) && typeof record[key] === "string"
+            ? (record[key] as string).split("\n")[0]
+            : record[key]);
+    if (!value) continue;
+    return { key, primary: value.split(" ").slice(0, ROW_PRIMARY_WORDS).join(" "), pairs: rowPairs(record, key) };
+  }
+  // Nothing on the telling list: the arguments themselves are the row.
+  return { key: "", primary: "", pairs: rowPairs(record, "") };
 }
 
 /** Group history tool calls into shared runs, mirroring the live layout:
