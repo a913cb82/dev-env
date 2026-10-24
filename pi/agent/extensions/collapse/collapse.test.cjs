@@ -1799,6 +1799,32 @@ function textResult(chars) {
     modW.captureWalkerTui({ children: [] });
   }
 
+  // 47. expanded thinking under tools loses its top spacer too
+  {
+    resetTrace();
+    const prevTool = toolComp("t-b5", "self", ["", "› prev"]);
+    const expanded = new MouseRegion(new Markdown("full expanded thinking"));
+    const row = thinkingRow([new Spacer(), expanded]);
+    modW.captureWalkerTui({ children: [prevTool, row] });
+    const res = modW.wrappingPass(piW);
+    check("expanded top spacer dropped", res.spacers === 1, JSON.stringify(res));
+    check("expanded content kept", row.contentContainer.children.length === 1 && row.contentContainer.children[0] === expanded, String(row.contentContainer.children.length));
+  }
+
+  // 48. tools under expanded thinking stay glued (symmetric bottom seam)
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/a" }, toolCallId: "t-exp" });
+    read.renderCall(ctx.args, theme, ctx);
+    const prev = thinkingRow([new Spacer(), new MouseRegion(new Markdown("expanded"))]);
+    const fake = toolComp("t-exp", "self", ["", "› read /a"]);
+    modW.captureWalkerTui({ children: [prev, fake] });
+    modW.wrappingPass(piW);
+    check("expanded label above glues", fake.render(100)[0] === "› read /a", JSON.stringify(fake.render(100)));
+    modW.captureWalkerTui({ children: [] });
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

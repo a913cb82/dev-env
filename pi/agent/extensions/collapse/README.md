@@ -36,9 +36,9 @@ mode self-bypasses inside the wrapped render, so toggling thinking visible
 restores stock spacing with no unwrap pass.
 
 **Spacer surgery.** Mirror image below the block: when an assistant row whose
-first rendered line is a hidden thinking label opens directly under a tool
-row, its leading `Spacer(1)` is removed via public `removeChild` on its
-`contentContainer`. Prose-first rows, non-tool predecessors, and visible
+first rendered line is a thinking run — collapsed or expanded — opens
+directly under a tool row, its leading `Spacer(1)` is removed via public
+`removeChild` on its `contentContainer`. Prose-first rows, non-tool predecessors, and visible
 thinking (which renders `Markdown`, failing the label check) are never
 touched — a visibility toggle rebuilds the children and self-heals. Both
 directions are pure tree structure, evaluated per render, so a sibling

@@ -8,20 +8,21 @@
  * prose (which must stay). So the shadow strips conditionally, per render:
  *
  *   render: drop a single leading "" only when the previous sibling renders
- *     a hidden thinking label (or another tool row) directly above — i.e.
- *     nothing but label pixels sit between the tool block and the row above.
- *     After prose, or as a first child, the blank is kept byte-identical.
+ *     a thinking run, collapsed or expanded, (or is another tool row)
+ *     directly above — i.e. nothing but thinking pixels sit between the
+ *     tool block and the row above. After prose, or as a first child, the
+ *     blank is kept byte-identical.
  *   handleMouse: re-base y by +1 under the same verdict (Pi rejects y<=0
  *     and delegates y-1, so displayed rows shift up by exactly the stripped
  *     line — and a click on a KEPT blank still hits nothing).
  *
  * Mirror image below the block: an assistant row whose first rendered line
- * is a hidden thinking label directly follows a tool row, its leading
- * `Spacer(1)` is removed (public `removeChild` on its `contentContainer`).
- * Prose-first rows, non-tool predecessors, and visible thinking are never
- * touched. Both directions are pure structure (class names + child order),
- * so a visibility toggle self-heals: visible thinking renders `Markdown`,
- * which fails the label check and restores every blank with no unwrap pass.
+ * is a thinking run, collapsed or expanded, directly follows a tool row,
+ * its leading `Spacer(1)` is removed (public `removeChild` on its
+ * `contentContainer`). Prose-first rows, non-tool predecessors, and global
+ * visible-thinking mode are never touched. Both directions are pure
+ * structure (class names + child order), so a per-row expand/collapse
+ * self-heals through the class check with no unwrap pass.
  *
  * Never a prototype touch, never Pi sources: instance shadows and a
  * child removal Pi itself re-adds on its next rebuild. Fail-open
@@ -189,14 +190,17 @@ function isSpacerLike(node: unknown): boolean {
   return classNameOf(node) === "Spacer";
 }
 
-/** A MouseRegion wrapping a hidden thinking label: Pi renders hidden
- *  thinking as `Text` (visible thinking renders `Markdown`), so the class
- *  encodes the effective visibility of that run — including per-run
- *  click-toggles, with no settings lookup. */
-function isHiddenLabelRegion(node: unknown): boolean {
+/** A thinking run's region: a MouseRegion wrapping hidden (`Text`) or
+ *  expanded (`Markdown`) thinking. Pi only ever wraps thinking runs this
+ *  way (prose and errors render bare), and hidden-vs-visible is exactly
+ *  Text-vs-Markdown — so the class encodes the run without any settings
+ *  lookup, including per-run click-toggles. Global visible mode never
+ *  reaches this check: the passes early-return while it is on. */
+function isThinkingRegion(node: unknown): boolean {
   try {
     if (classNameOf(node) !== "MouseRegion") return false;
-    return classNameOf((node as { child?: unknown }).child) === "Text";
+    const childName = classNameOf((node as { child?: unknown }).child);
+    return childName === "Text" || childName === "Markdown";
   } catch {
     return false;
   }
@@ -231,7 +235,7 @@ function gluesToPrev(prev: unknown): boolean {
     const kids = rowKids(prev);
     for (let i = kids.length - 1; i >= 0; i--) {
       if (isSpacerLike(kids[i])) continue;
-      return isHiddenLabelRegion(kids[i]);
+      return isThinkingRegion(kids[i]);
     }
     return false;
   } catch {
@@ -258,7 +262,7 @@ function dropLeadingSpacers(row: unknown, prev: unknown): number {
       first = i;
       break;
     }
-    if (first < 0 || !isHiddenLabelRegion(container.children[first])) return 0;
+    if (first < 0 || !isThinkingRegion(container.children[first])) return 0;
     const leading = container.children.slice(0, first);
     let dropped = 0;
     for (const child of leading) {
