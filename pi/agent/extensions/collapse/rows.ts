@@ -57,12 +57,18 @@ class CollapsedLine implements Component {
     private left: string,
     private right: string,
     private pad = 1,
+    /** Marks the row with a dim `›` gutter. Optional: a row built without a
+     *  theme (tests, foreign callers) still renders, just undimmed. */
+    private theme?: Theme,
   ) {}
 
   render(width: number): string[] {
     const target = Math.max(8, width - this.pad);
-    const prefix = "› ";
-    const prefixWidth = visibleWidth(prefix);
+    const prefixPlain = "› ";
+    // Width math uses the PLAIN prefix: dimming adds escape bytes, and the
+    // layout must not depend on them.
+    const prefixWidth = visibleWidth(prefixPlain);
+    const prefix = this.theme ? this.theme.fg("dim", prefixPlain) : prefixPlain;
     const rightWidth = visibleWidth(this.right);
     const leftWidth = visibleWidth(this.left);
     let left = this.left;
@@ -95,22 +101,24 @@ function toolHead(theme: Theme, label: string, isError: boolean): string {
 function readLeft(theme: Theme, args: any, isError: boolean): string {
   const parts = readLineParts(args ?? {});
   const dir = parts.dir ? theme.fg("dim", parts.dir) : "";
-  const base = parts.base ? theme.style(parts.base, { bold: true }) : "";
-  const range = parts.range ? theme.fg("error", parts.range) : "";
+  // Three-level ramp: bold = identity (the tool), plain = the one specific
+  // thing acted on, dim = everything else (dirs, ranges, sizes).
+  const base = parts.base ?? "";
+  const range = parts.range ? theme.fg("dim", parts.range) : "";
   return `${toolHead(theme, "read ", isError)}${dir}${base}${range}`;
 }
 
 function pathLeft(theme: Theme, name: string, rawPath: unknown, isError: boolean): string {
   const { dir, base } = splitDirBase(typeof rawPath === "string" ? rawPath : "");
   const dirStyled = dir ? theme.fg("dim", dir) : "";
-  const baseStyled = base ? theme.style(base, { bold: true }) : "";
-  return `${toolHead(theme, `${name} `, isError)}${dirStyled}${baseStyled}`;
+  return `${toolHead(theme, `${name} `, isError)}${dirStyled}${base}`;
 }
 
 function shellLeft(theme: Theme, prompt: string, args: any, isError: boolean): string {
   const summary = summarizeBashCommand(typeof args?.command === "string" ? args.command : "");
   const head = firstWord(summary);
-  // VAR=value prefixes: highlight only the variable name, not the assignment.
+  // VAR=value prefixes: the variable name rides in the accent head, the
+  // assignment stays in the bold command body.
   const eq = head.indexOf("=");
   const headName = eq > 0 ? head.slice(0, eq) : head;
   const headSuffix = eq > 0 ? head.slice(eq) : "";
@@ -118,14 +126,17 @@ function shellLeft(theme: Theme, prompt: string, args: any, isError: boolean): s
   const headStyled = summary
     ? toolHead(theme, `${prompt} ${headName}`, isError)
     : toolHead(theme, `${prompt} `, isError) + theme.fg("dim", "…");
+  // The command is the row's identity, so it is bold end to end; only the
+  // timeout hint is metadata.
+  const body = summary ? theme.style(`${headSuffix}${rest}`, { bold: true }) : "";
   const timeout =
     typeof args?.timeout === "number" ? theme.fg("dim", ` (timeout ${args.timeout}s)`) : "";
-  return `${headStyled}${headSuffix}${rest}${timeout}`;
+  return `${headStyled}${body}${timeout}`;
 }
 
 function searchLeft(theme: Theme, name: string, args: any, isError: boolean): string {
   const parts = searchParts(args ?? {});
-  const pattern = parts.pattern ? theme.style(parts.pattern, { bold: true }) : theme.fg("dim", "…");
+  const pattern = parts.pattern ? parts.pattern : theme.fg("dim", "…");
   const scope = parts.path ? ` ${theme.fg("dim", parts.path)}` : "";
   return `${toolHead(theme, `${name} `, isError)}${pattern}${scope}`;
 }
@@ -249,7 +260,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     const open = isRunThinkingOpen(runId);
     const thinkingRow = open
       ? new Text(hiddenThinking, liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi));
+      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -264,7 +275,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     if (!entry) continue;
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
-      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi));
+      : new CollapsedLine(makeLeftFor(entry.toolName, theme, entry.args, entry.isError), countSuffix(theme, entry), liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -348,7 +359,7 @@ export function collapseTool(
       }
       const toolCallId = context?.toolCallId;
       const entry = traceUpsert(original.name, toolCallId, original);
-      if (!entry) return new CollapsedLine(makeLeft(theme, args, !!context?.isError), countSuffix(theme, context?.state ?? {}), liveOutputPad(pi));
+      if (!entry) return new CollapsedLine(makeLeft(theme, args, !!context?.isError), countSuffix(theme, context?.state ?? {}), liveOutputPad(pi), theme);
       const changed = traceSync(entry, args, context);
       if (traceOwnerId(entry.runId) !== entry.id) {
         if (changed) tracePokeOwner(entry.runId);

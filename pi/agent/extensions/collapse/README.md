@@ -9,10 +9,17 @@ preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 › grep flushTimers src/                                1.2k ch
 ```
 
-Head is bold violet (red when the tool failed), directory grey, file name
-bold, line range red, output size grey and right-aligned. Long rows cut in
-the middle, so the head and the tail survive and the count stays at the right
-edge.
+Three levels, one meaning each:
+
+- **Bold** is identity — the tool name (violet, red when the tool failed), and
+  for `bash`/`powershell` the whole command.
+- **Plain** is the one specific thing the row acts on — file name, search
+  pattern.
+- **Dim** is everything else — the `›` gutter, directories, line ranges,
+  timeouts, output sizes (right-aligned), and the summary of any tool without
+  a dedicated renderer.
+
+Long rows cut in the middle, so the head and the count survive.
 
 ## Behaviour
 

@@ -53,6 +53,21 @@ function check(name, cond, extra) {
   }
 }
 
+// Rows are asserted with two themes (marker tags and real ANSI), so
+// strip both before looking at the visible text.
+// Layout/width assertions need REAL escape codes: visibleWidth strips ANSI
+// but not the marker tags above, so measuring marker rows would be wrong.
+const ansiTheme = {
+  fg: (_color, text) => `\x1b[38;5;240m${text}\x1b[39m`,
+  bg: (_color, text) => `\x1b[48;5;240m${text}\x1b[49m`,
+  bold: (text) => `\x1b[1m${text}\x1b[22m`,
+  italic: (text) => `\x1b[3m${text}\x1b[23m`,
+  style: (text, opts) => `\x1b[1m${opts?.fg ? "" : ""}${text}\x1b[22m`,
+};
+
+const plainText = (line) => String(line).replace(/\x1b\[[0-9;]*m/g, "").replace(/<[^>]*>/g, "");
+const isRow = (line) => plainText(line).startsWith("\u203a ");
+
 // Marker theme: visible styling assertions without ANSI.
 const theme = {
   fg: (color, text) => `<${color}>${text}</>`,
@@ -141,11 +156,11 @@ function textResult(chars) {
     const lines = read.renderCall(ctx.args, theme, ctx).render(80);
     check("read one line", lines.length === 1, JSON.stringify(lines));
     const line = lines[0];
-    check("read prefix", line.startsWith("› "), JSON.stringify(line));
+    check("read prefix dim", isRow(line), JSON.stringify(line));
     check("read tool bold", line.includes("<b:accent>read "), JSON.stringify(line));
-    check("read dir grey", line.includes("<dim>/path/to/</>"), JSON.stringify(line));
-    check("read base bold", line.includes("<b>file</b>"), JSON.stringify(line));
-    check("read range red", line.includes("<error>:10-20</>"), JSON.stringify(line));
+    check("read dir dim", line.includes("<dim>/path/to/</>"), JSON.stringify(line));
+    check("read base plain", line.includes("</>file") && !line.includes("<b>file"), JSON.stringify(line));
+    check("read range dim", line.includes("<dim>:10-20</>") && !line.includes("<error>"), JSON.stringify(line));
     check("read no count yet", !line.includes("ch"), JSON.stringify(line));
   }
 
@@ -165,9 +180,9 @@ function textResult(chars) {
     check("read result collapsed empty", out.render(80).join("") === "", JSON.stringify(out.render(80)));
     check("read result stores count", state.count === 5300, JSON.stringify(state));
     check("read result invalidates", invalidated === 1, String(invalidated));
-    const lines = read.renderCall(ctx.args, theme, { ...ctx, state }).render(100);
-    check("read count shown", lines[0].endsWith("<dim>5.3k ch</>"), JSON.stringify(lines[0]));
-    check("read padded to width", lines[0].length === 99, `${lines[0].length}: ${JSON.stringify(lines[0])}`);
+    const lines = read.renderCall(ctx.args, ansiTheme, { ...ctx, state }).render(100);
+    check("read count shown", plainText(lines[0]).endsWith("5.3k ch"), JSON.stringify(plainText(lines[0])));
+    check("read padded to width", plainText(lines[0]).length === 99, `${plainText(lines[0]).length}: ${JSON.stringify(plainText(lines[0]))}`);
   }
 
   // 4. read failure: tool name red bold
@@ -183,9 +198,9 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" } });
     const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
-    check("bash prefix", line.startsWith("› "), JSON.stringify(line));
+    check("bash prefix dim", isRow(line), JSON.stringify(line));
     check("bash head bold", line.includes("<b:accent>$ timeout</b>"), JSON.stringify(line));
-    check("bash rest plain", line.includes(" 25 ls some/dist"), JSON.stringify(line));
+    check("bash command bold", line.includes("<b> 25 ls some/dist</b>") && !line.includes("<error>"), JSON.stringify(line));
   }
 
   // 5b. env assignments: only the variable name is highlighted
@@ -193,8 +208,8 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "PIN=/x ls /y" } });
     const line = bash.renderCall(ctx.args, theme, ctx).render(80)[0];
-    check("bash env name bold", line.includes("<b:accent>$ PIN</b>=/x"), JSON.stringify(line));
-    check("bash env value plain", !line.includes("=/x</b>"), JSON.stringify(line));
+    check("bash env name accent", line.includes("<b:accent>$ PIN</b>"), JSON.stringify(line));
+    check("bash env value not accent", line.includes("=/x") && !line.includes("<b:accent>=/x"), JSON.stringify(line));
   }
 
   // 6. bash failure: `$ first` red bold
@@ -277,7 +292,7 @@ function textResult(chars) {
     stock.updateResult({ content: [{ type: "text", text: "hi" }], details: {} }, false);
     // Pi-expanded rest is one row; open it to reach the stock section.
     const beforeClick = wrapped.render(100);
-    check("wrapped rest is one row", beforeClick.length === 2 && beforeClick[1].startsWith("› "), JSON.stringify(beforeClick));
+    check("wrapped rest is one row", beforeClick.length === 2 && isRow(beforeClick[1]), JSON.stringify(beforeClick));
     wrapped.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
     wrapped.invalidate();
     const wlines = wrapped.render(100);
@@ -386,8 +401,10 @@ function textResult(chars) {
       const read = pi.tools.get("read");
       const state = { count: 100 };
       const { ctx: rctx } = callContext({ args: { path: "/path/to/file" }, state });
-      const rows = read.renderCall(rctx.args, theme, { ...rctx, state }).render(80);
-      check("pad 0 row fills width", rows[0].length === 80, `${rows[0].length}: ${JSON.stringify(rows[0])}`);
+      const rows = read.renderCall(rctx.args, ansiTheme, { ...rctx, state }).render(80);
+      // Marker theme adds literal tag characters: measure what the terminal sees.
+      const visible = plainText(rows[0]);
+      check("pad 0 row fills width", visible.length === 80, `${visible.length}: ${JSON.stringify(visible)}`);
     } finally {
       pi._pad = 1;
     }
@@ -404,13 +421,13 @@ function textResult(chars) {
     const grepLine = grep.renderCall(grepCtx.args, theme, grepCtx).render(100)[0];
     check(
       "grep row",
-      grepLine.includes("<b:accent>grep </b>") && grepLine.includes("<b>foo.*</b>") && grepLine.includes("<dim>/a</>"),
+      grepLine.includes("<b:accent>grep </b>") && grepLine.includes("foo.*") && !grepLine.includes("<b>foo") && grepLine.includes("<dim>/a</>"),
       JSON.stringify(grepLine),
     );
     const find = pi.tools.get("find");
     const { ctx: findCtx } = callContext({ args: { pattern: "*.ts" }, state: { count: 300 } });
     const findLine = find.renderCall(findCtx.args, theme, findCtx).render(100)[0];
-    check("find row", findLine.includes("<b:accent>find </b>") && findLine.includes("<b>*.ts</b>"), JSON.stringify(findLine));
+    check("find row", findLine.includes("<b:accent>find </b>") && findLine.includes("*.ts") && !findLine.includes("<b>*.ts"), JSON.stringify(findLine));
     const ps = pi.tools.get("powershell");
     const { ctx: psCtx } = callContext({ args: { command: "Get-ChildItem" }, state: { count: 300 } });
     const psLine = ps.renderCall(psCtx.args, theme, psCtx).render(100)[0];
@@ -530,7 +547,7 @@ function textResult(chars) {
     check("click handled", !!res?.handled, JSON.stringify(res));
     const opened = read.renderCall(rctx.args, theme, rctx).render(80);
     check("clicked row shows stock cell", opened.some((l) => l.includes("toolSuccessBg")), JSON.stringify(opened[0]));
-    check("sibling stays collapsed", opened.some((l) => l.startsWith("› ") && l.includes("read") && !l.includes("toolSuccessBg")), JSON.stringify(opened).slice(0, 200));
+    check("sibling stays collapsed", opened.some((l) => isRow(l) && l.includes("read") && !l.includes("toolSuccessBg")), JSON.stringify(opened).slice(0, 200));
   }
 
   // 13c. Pi-expanded at rest still shows one-line rows in one trace
@@ -734,7 +751,7 @@ function textResult(chars) {
     read.renderCall(args, realTheme, ctxA);
     read.renderResult(result, { expanded: false, isPartial: false }, realTheme, { ...ctxA, lastComponent: undefined });
     const rest = read.renderCall(args, realTheme, ctxA).render(100);
-    check("depth0 rest is one line", rest.length === 1 && rest[0].startsWith("› "), JSON.stringify(rest));
+    check("depth0 rest is one line", rest.length === 1 && isRow(rest[0]), JSON.stringify(rest));
     const rowA = read.renderCall(args, realTheme, ctxA).children[0];
     rowA.onMouse({ type: "click", button: "left" });
     const openedA = read.renderCall(args, realTheme, ctxA).render(100);
@@ -748,7 +765,7 @@ function textResult(chars) {
     readB.renderCall(args, realTheme, ctxB);
     readB.renderResult(result, { expanded: true, isPartial: false }, realTheme, { ...ctxB, lastComponent: undefined });
     const restB = readB.renderCall(args, realTheme, ctxB).render(100);
-    check("expanded rest is one line", restB.length === 1 && restB[0].startsWith("› "), JSON.stringify(restB));
+    check("expanded rest is one line", restB.length === 1 && isRow(restB[0]), JSON.stringify(restB));
     const rowB = readB.renderCall(args, realTheme, ctxB).children[0];
     rowB.onMouse({ type: "click", button: "left" });
     const openedB = readB.renderCall(args, realTheme, ctxB).render(100);
@@ -761,7 +778,7 @@ function textResult(chars) {
     const rowClose = readB.renderCall(args, realTheme, ctxB).children[0];
     rowClose.onMouse({ type: "click", button: "left" });
     const closed = readB.renderCall(args, realTheme, ctxB).render(100);
-    check("second click returns to row", closed.length === 1 && closed[0].startsWith("› "), JSON.stringify(closed));
+    check("second click returns to row", closed.length === 1 && isRow(closed[0]), JSON.stringify(closed));
   }
 
   // 16. /collapse reports WHY runs split (live diagnostics)
@@ -1035,7 +1052,7 @@ function textResult(chars) {
     });
     const args = { name: "api-check", prompt: "Check the API\nmore text" };
     const row = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
-    check("generic tool collapses to one row", row.length === 1 && row[0].startsWith("› "), JSON.stringify(row));
+    check("generic tool collapses to one row", row.length === 1 && isRow(row[0]), JSON.stringify(row));
     check("generic row names the tool", row[0].includes("spawn_agent"), JSON.stringify(row[0]));
     check("generic row shows the argument", row[0].includes("api-check"), JSON.stringify(row[0]));
     // Two different extension tools in one message share a run.
@@ -1149,7 +1166,7 @@ function textResult(chars) {
       expanded: false, showImages: true, isError: false,
     });
     const row = wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })).render(90);
-    check("empty summary shows name only", row.length === 1 && row[0] === "› <b:accent>check_subagents</b>", JSON.stringify(row));
+    check("empty summary shows name only", row.length === 1 && plainText(row[0]) === "› check_subagents", JSON.stringify(row));
     // opened (clicked) rows show the same name-only call line
     const opened = wrapped.renderCall({ wait: true }, theme, { ...ctx("e1", { wait: true }), state: {} }).render(90);
     check("opened name-only row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
@@ -1201,7 +1218,7 @@ function textResult(chars) {
     const merged = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
     check("contiguous history merges", merged.length === 2, JSON.stringify(merged));
     check("merged history keeps order",
-      merged[0].includes("<b>a</b>") && merged[1].includes("<b>b</b>"), JSON.stringify(merged));
+      plainText(merged[0]).endsWith("/a") && plainText(merged[1]).endsWith("/b"), JSON.stringify(merged));
     const alone = bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })).render(80);
     check("prose-split history stays separate", alone.length === 1 && alone[0].includes("ls"), JSON.stringify(alone));
   }
@@ -2232,6 +2249,50 @@ function textResult(chars) {
     const settled = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("final count lands", /4\.2k ch/.test(settled), settled);
     check("row stays one line", bash.renderCall(ctx.args, theme, ctx).render(80).length === 1, "multi-line");
+  }
+
+  // 64. formatting hierarchy: BOLD = identity (tool / command), PLAIN = the
+  // one specific thing (file name, pattern), DIM = everything else
+  // (prefix, dirs, ranges, timeouts, sizes, generic summaries)
+  {
+    const row = (name, args, state = {}) => {
+      resetTrace();
+      const tool = piW.tools.get(name);
+      const { ctx } = callContext({ args, toolCallId: `fmt-${name}`, state });
+      return tool.renderCall(ctx.args, theme, { ...ctx, state }).render(100)[0];
+    };
+    // dim prefix on every row
+    for (const [name, args] of [
+      ["read", { path: "/a/b.txt" }], ["bash", { command: "ls -la" }],
+      ["grep", { pattern: "x", path: "/a" }], ["ls", { path: "/a" }],
+    ]) {
+      check(`${name} prefix is dim`, plainText(row(name, args)).startsWith("› "), row(name, args));
+    }
+    // tool head carries accent + bold
+    for (const [name, args, head] of [
+      ["read", { path: "/a/b.txt" }, "<b:accent>read </b>"],
+      ["edit", { path: "/a/b.txt" }, "<b:accent>edit </b>"],
+      ["write", { path: "/a/b.txt" }, "<b:accent>write </b>"],
+      ["grep", { pattern: "x", path: "/a" }, "<b:accent>grep </b>"],
+      ["find", { pattern: "*.ts", path: "/a" }, "<b:accent>find </b>"],
+      ["ls", { path: "/a" }, "<b:accent>ls </b>"],
+    ]) {
+      check(`${name} head accent+bold`, row(name, args).includes(head), row(name, args));
+    }
+    // the specific target stays PLAIN: not bold, not dim
+    check("edit base plain", row("edit", { path: "/a/b.txt" }).includes("</>b.txt") && !row("edit", { path: "/a/b.txt" }).includes("<b>b.txt"), row("edit", { path: "/a/b.txt" }));
+    check("write base plain", row("write", { path: "/a/b.txt" }).includes("</>b.txt"), row("write", { path: "/a/b.txt" }));
+    check("grep pattern plain", !row("grep", { pattern: "needle", path: "/a" }).includes("<b>needle"), row("grep", { pattern: "needle", path: "/a" }));
+    // everything else dim: dir, range, timeout, size, generic summary
+    check("read dir dim", row("read", { path: "/a/b.txt" }).includes("<dim>/a/</>"), row("read", { path: "/a/b.txt" }));
+    check("read range dim", row("read", { path: "/a/b.txt", offset: 5, limit: 6 }).includes("<dim>:5-10</>"), row("read", { path: "/a/b.txt", offset: 5, limit: 6 }));
+    check("bash timeout dim", row("bash", { command: "ls", timeout: 25 }).includes("<dim> (timeout 25s)</>"), row("bash", { command: "ls", timeout: 25 }));
+    check("size dim", row("bash", { command: "ls" }, { count: 1200 }).includes("<dim>1.2k ch</>"), row("bash", { command: "ls" }, { count: 1200 }));
+    const custom = globalThis.__collapseWrapTool;
+    const wrapped = custom({ name: "mcp_thing", parameters: {}, async execute() {} });
+    const { ctx: cctx } = callContext({ args: { query: "find the thing" }, toolCallId: "fmt-custom" });
+    const customRow = wrapped.renderCall(cctx.args, theme, { ...cctx, args: { query: "find the thing" } }).render(100)[0];
+    check("generic summary dim", customRow.includes("<dim>find the thing</>"), customRow);
   }
 
   if (failures > 0) {
