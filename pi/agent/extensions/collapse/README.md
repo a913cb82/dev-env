@@ -96,13 +96,20 @@ inactive reason. (The pure preview helpers stay in `logic.ts`, tested.)
 
 **Live preview while thinking.** The label is also written on
 `message_update`, so the preview (and its char count) grows as the model
-thinks instead of flashing stock `Thinking...` until the turn settles. Only
-the row whose `lastMessage` is the streaming message is touched — history
-rows keep their labels — and writes are throttled to ~10/s per row so the
+thinks instead of flashing stock `Thinking...` until the turn settles. Rows
+are matched by their own `isStreaming` flag, not by event identity: an
+extension handler can run before interactive-mode applies the delta, so the
+row's message is then one delta behind the event's, and an identity check
+would never match (leaving the stock label up for the whole thinking
+phase). The label is computed from the row's own message for the same
+reason. Writes happen inline and again from the deferred pass (which runs
+after the event chain, when the row already holds the delta), so event
+ordering cannot defeat it, and they are throttled to ~10/s per row so the
 row is not rebuilt on every token. Pi renders no thinking region at all
 until a block has non-empty text, so there is no pre-text window that would
 need a placeholder. Labels written while streaming are not cached, so the
-settle pass always recomputes the final count.
+settle pass always recomputes the final count; `/collapse` reports the live
+write count.
 
 **Any tool, not just the built-ins.** Tools from other extensions and MCP
 servers render through the same row pipeline as soon as they hand over their

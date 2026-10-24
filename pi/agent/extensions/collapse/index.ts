@@ -66,6 +66,7 @@ import {
   captureWalkerTui,
   reconcileStreamingLabel,
   reconcileThinkingLabels,
+  streamStatus,
   walkerStatus,
   walkerWidget,
   WALKER_KEY,
@@ -100,7 +101,7 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 35;
+const COLLAPSE_REVISION = 36;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
@@ -140,7 +141,7 @@ export default function (pi: ExtensionAPI) {
       detachPass(pi);
       wrappingPass(pi);
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()}; wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s)${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s)${uncollapsedReport(pi)}`,
       );
     },
   });

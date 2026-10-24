@@ -1934,6 +1934,74 @@ function textResult(chars) {
     modW.captureWalkerTui({ children: [] });
   }
 
+  // 55. streaming rows are matched by their own isStreaming flag, not by
+  // event identity (our handler can run before Pi updates the row, so the
+  // row's message is one delta behind the event's)
+  {
+    resetTrace();
+    const stale = { role: "assistant", content: [{ type: "thinking", thinking: "s".repeat(600) }] };
+    const evt = { role: "assistant", content: [{ type: "thinking", thinking: "s".repeat(700) }] };
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
+    row.lastMessage = stale;
+    row.isStreaming = true;
+    row.hiddenThinkingLabel = "Thinking...";
+    modW.captureWalkerTui({ children: [row] });
+    modW.reconcileStreamingLabel(piW, evt, 20000);
+    check("stale-identity streaming row labeled", row.hiddenThinkingLabel !== "Thinking..." && /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    check("label follows the row's own text", /s/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+  }
+
+  // 56. settled rows are never touched by the streaming path
+  {
+    resetTrace();
+    const settled = { role: "assistant", content: [{ type: "thinking", thinking: "c".repeat(400) }] };
+    const evt = { role: "assistant", content: [{ type: "thinking", thinking: "d".repeat(400) }] };
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
+    row.lastMessage = settled;
+    row.isStreaming = false;
+    row.hiddenThinkingLabel = "SETTLED";
+    modW.captureWalkerTui({ children: [row] });
+    modW.reconcileStreamingLabel(piW, evt, 22000);
+    check("settled row untouched", row.hiddenThinkingLabel === "SETTLED", row.hiddenThinkingLabel);
+  }
+
+  // 57. the deferred pass relabels any live row (post-UI-update ordering)
+  {
+    resetTrace();
+    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "p".repeat(800) }] };
+    const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
+    row.lastMessage = msg;
+    row.isStreaming = true;
+    row.hiddenThinkingLabel = "Thinking...";
+    modW.captureWalkerTui({ children: [row] });
+    modW.reconcileStreamingLabel(piW, undefined, 24000);
+    check("no-arg pass labels live rows", /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    modW.captureWalkerTui({ children: [] });
+  }
+
+  // 58. end-to-end against Pi's REAL component: a streaming row renders our
+  // preview, not the stock label (proves isStreaming + extraction line up)
+  {
+    resetTrace();
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const row = new agent.AssistantMessageComponent(
+      undefined, true, undefined, "Thinking...", 1, [],
+    );
+    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "real ".repeat(200) }] };
+    row.updateContent(msg, true);
+    modW.captureWalkerTui({ children: [row] });
+    modW.reconcileStreamingLabel(piW, undefined, 30000);
+    const rendered = row.render(100).join("\n");
+    check("real streaming row drops stock label", !rendered.includes("Thinking..."), rendered.slice(0, 80));
+    check("real streaming row renders our preview", /ch/.test(rendered) && /real/.test(rendered), rendered.slice(0, 80));
+    // Settling turns the flag off: the streaming path must then leave it alone.
+    row.updateContent(msg, false);
+    row.setHiddenThinkingLabel("SETTLED");
+    modW.reconcileStreamingLabel(piW, undefined, 30200);
+    check("settled real row untouched", row.hiddenThinkingLabel === "SETTLED", String(row.hiddenThinkingLabel));
+    modW.captureWalkerTui({ children: [] });
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

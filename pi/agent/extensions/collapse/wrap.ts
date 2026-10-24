@@ -29,7 +29,7 @@
  * throughout: anything unrecognized keeps stock rendering.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isThinkingRow, walkerTui } from "./labels.js";
+import { isThinkingRow, reconcileStreamingLabel, walkerTui } from "./labels.js";
 import { isHiddenThinking } from "./settings.js";
 import { traceEntries, traceOwnerId } from "./trace.js";
 
@@ -158,6 +158,11 @@ export function scheduleWrappingPass(pi: ExtensionAPI): void {
       scheduledPass = undefined;
       if (!pending) return;
       try {
+        // Runs after the event chain that scheduled it, so the rows already
+        // hold the delta Pi just applied: relabel live rows here as well as
+        // inline, which makes event ordering irrelevant (the second attempt
+        // is a no-op when the first one already wrote).
+        reconcileStreamingLabel(pending.pi);
         wrappingPass(pending.pi);
       } catch {
         // The poll tick stays the backstop.

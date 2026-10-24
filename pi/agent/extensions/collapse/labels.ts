@@ -133,48 +133,67 @@ const STREAM_LABEL_MS = 100;
  *  stock "Thinking..." frame) and later deltas coalesce. */
 const streamLabelAt = new WeakMap<object, number>();
 
-/** Relabel the live row while its thinking streams.
+/** Live-preview writes since activation, for `/collapse`. A number that
+ *  stays at 0 while a model thinks means the streaming path is not firing. */
+let streamWrites = 0;
+
+export function streamStatus(): string {
+  return `${streamWrites} live write(s)`;
+}
+
+/** Relabel live rows while their thinking streams.
  *
  * Pi renders NO thinking region until a block has non-empty text
  * (`if (thinkingBlocks.length === 0) continue`), so before the first token
  * there is nothing to label — and once text exists, waiting for a settle
  * event would flash the stock `Thinking...`. This writes our preview (with
- * its live char count) on the delta instead, throttled per row. Only the
- * row whose `lastMessage` IS this message is touched, so history rows keep
- * their own labels. Returns rows written.
+ * its live char count) on the delta instead, throttled per row.
+ *
+ * Rows are matched by their OWN `isStreaming` flag, never by event
+ * identity: extension handlers can run before interactive-mode applies the
+ * delta, so `row.lastMessage` is then one delta behind `event.message` and
+ * an identity check would silently never match (the stock label would stay
+ * up for the whole thinking phase). The label is computed from the row's
+ * own message for the same reason — it is the row's truth, and it can never
+ * label one row with another row's text.
  *
  * Labels written here are deliberately NOT cached in `labeledFor`: the
  * settle pass must recompute from the final text, so the count lands
- * exactly even when the last delta was throttled away. */
+ * exactly even when the last delta was throttled away. Returns rows
+ * written. */
 export function reconcileStreamingLabel(
   pi: ExtensionAPI,
-  message: unknown,
+  message?: unknown,
   now = Date.now(),
 ): number {
   try {
     if (!isHiddenThinking(pi)) return 0;
-    if (!message || typeof message !== "object") return 0;
-    if ((message as { role?: unknown }).role !== "assistant") return 0;
     if (!capturedTui || !Array.isArray((capturedTui as { children?: unknown }).children)) return 0;
-    const text = extractThinkingText(message as { role?: unknown; content?: unknown });
-    // Match Pi: no thinking region renders without non-empty text, so there
-    // is nothing to label and nothing that could flash as stock.
-    if (!text) return 0;
     const rows: unknown[] = [];
     collectRows(capturedTui, rows);
     const width = currentColumns();
     const pad = liveOutputPad(pi);
-    const label = thinkingLabelForWidth(text, width, pad);
     let written = 0;
     for (const row of rows) {
       if (!isThinkingRow(row)) continue;
-      if (row.lastMessage !== message) continue;
+      const own = row.lastMessage as { role?: unknown; content?: unknown };
+      if (own?.role !== "assistant") continue;
+      const live =
+        (row as { isStreaming?: unknown }).isStreaming === true ||
+        (message !== undefined && own === message);
+      if (!live) continue;
+      const text = extractThinkingText(own);
+      // Match Pi: no thinking region renders without non-empty text, so there
+      // is nothing to label and nothing that could flash as stock.
+      if (!text) continue;
       const at = streamLabelAt.get(row);
       if (at !== undefined && now - at < STREAM_LABEL_MS) continue;
       streamLabelAt.set(row, now);
+      const label = thinkingLabelForWidth(text, width, pad);
       labeledFor.delete(row);
       if (row.hiddenThinkingLabel !== label) {
         row.setHiddenThinkingLabel(label);
+        streamWrites++;
         written++;
       }
     }
