@@ -25,25 +25,25 @@ import {
 
 const COUNT_GAP = 2;
 
-/** Live-row clock: one global frame keeps all live rows in sync.
- *  Column 1 shows the wheel while live, the dim rail once settled — that
- *  single glyph is the only live-vs-settled distinction. Counts stay dim
- *  either way. */
-let breatheIndex = 0;
-export function advanceBreathe(): void {
-  breatheIndex = (breatheIndex + 1) % WHEEL_FRAMES.length;
-}
-export function resetBreathe(): void {
-  breatheIndex = 0;
-}
-export function breatheFrame(): number {
-  return breatheIndex;
+/** Working-spinner quantum: Pi Loader's own 80ms cadence and braille frames.
+ *  Same speed, arbitrary phase — see the note on breatheFrame. */
+export const BREATHE_MS = 80;
+/** Frame at a given moment: absolute wall-clock grid, no epoch, no tracking.
+ *  Phase lockstep with Pi's Working spinner was tried across r66-r72 and
+ *  abandoned: the tick phase is not observable through the extension API,
+ *  run-boundary events do not fire reliably in harness-driven flows (so no
+ *  anchor survives a session), and render-load jitter scatters the repaint
+ *  phases a tracker would need. Same glyphs at the same cadence, each
+ *  spinner on its own phase — occasionally aligned, never wrong-speed. */
+export function breatheFrame(nowMs: number = Date.now()): number {
+  if (nowMs < 0) return 0;
+  return Math.floor(nowMs / BREATHE_MS) % WHEEL_FRAMES.length;
 }
 /** Working wheel for live rows: Pi Loader's braille frames, accent, fixed
  *  width so the count never shifts. Shape motion carries the animation. */
 export const WHEEL_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-export function breatheWheel(): string {
-  return WHEEL_FRAMES[breatheIndex % WHEEL_FRAMES.length]!;
+export function breatheWheel(nowMs?: number): string {
+  return WHEEL_FRAMES[breatheFrame(nowMs)]!;
 }
 
 /** Middle-truncate styled text to a visible width: keep the head and the

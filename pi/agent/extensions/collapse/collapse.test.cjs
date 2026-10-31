@@ -3117,42 +3117,96 @@ function textResult(chars) {
 }
 
 // ---------------------------------------------------------------------------
-// 76. Breathing rail: live rows pulse rail color + accent count, settled stay dim.
+// 76. Live wheel: live rows swap the dim rail for a braille wheel (Pi
+// Loader's own frames, same 80ms cadence, wall-clock phase). Same speed,
+// arbitrary phase — phase lockstep was tried and abandoned (see the note
+// on breatheFrame).
 // ---------------------------------------------------------------------------
 {
   const rowsLib = await jiti.import(path.join(HERE, "rows.ts"));
   const tuiLib = await jiti.import("@earendil-works/pi-tui");
-  const { CollapsedLine, advanceBreathe, resetBreathe } = rowsLib;
+  const { CollapsedLine } = rowsLib;
   check("wheel frames exported", Array.isArray(rowsLib.WHEEL_FRAMES) && rowsLib.WHEEL_FRAMES.length === 10, JSON.stringify(rowsLib.WHEEL_FRAMES));
-  check("wheel spins", (resetBreathe(), rowsLib.breatheWheel() === "⠋"), String(rowsLib.breatheWheel && rowsLib.breatheWheel()));
-  rowsLib.advanceBreathe();
-  check("wheel advances", rowsLib.breatheWheel() === "⠙", String(rowsLib.breatheWheel && rowsLib.breatheWheel()));
-  rowsLib.advanceBreathe();
-  check("wheel reaches third frame (full rotation, not mod-2)", rowsLib.breatheWheel() === "⠹", String(rowsLib.breatheWheel && rowsLib.breatheWheel()));
-  resetBreathe();
-  resetBreathe();
+  check("wheel frames match Pi Loader order", JSON.stringify(rowsLib.WHEEL_FRAMES) === JSON.stringify(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]), JSON.stringify(rowsLib.WHEEL_FRAMES));
+  // Absolute wall-clock grid, no anchor: explicit timestamps suffice.
+  const T0 = 1700000000000;
+  check("wheel advances on the wall clock", rowsLib.breatheWheel(T0) === "⠋" && rowsLib.breatheWheel(T0 + 80) === "⠙" && rowsLib.breatheWheel(T0 + 160) === "⠹", `${rowsLib.breatheWheel(T0)} ${rowsLib.breatheWheel(T0 + 80)} ${rowsLib.breatheWheel(T0 + 160)}`);
+  check("wheel wraps after a full rotation", rowsLib.breatheWheel(T0 + 800) === "⠋", rowsLib.breatheWheel(T0 + 800));
+  check("negative time parks at frame zero", rowsLib.breatheFrame(-1) === 0, String(rowsLib.breatheFrame(-1)));
   const before = process.stdout.columns;
   Object.defineProperty(process.stdout, "columns", { value: 60, configurable: true, writable: true });
   const LEFT = ansiTheme.fg("accent", "$ ls");
   const settled = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.0k ch"), 1, ansiTheme, false).render(60)[0];
   check("settled rail stays dim", settled.startsWith(ansiTheme.fg("dim", "▏")), JSON.stringify(settled.slice(0, 24)));
-  // Color assertions need the marker theme: ansiTheme.fg ignores the color name.
-  // Live rows replace the rail with the wheel; the count matches settled dim.
-  const mLeft = theme.fg("accent", "$ ls");
-  const mLive0 = new CollapsedLine(mLeft, theme.fg("dim", "1.9k ch"), 1, theme, true).render(60)[0];
-  check("live rail replaced by wheel", mLive0.startsWith(theme.fg("accent", rowsLib.breatheWheel())), JSON.stringify(mLive0.slice(0, 32)));
-  check("live rail keeps column 2", tuiLib.visibleWidth(live0_ansi().slice(0, live0_ansi().indexOf("$"))) === 1 && plainText(live0_ansi()).indexOf("$") === 1, JSON.stringify(plainText(live0_ansi()).slice(0, 8)));
+  // Live rows replace the rail with a wheel glyph — whichever frame the wall
+  // clock currently shows (frame membership, not an exact frame: no anchor).
   function live0_ansi() { return new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k ch"), 1, ansiTheme, true).render(60)[0]; }
   const live0 = live0_ansi();
-  advanceBreathe();
-  const mLive1 = new CollapsedLine(mLeft, theme.fg("dim", "1.9k ch"), 1, theme, true).render(60)[0];
-  check("wheel rotates", mLive0 !== mLive1, `${JSON.stringify(mLive0.slice(0, 32))} vs ${JSON.stringify(mLive1.slice(0, 32))}`);
+  check("live rail replaced by wheel", rowsLib.WHEEL_FRAMES.includes(plainText(live0)[0]), JSON.stringify(plainText(live0).slice(0, 8)));
+  check("live rail keeps column 2", tuiLib.visibleWidth(live0_ansi().slice(0, live0_ansi().indexOf("$"))) === 1 && plainText(live0_ansi()).indexOf("$") === 1, JSON.stringify(plainText(live0_ansi()).slice(0, 8)));
   const live1 = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k ch"), 1, ansiTheme, true).render(60)[0];
   check("wheel keeps width", tuiLib.visibleWidth(live0) === tuiLib.visibleWidth(live1), `${tuiLib.visibleWidth(live0)} vs ${tuiLib.visibleWidth(live1)}`);
   check("live count matches settled (dim)", rowsLib.liveCountSuffix(theme, 1900).includes("<dim>"), JSON.stringify(rowsLib.liveCountSuffix(theme, 1900)));
-  resetBreathe();
   if (before === undefined) delete process.stdout.columns;
   else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
+}
+
+// ---------------------------------------------------------------------------
+// 77. (retired) Turn-anchored sync lived here through r72; the handlers are
+// gone with the epoch. The number stays reserved so history keeps its shape.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 79. Status line: /collapse reports the wheel state (frame, glyph, live
+// rows, timer ticks) for eyeballing the animation.
+// ---------------------------------------------------------------------------
+{
+  const syncMod3 = await jiti.import(path.join(HERE, "index.ts"));
+  const pi3 = createMockPi();
+  (syncMod3.default ?? syncMod3)(pi3);
+  const readStatus = async () => {
+    const notes = [];
+    await pi3.commands.get("collapse").handler("", { ui: { notify: (m) => notes.push(m) } });
+    return notes.join("");
+  };
+  check("status reports the wheel state", /breathe: frame=\d+ wheel=[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] live=\d+ ticks=\d+/.test(await readStatus()), (await readStatus()).match(/breathe:[^;]*/)?.[0]);
+}
+
+// ---------------------------------------------------------------------------
+// 80-82. (retired) Tick-comb phase tracking, quiet reset, and poke-blindness
+// lived here through r72; the tracker is gone with the epoch. Numbers stay
+// reserved so history keeps its shape.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 78. Repaint driver: the 80ms timer pokes live rows so the wheel keeps
+// turning, whether or not Pi's own cycle repaints them.
+// ---------------------------------------------------------------------------
+{
+  const syncMod2 = await jiti.import(path.join(HERE, "index.ts"));
+  const pi2 = createMockPi();
+  (syncMod2.default ?? syncMod2)(pi2);
+  const bash2 = pi2.tools.get("bash");
+  const mkLive = (id) => {
+    let invalidated = 0;
+    const liveCtx = {
+      args: { command: "sleep 5" }, toolCallId: id,
+      invalidate: () => { invalidated++; },
+      lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: true,
+      expanded: false, showImages: true, isError: false,
+    };
+    return { liveCtx, invalidated: () => invalidated };
+  };
+  // A live row renders a wheel glyph, and the timer pokes it every tick so
+  // the wheel advances for as long as the row stays live.
+  const live = mkLive("w-live");
+  const setupLine = bash2.renderCall(live.liveCtx.args, theme, live.liveCtx).render(120).join("");
+  check("live row shows a wheel glyph", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(setupLine), setupLine.slice(0, 120));
+  syncMod2.breatheTick(pi2);
+  check("timer pokes live rows", live.invalidated() === 1, String(live.invalidated()));
+  syncMod2.breatheTick(pi2);
+  check("timer keeps poking while rows live", live.invalidated() === 2, String(live.invalidated()));
 }
 
   if (failures > 0) {

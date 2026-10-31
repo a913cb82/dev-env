@@ -22,11 +22,19 @@ Three levels, one meaning each:
   (right-aligned), and the summary of any tool without a dedicated renderer.
 
 Live rows swap the rail for a spinning braille wheel
-(⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, Pi Loader frames, full rotation, ~80ms tick) in
-column 1: the wheel is the only live-vs-settled distinction, and the
-count column never shifts. Counts stay dim either way. Settled rows
-are dim rail + dim count; failed rows keep the dim rail with a red
-head.
+(⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, Pi Loader's own frames) in column 1: the wheel
+is the only live-vs-settled distinction, and the count column never
+shifts. The wheel runs on the wall clock at Pi's 80ms cadence — same
+glyphs at the same speed, but on its own phase. An 80ms timer pokes live
+rows so the wheel keeps turning even when Pi's own cycle is quiet.
+Phase lockstep with Pi's Working spinner was tried across r66-r72
+(turn-anchored epoch, tick-phase tracking loop) and abandoned: Pi's tick
+phase is not observable through the extension API, run-boundary events
+do not fire reliably in harness-driven flows so no anchor survives a
+session, and render-load jitter scatters the repaint phases a tracker
+would need. Counts stay dim either way.
+Settled rows are dim rail + dim count; failed rows keep the dim rail
+with a red head.
 
 ```
 ▏read /a/b.txt:5-10                                5.3k ch

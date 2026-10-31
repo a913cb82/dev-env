@@ -81,7 +81,7 @@ import {
   planToolRuns,
 } from "./logic.js";
 import {
-  advanceBreathe,
+  BREATHE_MS,
   breatheFrame,
   breatheWheel,
   clearCollapsePokes,
@@ -111,16 +111,20 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 65;
+const COLLAPSE_REVISION = 73;
+
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
 const BREATHE_SLOT = "__collapseBreatheTick";
-/** Live-row tick: matches Pi Loader's own 80ms working cadence. */
-export const BREATHE_MS = 80;
+// Test surface: the shared wheel clock (quantum + wall-clock frame) and the
+// repaint tick that drives live rows while they run.
+export { BREATHE_MS, breatheFrame, breatheTick };
 
-/** Pulse live rails: advance one global frame and repaint only runs with
- *  live rows. No live rows → no work. Unref'd so it never holds exit. */
+/** Repaint driver for live rows: an 80ms timer pokes live rows so the wheel
+ *  keeps turning even when Pi's own cycle is quiet. Same cadence as Pi's
+ *  Loader, arbitrary phase (see the note on breatheFrame) — no attempt to
+ *  ride Pi's ticks. No live rows → no work. Unref'd so it never holds exit. */
 let breatheTicks = 0;
 let breatheFallbacks = 0;
 let breatheLastError = "";
@@ -140,7 +144,6 @@ function breatheTick(pi: ExtensionAPI): void {
     if (!isHiddenThinking(pi)) return;
     const runs = liveRunIds();
     if (runs.length === 0) return;
-    advanceBreathe();
     breatheTicks++;
     let poked = 0;
     for (const runId of runs) {
