@@ -9,7 +9,7 @@
  * stops matching, everything below bails to stock behavior (never throws).
  */
 import { Container, type Component } from "@earendil-works/pi-tui";
-import { ROW_RAIL, extractThinkingText, thinkingLabelForWidth } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, thinkingLabelForWidth, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 
@@ -107,7 +107,14 @@ function escapeEnd(text: string, from = 0): number {
  *  that repeats the preview reads the same but is a different line. Anything
  *  unexpected (no such line, visible thinking, no pad) returns the stock
  *  lines, and the miss path hands back the very same array — renders are
- *  hot. */
+ *  hot.
+ *
+ *  While the row is still being appended to (its own isStreaming flag) the
+ *  pad cell shows the wall-clock wheel instead of the rail — the same
+ *  glyphs tool rows spin, read at render time so Pi's own repaint cycle
+ *  (streaming deltas plus the Working ticks) turns it with no timer and no
+ *  poke handle. Settled rows keep the rail. The wheel inherits the label's
+ *  own grey style: motion, not color, carries the live signal here. */
 function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
   try {
     if (!isHiddenThinking(pi)) return lines;
@@ -138,11 +145,14 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
       if (!whole) continue;
       // Replace the FIRST pad cell with the rail in the label's own style;
       // the remaining pad, the label and its style stay where Pi put them.
+      // A streaming row is still live: spin the wheel in that same cell.
+      const streaming = (row as { isStreaming?: unknown })?.isStreaming === true;
+      const glyph = streaming ? WHEEL_FRAMES[wheelFrameAt()]! : ROW_RAIL;
       const out = lines.slice();
       out[i] =
         line.slice(0, at) +
         line.slice(at + pad, textAt) +
-        ROW_RAIL +
+        glyph +
         "\x1b[0m" +
         line.slice(at + 1);
       return out;

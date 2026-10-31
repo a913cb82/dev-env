@@ -6,6 +6,19 @@
  *  column 2 — see the rows.ts render. */
 export const ROW_RAIL = "\u258f";
 
+/** Working-spinner braille frames in Pi Loader order, shared by tool rows
+ *  (rows.ts) and the streaming thinking row (labels.ts). Lives here, on
+ *  the import-free leaf, so both consumers read one grid. */
+export const WHEEL_FRAMES = ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"] as const;
+/** Frame index on the absolute wall-clock grid. The 80ms quantum
+ *  intentionally duplicates rows.ts BREATHE_MS (which the timer owns) —
+ *  same epoch, same quantum, so every spinner shows the same glyph at the
+ *  same moment. A deterministic function of time cannot drift. */
+export function wheelFrameAt(nowMs: number = Date.now()): number {
+  if (nowMs < 0) return 0;
+  return Math.floor(nowMs / 80) % WHEEL_FRAMES.length;
+}
+
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
   return `${(n / 1000).toFixed(1)}k ch`;

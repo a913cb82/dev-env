@@ -2,7 +2,10 @@
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { ROW_RAIL, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment, type GenericPair } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment, type GenericPair } from "./logic.js";
+/** Re-exported so the wheel-test surface keeps its path (rows.ts owns the
+ *  timer quantum BREATHE_MS; the frames live on the shared leaf). */
+export { WHEEL_FRAMES };
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
@@ -41,7 +44,6 @@ export function breatheFrame(nowMs: number = Date.now()): number {
 }
 /** Working wheel for live rows: Pi Loader's braille frames, accent, fixed
  *  width so the count never shifts. Shape motion carries the animation. */
-export const WHEEL_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 export function breatheWheel(nowMs?: number): string {
   return WHEEL_FRAMES[breatheFrame(nowMs)]!;
 }

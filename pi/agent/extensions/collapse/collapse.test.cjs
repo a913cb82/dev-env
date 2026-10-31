@@ -2495,6 +2495,7 @@ function textResult(chars) {
 {
   const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
   const tuiLib = await jiti.import("@earendil-works/pi-tui");
+  const logicLib69 = await jiti.import(path.join(HERE, "logic.js"));
   check("labels.ts exports the row-rail installer", typeof labelsLib.installRowRail === "function");
 
   // Pi's Text: pad spaces, then the italic+fg styled label, padded to width.
@@ -2619,13 +2620,16 @@ function textResult(chars) {
   }
 
   {
-    // Streaming: the shadow reads the label live, so a new preview re-rails.
+    // Streaming: the shadow reads the label live, and the pad cell spins
+    // the wheel while the row is still being appended to (r85: the rail
+    // returns once the row settles).
     const row = rowOf();
     const module = await fresh([row]);
     row.isStreaming = true;
     module.reconcileStreamingLabel(pi, undefined, Date.now() + 1000);
     check("streaming row is labeled", row.hiddenThinkingLabel.length > 0, JSON.stringify(row.hiddenThinkingLabel));
-    check("streaming row carries the rail", plainText(row.render(100)[1]).startsWith("▏"), JSON.stringify(plainText(row.render(100)[1]).slice(0, 6)));
+    const first = plainText(row.render(100)[1]);
+    check("streaming row spins the wheel", logicLib69.WHEEL_FRAMES.some((f) => first.startsWith(f)), JSON.stringify(first.slice(0, 6)));
   }
 
   if (before === undefined) delete process.stdout.columns;
@@ -3312,6 +3316,38 @@ function textResult(chars) {
   bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-adopt", { state: { startedAt: T0, endedAt: T0 + 14000 } }));
   const adopted = syncMod.traceEntries.get("dur-adopt");
   check("entry adopts Pi state stamps", adopted.startedAt === T0 && adopted.endedAt === T0 + 14000, `${adopted.startedAt} ${adopted.endedAt}`);
+}
+
+// ---------------------------------------------------------------------------
+// 85. Streaming thinking row: Pi's hidden-thinking row keeps collapse's
+// rail once settled, but while the row is still being appended to
+// (isStreaming) the pad cell shows the wall-clock wheel instead.
+// ---------------------------------------------------------------------------
+{
+  const labelsLib = await jiti.import(path.join(HERE, "labels.js"));
+  const logicLib = await jiti.import(path.join(HERE, "logic.js"));
+  const frames = logicLib.WHEEL_FRAMES;
+  const rail = logicLib.ROW_RAIL;
+  const piL = createMockPi();
+  const mkRow = (streaming) => {
+    const label = "\u2026 thinking preview";
+    return {
+      hiddenThinkingLabel: label,
+      outputPad: 2,
+      isStreaming: streaming,
+      lastMessage: { role: "assistant", content: [] },
+      render: () => [`  ${label}`],
+    };
+  };
+  const hasWheel = (s) => frames.some((f) => s.includes(f));
+  const sRow = mkRow(true);
+  labelsLib.installRowRail(sRow, piL);
+  const sOut = sRow.render(100).join("");
+  check("streaming thinking row shows the wheel", hasWheel(sOut) && !sOut.includes(rail), JSON.stringify(sOut));
+  const dRow = mkRow(false);
+  labelsLib.installRowRail(dRow, piL);
+  const dOut = dRow.render(100).join("");
+  check("settled thinking row keeps the rail", dOut.includes(rail) && !hasWheel(dOut), JSON.stringify(dOut));
 }
 
   if (failures > 0) {
