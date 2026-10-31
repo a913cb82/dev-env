@@ -21,17 +21,15 @@ function statusIcon(record: AgentRecord): string {
 		case "queued":
 			return "◌";
 		case "idle":
-			return "◐";
 		default:
 			return "●";
 	}
 }
 
-function statusColor(record: AgentRecord): "success" | "error" | "warning" | "accent" | "dim" {
+function statusColor(record: AgentRecord): "success" | "error" | "accent" | "dim" {
 	if (record.status === "completed") return "success";
 	if (record.status === "failed") return "error";
-	if (record.status === "cancelled") return "dim";
-	if (record.status === "idle") return "warning";
+	if (record.status === "cancelled" || record.status === "idle") return "dim";
 	return "accent";
 }
 

@@ -127,6 +127,15 @@ function check(name, cond, extra) {
 	check("cancelled cross is faded grey", colorLines.some((line) => line.includes("<dim>✗") && line.includes("cx")), JSON.stringify(colorLines));
 	check("failed cross stays red", colorLines.some((line) => line.includes("<error>✗") && line.includes("fx")), JSON.stringify(colorLines));
 	foot3c.dispose();
+	// Idle is a parked worker: the working glyph in faded grey, never the
+	// half-moon, never amber.
+	registry.saveRecord(dir3, rec("ix", "me", "idle", 1));
+	const foot3d = new widget.SubagentStatusWidget(tui, ctheme, dir3, "me");
+	const idleLines = foot3d.render(200);
+	check("idle row wears the working glyph", idleLines.some((line) => line.includes("●") && line.includes("ix")), JSON.stringify(idleLines));
+	check("idle row is faded grey", idleLines.some((line) => line.includes("<dim>●") && line.includes("ix")), JSON.stringify(idleLines));
+	check("idle row wears no half-moon", !idleLines.some((line) => line.includes("◐")), JSON.stringify(idleLines));
+	foot3d.dispose();
 	// Terminal progress (OSC 9;4 tab-bar spinner): the widget owns the
 	// indicator exactly while Pi does not — Pi drives it across its own
 	// turn (turn_start→agent_end) and goes quiet on agent_end even with

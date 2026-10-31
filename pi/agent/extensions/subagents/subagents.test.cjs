@@ -1880,7 +1880,18 @@ function check(name, cond, extra) {
 	check("tool cleared after end", rec.currentTool === undefined, String(rec.currentTool));
 	check("final text", state.finalText === "hello done", state.finalText);
 	check("usage summed", rec.usage.input === 10 && rec.usage.cost === 0.001, JSON.stringify(rec.usage));
-	check("idle after agent_end", rec.status === "idle", rec.status);
+	check("agent_end keeps the working status", rec.status === "thinking" && rec.activity === "finishing", `${rec.status} / ${rec.activity}`);
+	// No idle flash on the way to terminal: settling lands straight from
+	// working. Genuine between-turns parking is marked at agent_settled,
+	// and only when the settle carries on (continue or queued messages).
+	events.applyChildEvent(rec, state, { type: "agent_settled" });
+	check("settle without continue leaves the status", rec.status === "thinking", rec.status);
+	events.applyChildEvent(rec, state, { type: "agent_settled", continue: true });
+	check("settle with continue parks idle", rec.status === "idle" && rec.activity === "finishing", `${rec.status} / ${rec.activity}`);
+	events.applyChildEvent(rec, state, { type: "agent_start" });
+	events.applyChildEvent(rec, state, { type: "agent_end", messages: [] });
+	events.applyChildEvent(rec, state, { type: "agent_settled", context: { pendingMessages: [{ text: "go on" }] } });
+	check("settle with queued messages parks idle", rec.status === "idle", rec.status);
 
 	// --- gate ---
 	const g1 = new spawn.ConcurrencyGate();

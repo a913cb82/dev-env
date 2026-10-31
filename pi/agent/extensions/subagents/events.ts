@@ -113,10 +113,26 @@ export function applyChildEvent(record: AgentRecord, state: ParsedChildState, ev
 			}
 			break;
 		case "agent_end":
-			record.status = "idle";
+			// Park the activity but keep the working status: the settle event
+			// lands next when the run is over, and it must read straight from
+			// working to terminal with no idle flash in between. Genuine
+			// between-turns parking is marked at agent_settled instead.
 			record.activity = "finishing";
 			important = true;
 			break;
+		case "agent_settled": {
+			// Idle only when the settle carries on: a continue flag or queued
+			// messages mean another turn follows, so the run truly parks.
+			// A final settle leaves the working status for the verdict to
+			// replace (completed/failed/cancelled straight, no flash).
+			const pending = (event?.context as { pendingMessages?: unknown } | undefined)?.pendingMessages;
+			if (event?.continue === true || (Array.isArray(pending) && pending.length > 0)) {
+				record.status = "idle";
+				record.activity = "finishing";
+				important = true;
+			}
+			break;
+		}
 	}
 
 	record.updatedAt = now;
