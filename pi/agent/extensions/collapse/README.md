@@ -21,6 +21,13 @@ Three levels, one meaning each:
   flags, numbers, `$VAR` expansions, line ranges, timeouts, output sizes
   (right-aligned), and the summary of any tool without a dedicated renderer.
 
+Live rows swap the rail for a spinning braille wheel
+(⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, Pi Loader frames, full rotation, ~80ms tick) in
+column 1: the wheel is the only live-vs-settled distinction, and the
+count column never shifts. Counts stay dim either way. Settled rows
+are dim rail + dim count; failed rows keep the dim rail with a red
+head.
+
 ```
 ▏read /a/b.txt:5-10                                5.3k ch
 ▏$ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k ch
@@ -260,7 +267,8 @@ arguments its summary hides — the `write` body, both sides of an `edit`, the
 in declared order, filling the row. When they do not all fit and the row
 hides text, the right column reports the argument text written so far
 (`1.9k ch`) instead of waiting for a result count: on a long body the visible
-head stops changing, so the count is the only thing that still moves. Text
+head stops changing, so the count keeps climbing while the wheel in column 1
+shows the call is still alive. Text
 that fits needs no badge, so short calls show no count. When the result
 arrives the pairs drop away and the row settles back to the canonical
 one-liner with the result count. Generic rows already carry every argument,

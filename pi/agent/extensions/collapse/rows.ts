@@ -25,6 +25,27 @@ import {
 
 const COUNT_GAP = 2;
 
+/** Live-row clock: one global frame keeps all live rows in sync.
+ *  Column 1 shows the wheel while live, the dim rail once settled — that
+ *  single glyph is the only live-vs-settled distinction. Counts stay dim
+ *  either way. */
+let breatheIndex = 0;
+export function advanceBreathe(): void {
+  breatheIndex = (breatheIndex + 1) % WHEEL_FRAMES.length;
+}
+export function resetBreathe(): void {
+  breatheIndex = 0;
+}
+export function breatheFrame(): number {
+  return breatheIndex;
+}
+/** Working wheel for live rows: Pi Loader's braille frames, accent, fixed
+ *  width so the count never shifts. Shape motion carries the animation. */
+export const WHEEL_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+export function breatheWheel(): string {
+  return WHEEL_FRAMES[breatheIndex % WHEEL_FRAMES.length]!;
+}
+
 /** Middle-truncate styled text to a visible width: keep the head and the
  *  tail around "…" (end truncation would eat the file name / command
  *  tail that identifies the row). Falls back to a plain slice when the
@@ -48,15 +69,18 @@ export class CollapsedLine implements Component {
     private right: string,
     private pad = 1,
     private theme?: Theme,
+    private live = false,
   ) {}
 
-  /** Column 1 carries the rail, columns after it stay padding. With no pad
-   *  the row starts at column 1 (stock cell with outputPad=0), so a rail
-   *  there would push the content out of alignment: none is drawn. */
+  /** Column 1 carries the rail — or the wheel while live. With no pad
+   *  the row starts at column 1 (stock cell with outputPad=0), so neither
+   *  is drawn there: content must never shift sideways. */
   private prefix(): string {
     const pad = " ".repeat(Math.max(0, this.pad));
     if (this.pad < 1) return pad;
-    return (this.theme ? this.theme.fg("dim", ROW_RAIL) : ROW_RAIL) + pad.slice(1);
+    const glyph = this.live ? breatheWheel() : ROW_RAIL;
+    const color = this.live ? "accent" : "dim";
+    return (this.theme ? this.theme.fg(color, glyph) : glyph) + pad.slice(1);
   }
 
   render(width: number): string[] {
@@ -330,8 +354,9 @@ function buildOpenedRow(
  *  for (collapsed cell while Pi is collapsed, expanded cell while Pi is
  *  expanded). The region handles the click, so Pi's own toggle never fires
  *  for row clicks. */
-/** Right column while a call is live: the argument text written so far. */
-function liveCountSuffix(theme: Theme, chars: number): string {
+/** Right column while a call is live: the argument text written so far.
+ *  Dim like settled counts — the wheel in column 1 is the live signal. */
+export function liveCountSuffix(theme: Theme, chars: number): string {
   return chars > 0 ? theme.fg("dim", formatCharCount(chars)) : "";
 }
 
@@ -362,11 +387,14 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
       : (() => {
+          // Live while Pi still streams (isPartial): partial renderResults
+          // already carry output sizes, so count==null must NOT gate liveness.
+          // The wheel in column 1 is the only live signal; counts stay dim.
+          const live = entry.isPartial && !entry.isError;
           const count = countSuffix(theme, entry);
           // No result yet: the row streams the arguments its summary hides.
           // When they do not all fit, the right column says how much text the
-          // model has written instead — the only sign of life left.
-          const live = entry.count == null && !entry.isError;
+          // model has written instead.
           const textChars = live ? argsTextChars(entry.args) : 0;
           let right = count;
           let left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), live);
@@ -377,7 +405,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
               left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), true);
             }
           }
-          return new CollapsedLine(left.text, right, liveOutputPad(pi), theme);
+          return new CollapsedLine(left.text, right, liveOutputPad(pi), theme, live);
         })();
     trace.addChild(
       new MouseRegion(row, (event: any) => {
@@ -463,8 +491,9 @@ export function collapseTool(
       const toolCallId = context?.toolCallId;
       const entry = traceUpsert(original.name, toolCallId, original);
       if (!entry) {
-        const count = countSuffix(theme, context?.state ?? {});
-        return new CollapsedLine(makeLeft(theme, args, !!context?.isError, rowBudget(pi, count)), count, liveOutputPad(pi), theme);
+        const live = !!context?.isPartial && !context?.isError;
+        const right = countSuffix(theme, context?.state ?? {});
+        return new CollapsedLine(makeLeft(theme, args, !!context?.isError, rowBudget(pi, right)), right, liveOutputPad(pi), theme, live);
       }
       const changed = traceSync(entry, args, context);
       if (traceOwnerId(entry.runId) !== entry.id) {

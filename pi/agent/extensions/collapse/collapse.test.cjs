@@ -70,7 +70,7 @@ const plainText = (line) => String(line)
   .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
   .replace(/\x1b\[[0-9;]*m/g, "")
   .replace(/<[^>]*>/g, "");
-const isRow = (line) => plainText(line).startsWith("▏");
+const isRow = (line) => /^[▏⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(plainText(line));
 
 // Marker theme: visible styling assertions without ANSI.
 const theme = {
@@ -372,6 +372,9 @@ function textResult(chars) {
     const notes2 = [];
     await pi.commands.get("collapse").handler("", { ui: { notify: (msg) => notes2.push(msg) } });
     check("collapse reports compact mode", notes2.join("").includes("compact rows"), JSON.stringify(notes2));
+    check("collapse reports breathe", notes2.join("").includes("breathe:"), JSON.stringify(notes2));
+    const indexMod = await jiti.import(path.join(HERE, "index.ts"));
+    check("breathe matches Pi Loader cadence (80ms)", indexMod.BREATHE_MS === 80, String(indexMod.BREATHE_MS));
   }
 
   // 8d2. thinking visible restores stock tool sections (same chrome as expanded)
@@ -2247,12 +2250,17 @@ function textResult(chars) {
     partial(120, true);
     const during = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("partial output shows a count", /0\.1k ch/.test(during), during);
+    const spinning = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80).join("");
+    check("live row spins the wheel in column 1", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(spinning), spinning.slice(0, 120));
     partial(2500, true);
     const grown = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("count grows while output streams", /2\.5k ch/.test(grown), grown);
+    const liveRow = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80).join("");
+    check("streaming row stays live (wheel in column 1, dim count)", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(liveRow) && /<dim>2\.5k ch<\/>/.test(liveRow), liveRow.slice(0, 160));
     partial(4200, false);
     const settled = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("final count lands", /4\.2k ch/.test(settled), settled);
+    check("settled row parks the wheel", !/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(settled), settled.slice(0, 120));
     check("row stays one line", bash.renderCall(ctx.args, theme, ctx).render(80).length === 1, "multi-line");
   }
 
@@ -2457,7 +2465,7 @@ function textResult(chars) {
   // Real escapes for width math: marker tags would count as visible text.
   const LEFT = ansiTheme.fg("accent", "$ ls");
   const RIGHT = ansiTheme.fg("dim", "1.0k ch");
-  const line = (opts) => new CollapsedLine(LEFT, RIGHT, opts.pad ?? 1, ansiTheme, opts.rail ?? true).render(60)[0];
+  const line = (opts) => new CollapsedLine(LEFT, RIGHT, opts.pad ?? 1, ansiTheme, opts.live ?? false).render(60)[0];
   const dimRail = ansiTheme.fg("dim", RAIL);
 
   const tool = line({});
@@ -3073,9 +3081,9 @@ function textResult(chars) {
   check("live read row has no hidden args", !rows()[4].includes("offset="), rows()[4]);
   // The count is a fallback for hidden text, not a badge: it appears only when
   // the hidden args do not fit.
-  check("live read row has no count", rows()[4].trimEnd() === "▏read /repo/a.ts:1-20", rows()[4]);
-  check("live short write row has no count", rows()[7].trimEnd().endsWith('content="hi"'), rows()[7]);
-  check("bare call row has no count", rows()[5].trimEnd() === "▏write", JSON.stringify(rows()[5]));
+  check("live read row shows the wheel, no count", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]read \/repo\/a\.ts:1-20$/.test(plainText(rows()[4]).trimEnd()), rows()[4]);
+  check("live short write row shows the wheel, no count", rows()[7].includes('content="hi"') && /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(plainText(rows()[7]).trimEnd()), rows()[7]);
+  check("bare call row shows the wheel, no count", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]write$/.test(plainText(rows()[5]).trimEnd()) && !/\dk ch/.test(rows()[5]), JSON.stringify(rows()[5]));
   check("live rows fit the terminal", rows().every((row) => row.length <= 118), rows().map((r) => r.length).join(","));
 
   // Settled: the count is the result's, and the hidden args are gone.
@@ -3106,6 +3114,45 @@ function textResult(chars) {
   const per = Number(process.hrtime.bigint() - t0) / 1e6 / 20;
   check("5MB live write row stays cheap", per < 0.5, `${per.toFixed(3)}ms`);
 
+}
+
+// ---------------------------------------------------------------------------
+// 76. Breathing rail: live rows pulse rail color + accent count, settled stay dim.
+// ---------------------------------------------------------------------------
+{
+  const rowsLib = await jiti.import(path.join(HERE, "rows.ts"));
+  const tuiLib = await jiti.import("@earendil-works/pi-tui");
+  const { CollapsedLine, advanceBreathe, resetBreathe } = rowsLib;
+  check("wheel frames exported", Array.isArray(rowsLib.WHEEL_FRAMES) && rowsLib.WHEEL_FRAMES.length === 10, JSON.stringify(rowsLib.WHEEL_FRAMES));
+  check("wheel spins", (resetBreathe(), rowsLib.breatheWheel() === "⠋"), String(rowsLib.breatheWheel && rowsLib.breatheWheel()));
+  rowsLib.advanceBreathe();
+  check("wheel advances", rowsLib.breatheWheel() === "⠙", String(rowsLib.breatheWheel && rowsLib.breatheWheel()));
+  rowsLib.advanceBreathe();
+  check("wheel reaches third frame (full rotation, not mod-2)", rowsLib.breatheWheel() === "⠹", String(rowsLib.breatheWheel && rowsLib.breatheWheel()));
+  resetBreathe();
+  resetBreathe();
+  const before = process.stdout.columns;
+  Object.defineProperty(process.stdout, "columns", { value: 60, configurable: true, writable: true });
+  const LEFT = ansiTheme.fg("accent", "$ ls");
+  const settled = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.0k ch"), 1, ansiTheme, false).render(60)[0];
+  check("settled rail stays dim", settled.startsWith(ansiTheme.fg("dim", "▏")), JSON.stringify(settled.slice(0, 24)));
+  // Color assertions need the marker theme: ansiTheme.fg ignores the color name.
+  // Live rows replace the rail with the wheel; the count matches settled dim.
+  const mLeft = theme.fg("accent", "$ ls");
+  const mLive0 = new CollapsedLine(mLeft, theme.fg("dim", "1.9k ch"), 1, theme, true).render(60)[0];
+  check("live rail replaced by wheel", mLive0.startsWith(theme.fg("accent", rowsLib.breatheWheel())), JSON.stringify(mLive0.slice(0, 32)));
+  check("live rail keeps column 2", tuiLib.visibleWidth(live0_ansi().slice(0, live0_ansi().indexOf("$"))) === 1 && plainText(live0_ansi()).indexOf("$") === 1, JSON.stringify(plainText(live0_ansi()).slice(0, 8)));
+  function live0_ansi() { return new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k ch"), 1, ansiTheme, true).render(60)[0]; }
+  const live0 = live0_ansi();
+  advanceBreathe();
+  const mLive1 = new CollapsedLine(mLeft, theme.fg("dim", "1.9k ch"), 1, theme, true).render(60)[0];
+  check("wheel rotates", mLive0 !== mLive1, `${JSON.stringify(mLive0.slice(0, 32))} vs ${JSON.stringify(mLive1.slice(0, 32))}`);
+  const live1 = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k ch"), 1, ansiTheme, true).render(60)[0];
+  check("wheel keeps width", tuiLib.visibleWidth(live0) === tuiLib.visibleWidth(live1), `${tuiLib.visibleWidth(live0)} vs ${tuiLib.visibleWidth(live1)}`);
+  check("live count matches settled (dim)", rowsLib.liveCountSuffix(theme, 1900).includes("<dim>"), JSON.stringify(rowsLib.liveCountSuffix(theme, 1900)));
+  resetBreathe();
+  if (before === undefined) delete process.stdout.columns;
+  else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
 }
 
   if (failures > 0) {

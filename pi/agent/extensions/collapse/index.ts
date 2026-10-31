@@ -81,6 +81,9 @@ import {
   planToolRuns,
 } from "./logic.js";
 import {
+  advanceBreathe,
+  breatheFrame,
+  breatheWheel,
   clearCollapsePokes,
   collapseDefinition,
   collapseTool,
@@ -95,9 +98,12 @@ import {
   boundaryReasons,
   endHistoryPhase,
   traceBoundary,
+  traceEntries,
   traceOnMessageStart,
   traceOnMessageUpdate,
   traceOnToolExecutionStart,
+  traceOwnerPoke,
+  tracePokeOwner,
   traceSummary,
 } from "./trace.js";
 
@@ -105,10 +111,61 @@ import {
 export { resetTraceState } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 56;
+const COLLAPSE_REVISION = 65;
 
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
+const BREATHE_SLOT = "__collapseBreatheTick";
+/** Live-row tick: matches Pi Loader's own 80ms working cadence. */
+export const BREATHE_MS = 80;
+
+/** Pulse live rails: advance one global frame and repaint only runs with
+ *  live rows. No live rows → no work. Unref'd so it never holds exit. */
+let breatheTicks = 0;
+let breatheFallbacks = 0;
+let breatheLastError = "";
+function liveRunIds(): number[] {
+  const runs = new Set<number>();
+  for (const entry of traceEntries.values()) {
+    if (entry.rowOpen || entry.isError) continue;
+    // isPartial stays true through streaming partials (which already carry
+    // output sizes), so count/hasResult must NOT gate liveness.
+    if (!entry.isPartial) continue;
+    runs.add(entry.runId);
+  }
+  return [...runs];
+}
+function breatheTick(pi: ExtensionAPI): void {
+  try {
+    if (!isHiddenThinking(pi)) return;
+    const runs = liveRunIds();
+    if (runs.length === 0) return;
+    advanceBreathe();
+    breatheTicks++;
+    let poked = 0;
+    for (const runId of runs) {
+      if (traceOwnerPoke.has(runId)) {
+        tracePokeOwner(runId);
+        poked++;
+      }
+    }
+    if (poked === 0) {
+      // Owner handle missing (stale tree): repaint everything known.
+      // Same poke the visibility toggle uses; still cheap and bounded.
+      pokeAllCollapse();
+      breatheFallbacks++;
+    }
+  } catch (error) {
+    // Cosmetic only; never break the loop. Surfaced via /collapse.
+    breatheLastError = error instanceof Error ? error.message : String(error);
+  }
+}
+function breatheStatus(): string {
+  const runs = liveRunIds();
+  const pokes = runs.filter((runId) => traceOwnerPoke.has(runId)).length;
+  const base = `breathe: frame=${breatheFrame()} wheel=${breatheWheel()} live=${runs.length} ticks=${breatheTicks} pokes=${pokes} fallbacks=${breatheFallbacks}`;
+  return breatheLastError ? `${base} err=${breatheLastError}` : base;
+}
 let collapseSawUI = false;
 let collapseLastHidden: boolean | undefined;
 
@@ -149,7 +206,7 @@ export default function (pi: ExtensionAPI) {
       detachPass(pi);
       wrappingPass(pi);
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s)${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s); ${breatheStatus()}${uncollapsedReport(pi)}`,
       );
     },
   });
@@ -231,6 +288,25 @@ export default function (pi: ExtensionAPI) {
     g[POLL_SLOT] = { timer, tick: () => collapseTick(pi) };
   } catch {
     // Timers unavailable: renders still follow the setting, minus live pokes.
+  }
+
+  // Breathing rail: slow pulse for live rows only. Same slot discipline as
+  // the visibility poller; unref'd so it never holds the process open.
+  try {
+    const g = globalThis as Record<string, unknown>;
+    const prev = g[BREATHE_SLOT];
+    if (typeof prev === "object" && prev !== null) clearInterval((prev as { timer: unknown }).timer as any);
+    const timer = setInterval(() => {
+      if ((g[BREATHE_SLOT] as { timer?: unknown } | undefined)?.timer !== timer) {
+        clearInterval(timer);
+        return;
+      }
+      breatheTick(pi);
+    }, BREATHE_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    g[BREATHE_SLOT] = { timer, tick: () => breatheTick(pi) };
+  } catch {
+    // Timers unavailable: live rows keep the first breathe color.
   }
 
   // Backfill from history: the newest text-bearing turn may predate this
