@@ -3350,6 +3350,179 @@ function textResult(chars) {
   check("settled thinking row keeps the rail", dOut.includes(rail) && !hasWheel(dOut), JSON.stringify(dOut));
 }
 
+// ---------------------------------------------------------------------------
+// 86. Pre-reload timings survive: session_start recovers execution windows
+// from persisted message timestamps, so expanding a history row shows its
+// true duration instead of no Took line at all.
+// ---------------------------------------------------------------------------
+{
+  const T0 = 1700000000000;
+  const traceLib = await jiti.import(path.join(HERE, "trace.js"));
+  traceLib.noteHistoryTimings(new Map([["dur-hist-s", { startedAt: T0, endedAt: T0 + 5000 }]]));
+  const seeded = traceLib.traceUpsert("bash", "dur-hist-s", { name: "bash" });
+  traceLib.traceSync(seeded, { command: "sleep 5" }, { executionStarted: true, isPartial: true });
+  check("history start beats the fallback stamp", seeded.startedAt === T0, String(seeded.startedAt));
+  traceLib.traceSync(seeded, { command: "sleep 5" }, { executionStarted: true, isPartial: false }, undefined, { content: [{ type: "text", text: "slept 5" }] });
+  check("history end beats the fallback stamp", seeded.endedAt === T0 + 5000, String(seeded.endedAt));
+  // ...but Pi's live stamps still win over history.
+  traceLib.noteHistoryTimings(new Map([["dur-hist-p", { startedAt: T0, endedAt: T0 + 5000 }]]));
+  const live = traceLib.traceUpsert("bash", "dur-hist-p", { name: "bash" });
+  traceLib.traceSync(live, { command: "sleep 5" }, { executionStarted: true, isPartial: true, state: { startedAt: T0 + 7000 } });
+  check("live Pi stamps beat history", live.startedAt === T0 + 7000, String(live.startedAt));
+  // Full path: session_start with timestamped history, then expand.
+  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  syncMod.resetTraceState();
+  const piH = createMockPi();
+  (syncMod.default ?? syncMod)(piH);
+  const bashH = piH.tools.get("bash");
+  const iso = (ms) => new Date(ms).toISOString();
+  await piH.handlers.get("session_start")[0]({}, {
+    hasUI: true, ui: { setHiddenThinkingLabel() {} },
+    sessionManager: { getEntries: () => [
+      { type: "message", timestamp: iso(T0 - 9000), message: { role: "assistant", timestamp: T0, content: [{ type: "toolCall", id: "dur-hist", name: "bash", args: { command: "sleep 5" } }] } },
+      { type: "message", timestamp: iso(T0 + 5000), message: { role: "toolResult", timestamp: T0 + 5000, toolCallId: "dur-hist", toolName: "bash", content: [{ type: "text", text: "slept 5" }] } },
+    ] },
+  });
+  const mkCtx = (id, flags) => ({
+    args: { command: "sleep 5" }, toolCallId: id,
+    invalidate: () => {},
+    lastComponent: undefined, state: {}, cwd: "/repo",
+    executionStarted: true, argsComplete: true, isPartial: false,
+    expanded: false, showImages: true, isError: false,
+    ...flags,
+  });
+  const res = { content: [{ type: "text", text: "slept 5" }] };
+  bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-hist", {}));
+  bashH.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-hist", {}));
+  syncMod.traceEntries.get("dur-hist").rowOpen = true;
+  const histOut = bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-hist", {})).render(120).join("");
+  check("history row expands with its true duration", histOut.includes("Took 14.0s"), histOut.slice(-160));
+  // Prod order: rebuild renders run BEFORE session_start fills the map, so
+  // fallback stamps land first — the true windows must still upgrade them
+  // when they arrive (otherwise every row reads its age at reload).
+  syncMod.resetTraceState();
+  bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-poison", { executionStarted: false }));
+  bashH.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-poison", { executionStarted: false }));
+  await piH.handlers.get("session_start")[0]({}, {
+    hasUI: true, ui: { setHiddenThinkingLabel() {} },
+    sessionManager: { getEntries: () => [
+      { type: "message", timestamp: iso(T0 - 9000), message: { role: "assistant", timestamp: T0, content: [{ type: "toolCall", id: "dur-poison", name: "bash", args: { command: "sleep 5" } }] } },
+      { type: "message", timestamp: iso(T0 + 5000), message: { role: "toolResult", timestamp: T0 + 5000, toolCallId: "dur-poison", toolName: "bash", content: [{ type: "text", text: "slept 5" }] } },
+    ] },
+  });
+  syncMod.traceEntries.get("dur-poison").rowOpen = true;
+  const poisonOut = bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-poison", {})).render(120).join("");
+  check("late history upgrades fallback stamps", poisonOut.includes("Took 14.0s"), poisonOut.slice(-160));
+  // Units: a fallback start upgrades when history arrives; an exact Pi
+  // stamp never downgrades.
+  const up = traceLib.traceUpsert("bash", "dur-up", { name: "bash" });
+  traceLib.traceSync(up, { command: "sleep 5" }, { executionStarted: true, isPartial: true });
+  const fbStart = up.startedAt;
+  traceLib.noteHistoryTimings(new Map([["dur-up", { startedAt: T0, endedAt: T0 + 5000 }]]));
+  traceLib.traceSync(up, { command: "sleep 5" }, { executionStarted: true, isPartial: true });
+  check("fallback start upgrades to history", up.startedAt === T0 && fbStart !== T0, `${fbStart} -> ${up.startedAt}`);
+  const keep = traceLib.traceUpsert("bash", "dur-keep", { name: "bash" });
+  traceLib.traceSync(keep, { command: "sleep 5" }, { executionStarted: true, isPartial: true, state: { startedAt: T0 + 7000 } });
+  traceLib.noteHistoryTimings(new Map([["dur-keep", { startedAt: T0, endedAt: T0 + 5000 }]]));
+  traceLib.traceSync(keep, { command: "sleep 5" }, { executionStarted: true, isPartial: true });
+  check("exact Pi stamp never downgrades to history", keep.startedAt === T0 + 7000, String(keep.startedAt));
+}
+
+// ---------------------------------------------------------------------------
+// 87. Timing diagnostics: /collapse reports history windows recovered vs
+// stamps adopted per source, so a wrong duration points at its link.
+// ---------------------------------------------------------------------------
+{
+  const traceLib = await jiti.import(path.join(HERE, "trace.js"));
+  traceLib.resetTraceState();
+  check("empty timing status", traceLib.timingStatus().includes("history=0 windows"), traceLib.timingStatus());
+  const T0 = 1700000000000;
+  traceLib.noteHistoryTimings(new Map([["dur-diag", { startedAt: T0, endedAt: T0 + 5000 }]]));
+  const diag = traceLib.traceUpsert("bash", "dur-diag", { name: "bash" });
+  traceLib.traceSync(diag, { command: "sleep 5" }, { executionStarted: true, isPartial: false });
+  traceLib.traceSync(diag, { command: "sleep 5" }, { executionStarted: true, isPartial: false }, undefined, { content: [] });
+  const status = traceLib.timingStatus();
+  check("status counts history windows", status.includes("history=1 windows"), status);
+  check("status counts history starts", /start\([^)]*history=1/.test(status), status);
+  check("status counts history ends", /end\([^)]*history=1/.test(status), status);
+}
+
+// ---------------------------------------------------------------------------
+// 88. Replay artifacts: Pi's renderResult stamps endedAt with no
+// executionStarted gate, so a history replay rendered in visible mode
+// (e.g. the reload window before hidden applies) freezes ends at switch
+// time. Pi ends are trusted only from a component that actually executed;
+// otherwise history corrects them.
+// ---------------------------------------------------------------------------
+{
+  const T0 = 1700000000000;
+  const R_SWITCH = T0 + 777777;
+  const traceLib = await jiti.import(path.join(HERE, "trace.js"));
+  const rep = traceLib.traceUpsert("bash", "dur-replay", { name: "bash" });
+  // Visible replay stamps Pi state at switch time; hidden adoption poisons.
+  traceLib.traceSync(rep, { command: "sleep 5" }, { executionStarted: true, isPartial: false, state: { endedAt: R_SWITCH } });
+  check("replay stamp adopts (old behavior)", rep.endedAt === R_SWITCH, String(rep.endedAt));
+  traceLib.noteHistoryTimings(new Map([["dur-replay", { startedAt: T0, endedAt: T0 + 5000 }]]));
+  // History replays never execute: the artifact must heal to history.
+  traceLib.traceSync(rep, { command: "sleep 5" }, { executionStarted: false, isPartial: false });
+  check("replay artifact heals to history", rep.endedAt === T0 + 5000, String(rep.endedAt));
+  // ...while a live component's exact Pi stamps still win.
+  const live = traceLib.traceUpsert("bash", "dur-replay-live", { name: "bash" });
+  traceLib.noteHistoryTimings(new Map([["dur-replay-live", { startedAt: T0, endedAt: T0 + 5000 }]]));
+  traceLib.traceSync(live, { command: "sleep 5" }, { executionStarted: true, isPartial: false, state: { endedAt: T0 + 9000 } });
+  check("live Pi end beats history", live.endedAt === T0 + 9000, String(live.endedAt));
+}
+
+// ---------------------------------------------------------------------------
+// 89. Backfill upgrades stale Pi stamps: a reload-time artifact in Pi's own
+// state (visible replay window) must yield to exact/persisted entry stamps,
+// or hidden and visible disagree about the same execution. Fallback entry
+// values never clobber Pi state.
+// ---------------------------------------------------------------------------
+{
+  const T0 = 1700000000000, SPAN = 5000, R_STALE = T0 + 9999999;
+  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  syncMod.resetTraceState();
+  const piB = createMockPi();
+  (syncMod.default ?? syncMod)(piB);
+  const bashB = piB.tools.get("bash");
+  const iso = (ms) => new Date(ms).toISOString();
+  const mkCtx = (id, flags) => ({
+    args: { command: "sleep 5" }, toolCallId: id,
+    invalidate: () => {},
+    lastComponent: undefined, state: {}, cwd: "/repo",
+    executionStarted: true, argsComplete: true, isPartial: false,
+    expanded: false, showImages: true, isError: false,
+    ...flags,
+  });
+  await piB.handlers.get("session_start")[0]({}, {
+    hasUI: true, ui: { setHiddenThinkingLabel() {} },
+    sessionManager: { getEntries: () => [
+      { type: "message", timestamp: iso(T0 - 9000), message: { role: "assistant", timestamp: T0, content: [{ type: "toolCall", id: "dur-bfill", name: "bash", args: { command: "sleep 5" } }] } },
+      { type: "message", timestamp: iso(T0 + SPAN), message: { role: "toolResult", timestamp: T0 + SPAN, toolCallId: "dur-bfill", toolName: "bash", content: [{ type: "text", text: "slept 5" }] } },
+    ] },
+  });
+  const res = { content: [{ type: "text", text: "slept 5" }] };
+  bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill", { executionStarted: false }));
+  bashB.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-bfill", { executionStarted: false }));
+  // Pi component state poisoned at reload; flip visible and re-render.
+  const piState = { startedAt: T0, endedAt: R_STALE };
+  piB._hidden = false;
+  bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill", { executionStarted: false, state: piState }));
+  check("visible backfill upgrades stale Pi end", piState.endedAt === T0 + SPAN, JSON.stringify(piState));
+  bashB.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-bfill", { executionStarted: false, state: piState }));
+  const visText = bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill", { executionStarted: false, state: piState })).render(100).join("");
+  check("visible shows the true duration", visText.includes("Took 14.0s"), visText.slice(-400));
+  // ...but with no entry stamps at all, Pi state is left alone.
+  piB._hidden = true;
+  const keepState = {};
+  bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill-keep", { executionStarted: false, state: keepState }));
+  keepState.endedAt = T0 + 2;
+  bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill-keep", { executionStarted: false, state: keepState }));
+  const kept = syncMod.traceEntries.get("dur-bfill-keep");
+  check("unstamped backfill keeps Pi stamps", keepState.endedAt === T0 + 2 && kept.endedAt === undefined, JSON.stringify(keepState));
+}
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

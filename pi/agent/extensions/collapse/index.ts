@@ -79,6 +79,7 @@ import { scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus } from "./wra
 export { captureWalkerTui, reconcileStreamingLabel, reconcileThinkingLabels, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus };
 import {
   planToolRuns,
+  toolTimings,
 } from "./logic.js";
 import {
   BREATHE_MS,
@@ -97,6 +98,7 @@ import {
   armHistoryPhase,
   boundaryReasons,
   endHistoryPhase,
+  noteHistoryTimings,
   traceBoundary,
   traceEntries,
   traceOnMessageStart,
@@ -105,13 +107,14 @@ import {
   traceOwnerPoke,
   tracePokeOwner,
   traceSummary,
+  timingStatus,
 } from "./trace.js";
 
 /** Tests reset the registry through this; production never calls it. */
 export { resetTraceState, traceEntries } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 73;
+const COLLAPSE_REVISION = 74;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -209,7 +212,7 @@ export default function (pi: ExtensionAPI) {
       detachPass(pi);
       wrappingPass(pi);
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s); ${breatheStatus()}${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s); ${breatheStatus()}; ${timingStatus()}${uncollapsedReport(pi)}`,
       );
     },
   });
@@ -348,6 +351,9 @@ export default function (pi: ExtensionAPI) {
       // positions were unknown). Merge contiguous groups now: rows stay
       // where they are, but share one component, so one blank line total.
       applyPlannedRuns(planToolRuns(entries, isOwnTool));
+      // Recover pre-reload execution windows from persisted message
+      // timestamps, so expanding a history row shows its true duration.
+      noteHistoryTimings(toolTimings(entries));
       // Detach only after planning: applyPlannedRuns reassigns run ids,
       // and the replacement preview row is keyed by the final run.
       detachPass(pi, sm);

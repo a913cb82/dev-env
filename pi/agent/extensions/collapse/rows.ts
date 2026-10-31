@@ -465,12 +465,24 @@ function trackCollapse(state: CollapseSlots, context: any): void {
  *  a run observed in hidden mode never invoked the original renderers, so
  *  Pi's own state lacks the stamps a visible render expects — it would
  *  stamp both at switch time ("Took 0.0s"). Read-only when no entry
- *  exists (pure visible runs stay pure stock); fill gaps only, from either
- *  side, never overwrite exact stamps. */
+ *  exists (pure visible runs stay pure stock). Gaps always fill; defined
+ *  values upgrade only from trustworthy sources (pi/history): a reload-
+ *  time artifact in Pi state — visible replay window, or an early backfill
+ *  of a fallback — must yield to exact/persisted stamps, or hidden and
+ *  visible disagree about the same execution. Fallback and renderer-
+ *  stamped entry values never clobber Pi state. */
 function backfillRendererTiming(state: any, entry: TraceEntry | undefined): void {
   if (!state || typeof state !== "object" || !entry) return;
-  if (state.startedAt === undefined && entry.startedAt !== undefined) state.startedAt = entry.startedAt;
-  if (state.endedAt === undefined && entry.endedAt !== undefined) state.endedAt = entry.endedAt;
+  if (state.startedAt === undefined) {
+    if (entry.startedAt !== undefined) state.startedAt = entry.startedAt;
+  } else if (entry.startedAt !== undefined && (entry.startedAtSrc === "pi" || entry.startedAtSrc === "history")) {
+    state.startedAt = entry.startedAt;
+  }
+  if (state.endedAt === undefined) {
+    if (entry.endedAt !== undefined) state.endedAt = entry.endedAt;
+  } else if (entry.endedAt !== undefined && (entry.endedAtSrc === "pi" || entry.endedAtSrc === "history")) {
+    state.endedAt = entry.endedAt;
+  }
 }
 
 /** Wrap a built-in definition with collapsed renderers; expanded + errors

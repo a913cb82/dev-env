@@ -19,6 +19,61 @@ export function wheelFrameAt(nowMs: number = Date.now()): number {
   return Math.floor(nowMs / 80) % WHEEL_FRAMES.length;
 }
 
+/** Per-tool execution windows recovered from persisted history. Starts
+ *  prefer the assistant ENTRY timestamp: entries are appended at finalize,
+ *  right as execution begins (sleep-20 calls span exactly 20.0s from it),
+ *  while the message timestamp marks turn start — thinking lead included
+ *  (median ~4s, p90 ~15s). Ends use the toolResult message timestamp
+ *  (recorded at completion; entry time matches within 0.01s). Verified
+ *  against 1000+ persisted pairs: zero negative spans, zero missing
+ *  stamps; the message stamp remains the fallback, mirroring Pi's own
+ *  getMessageActivityTime. Same-turn sequential calls share the entry
+ *  stamp, so later calls read generous — still closer than stock history
+ *  (0.0s). */
+export function toolTimings(
+  entries: Array<{ type?: unknown; timestamp?: unknown; message?: unknown }> | undefined | null,
+): Map<string, { startedAt?: number; endedAt?: number }> {
+  const out = new Map<string, { startedAt?: number; endedAt?: number }>();
+  if (!Array.isArray(entries)) return out;
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  const entryTime = (e: { timestamp?: unknown }): number | undefined => {
+    const t = new Date(String(e.timestamp)).getTime();
+    return Number.isNaN(t) ? undefined : t;
+  };
+  const slot = (id: string) => {
+    let s = out.get(id);
+    if (!s) {
+      s = {};
+      out.set(id, s);
+    }
+    return s;
+  };
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const message = (entry as { message?: unknown }).message;
+    if (!message || typeof message !== "object") continue;
+    const msg = message as { role?: unknown; content?: unknown; timestamp?: unknown; toolCallId?: unknown };
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      const start = entryTime(entry) ?? num(msg.timestamp);
+      if (start === undefined) continue;
+      for (const block of msg.content) {
+        if (!block || typeof block !== "object") continue;
+        const call = block as { type?: unknown; id?: unknown };
+        if (call.type !== "toolCall" || typeof call.id !== "string" || !call.id) continue;
+        const s = slot(call.id);
+        if (s.startedAt === undefined) s.startedAt = start;
+      }
+    } else if (msg.role === "toolResult" && typeof msg.toolCallId === "string" && msg.toolCallId) {
+      const end = num(msg.timestamp) ?? entryTime(entry);
+      if (end === undefined) continue;
+      const s = slot(msg.toolCallId);
+      if (s.endedAt === undefined) s.endedAt = end;
+    }
+  }
+  return out;
+}
+
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
   return `${(n / 1000).toFixed(1)}k ch`;

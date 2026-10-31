@@ -518,6 +518,38 @@ function check(name, cond, extra) {
       safe({}, true) === false, "");
   }
 
+  // toolTimings: execution windows recovered from persisted history.
+  {
+    const T0 = 1700000000000;
+    const msg = (role, extra) => ({ type: "message", timestamp: new Date(T0 - 9000).toISOString(), message: { role, ...extra } });
+    const timings = logic.toolTimings([
+      msg("assistant", { timestamp: T0, content: [{ type: "toolCall", id: "c1", name: "bash", args: {} }] }),
+      msg("toolResult", { timestamp: T0 + 5000, toolCallId: "c1", toolName: "bash", content: [] }),
+    ]);
+    check("history pairs start and end", timings.get("c1")?.startedAt === T0 - 9000 && timings.get("c1")?.endedAt === T0 + 5000, JSON.stringify(timings.get("c1")));
+    const fallback = logic.toolTimings([
+      { type: "message", timestamp: new Date(T0).toISOString(), message: { role: "assistant", content: [{ type: "toolCall", id: "c2", name: "bash", args: {} }] } },
+    ]);
+    check("missing message stamp falls back to entry time", fallback.get("c2")?.startedAt === T0, JSON.stringify(fallback.get("c2")));
+    const iso = (ms) => new Date(ms).toISOString();
+    const both = logic.toolTimings([
+      { type: "message", timestamp: iso(T0), message: { role: "assistant", timestamp: T0 - 4000, content: [{ type: "toolCall", id: "c3", name: "bash", args: {} }] } },
+    ]);
+    check("entry time beats message time for starts", both.get("c3")?.startedAt === T0, JSON.stringify(both.get("c3")));
+    const multi = logic.toolTimings([
+      msg("assistant", { timestamp: T0, content: [{ type: "toolCall", id: "m1", name: "bash", args: {} }, { type: "toolCall", id: "m2", name: "bash", args: {} }] }),
+    ]);
+    check("same-turn calls share the entry stamp", multi.get("m1")?.startedAt === T0 - 9000 && multi.get("m2")?.startedAt === T0 - 9000, `${JSON.stringify(multi.get("m1"))} ${JSON.stringify(multi.get("m2"))}`);
+    const bad = logic.toolTimings([
+      { type: "message", timestamp: "not-a-time", message: { role: "assistant", timestamp: "not-a-time", content: [{ type: "toolCall", id: "b1", name: "bash", args: {} }] } },
+      msg("toolResult", { timestamp: T0 + 1000, toolCallId: "b2", toolName: "bash", content: [] }),
+      null,
+    ]);
+    check("unstamped start stays absent", bad.get("b1") === undefined, JSON.stringify(bad.get("b1")));
+    check("orphan end still recorded", bad.get("b2")?.endedAt === T0 + 1000, JSON.stringify(bad.get("b2")));
+    check("non-array yields empty", logic.toolTimings(undefined).size === 0, "");
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

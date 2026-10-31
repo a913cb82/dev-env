@@ -41,7 +41,14 @@ export interface TraceEntry extends CollapseSlots {
   // and completion renders. Seeds land on first observation, not on expand.
   startedAt?: number;
   endedAt?: number;
+  // Provenance ranks later upgrades: pi (exact live stamps) beats history
+  // (persisted windows) beats fallback (wall clock at observation). Absent
+  // means a renderer stamped it outside traceSync (expand-time ??=).
+  startedAtSrc?: TimingSrc;
+  endedAtSrc?: TimingSrc;
 }
+
+export type TimingSrc = "pi" | "history" | "fallback";
 
 /** Adjacent same-turn tool calls, rendered as one component so Pi emits a
  *  single leading blank line for the whole run instead of one per tool.
@@ -55,6 +62,36 @@ export interface TraceEntry extends CollapseSlots {
 export const traceEntries = new Map<string, TraceEntry>();
 export const traceRuns = new Map<number, string[]>();
 export const traceOwnerPoke = new Map<number, () => void>();
+/** Execution windows recovered from persisted history (see toolTimings in
+ *  logic): keyed by toolCallId, filled at session_start. Entries adopt
+ *  them below Pi's live stamps but above wall-clock fallbacks. */
+const historyTimings = new Map<string, { startedAt?: number; endedAt?: number }>();
+export function noteHistoryTimings(timings: Map<string, { startedAt?: number; endedAt?: number }>): void {
+  historyTimings.clear();
+  if (timings) for (const [id, t] of timings) historyTimings.set(id, t);
+}
+
+/** One-line timing diagnostics for /collapse: history windows recovered
+ *  vs stamps adopted per source. A wrong duration points at its link:
+ *  history=0 means session_start never filled the map; stamps stuck on
+ *  fallback/renderer while windows exist means adoption is losing. */
+export function timingStatus(): string {
+  let sPi = 0, sHist = 0, sFb = 0, sRen = 0, sUn = 0;
+  let ePi = 0, eHist = 0, eFb = 0, eRen = 0, eUn = 0;
+  for (const entry of traceEntries.values()) {
+    if (entry.startedAt === undefined) sUn++;
+    else if (entry.startedAtSrc === "pi") sPi++;
+    else if (entry.startedAtSrc === "history") sHist++;
+    else if (entry.startedAtSrc === "fallback") sFb++;
+    else sRen++;
+    if (entry.endedAt === undefined) eUn++;
+    else if (entry.endedAtSrc === "pi") ePi++;
+    else if (entry.endedAtSrc === "history") eHist++;
+    else if (entry.endedAtSrc === "fallback") eFb++;
+    else eRen++;
+  }
+  return `timing: history=${historyTimings.size} windows; start(pi=${sPi} history=${sHist} fallback=${sFb} renderer=${sRen} unset=${sUn}); end(pi=${ePi} history=${eHist} fallback=${eFb} renderer=${eRen} unset=${eUn})`;
+}
 let traceRunId = 0;
 
 /** True while the transcript is being rebuilt from history (startup and
@@ -118,6 +155,7 @@ export function resetTraceState(): void {
   traceEntries.clear();
   traceRuns.clear();
   traceOwnerPoke.clear();
+  historyTimings.clear();
   plannedRunById.clear();
   boundaryReasons.length = 0;
   traceRunId++;
@@ -299,21 +337,62 @@ export function traceSync(
   // of a finished call, whose true start is unknowable — leave it unset
   // (no duration line beats a wrong one). Timestamps never poke: collapsed
   // rows do not show them.
+  // Upgrade lattice (rank pi > history > fallback): rebuild renders land
+  // before session_start fills the history map, so fallback stamps must
+  // still upgrade when the true windows arrive — otherwise every history
+  // row reads its age at reload. Backfilled values (see
+  // backfillRendererTiming) compare equal to the entry and are skipped,
+  // so laundered fallbacks can never pose as exact Pi stamps. Fallback
+  // fills only the unset (never downgrades); Pi upgrades anything below
+  // it; history upgrades fallback and renderer-stamped (src unset) values.
   const piState = context?.state as { startedAt?: unknown; endedAt?: unknown } | undefined;
-  if (entry.startedAt === undefined) {
-    if (typeof piState?.startedAt === "number") entry.startedAt = piState.startedAt;
-    // No isPartial gate: stock stamps on the same guard, so a rebuilt
-    // component reads ~zero in both — parity keeps the stamp. Only a
-    // result-first observation leaves the start unset (no line beats a
-    // negative one; see backfillRendererTiming's suppression).
-    else if (flags.executionStarted && !entry.hasResult && result === undefined) entry.startedAt = Date.now();
+  const hist = historyTimings.get(entry.id);
+  if (entry.startedAt === undefined || entry.startedAtSrc !== "pi") {
+    if (typeof piState?.startedAt === "number" && piState.startedAt !== entry.startedAt) {
+      entry.startedAt = piState.startedAt;
+      entry.startedAtSrc = "pi";
+    } else if (entry.startedAt === undefined || entry.startedAtSrc === "fallback" || entry.startedAtSrc === undefined) {
+      if (typeof hist?.startedAt === "number" && hist.startedAt !== entry.startedAt) {
+        entry.startedAt = hist.startedAt;
+        entry.startedAtSrc = "history";
+      } else if (entry.startedAt === undefined && flags.executionStarted && !entry.hasResult && result === undefined) {
+        // No isPartial gate: stock stamps on the same guard, so a rebuilt
+        // component reads ~zero in both — parity keeps the stamp. Only a
+        // result-first observation leaves the start unset (no line beats a
+        // negative one; see backfillRendererTiming's suppression).
+        entry.startedAt = Date.now();
+        entry.startedAtSrc = "fallback";
+      }
+    }
   }
   // Mirror Pi's own guard (!isPartial || isError): streaming partials land
   // milliseconds after the start, and stamping them freezes every duration
   // near zero.
-  if (entry.endedAt === undefined) {
-    if (typeof piState?.endedAt === "number") entry.endedAt = piState.endedAt;
-    else if (result !== undefined && (!flags.isPartial || flags.isError)) entry.endedAt = Date.now();
+  // Pi's renderResult stamps endedAt with NO executionStarted gate (unlike
+  // renderCall), so a history replay rendered in visible mode — the reload
+  // window before the hidden setting applies — freezes every end at switch
+  // time. Only a component that actually executed carries exact Pi stamps;
+  // otherwise Pi values are replay artifacts ranked below history, and a
+  // poisoned pi source heals to history on the next hidden render.
+  const piLive = !!flags.executionStarted;
+  if (entry.endedAt === undefined || entry.endedAtSrc !== "pi" || !piLive) {
+    if (piLive && typeof piState?.endedAt === "number" && piState.endedAt !== entry.endedAt) {
+      entry.endedAt = piState.endedAt;
+      entry.endedAtSrc = "pi";
+    } else if (
+      entry.endedAt === undefined ||
+      entry.endedAtSrc === "fallback" ||
+      entry.endedAtSrc === undefined ||
+      !piLive
+    ) {
+      if (typeof hist?.endedAt === "number" && hist.endedAt !== entry.endedAt) {
+        entry.endedAt = hist.endedAt;
+        entry.endedAtSrc = "history";
+      } else if (entry.endedAt === undefined && result !== undefined && (!flags.isPartial || flags.isError)) {
+        entry.endedAt = Date.now();
+        entry.endedAtSrc = "fallback";
+      }
+    }
   }
   return changed;
 }
