@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { statSync } from "node:fs";
+import { newProgressSyncState, subtreeBusy, syncTerminalProgress, type ProgressSyncState } from "./progress.ts";
 import { descendantsOf, executionResultKey, getCachedRecords, hideUncollectedRow, isTerminalStatus, listFooterDismissed, registryDir, type UncollectedHideGate } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
@@ -13,8 +14,8 @@ export const POLL_MS = 2000;
 function statusIcon(record: AgentRecord): string {
 	switch (record.status) {
 		case "completed":
-		case "cancelled":
 			return "✓";
+		case "cancelled":
 		case "failed":
 			return "✗";
 		case "queued":
@@ -26,9 +27,10 @@ function statusIcon(record: AgentRecord): string {
 	}
 }
 
-function statusColor(record: AgentRecord): "success" | "error" | "warning" | "accent" {
+function statusColor(record: AgentRecord): "success" | "error" | "warning" | "accent" | "dim" {
 	if (record.status === "completed") return "success";
-	if (record.status === "failed" || record.status === "cancelled") return "error";
+	if (record.status === "failed") return "error";
+	if (record.status === "cancelled") return "dim";
 	if (record.status === "idle") return "warning";
 	return "accent";
 }
@@ -53,7 +55,23 @@ export class SubagentStatusWidget implements Component {
 		private readonly hide: {
 			hideAfterMinutes?: number;
 		} = {},
+		private readonly progressSources: {
+			showTerminalProgress(): boolean;
+			isMainDriving(): boolean;
+		} = {
+			showTerminalProgress: () => false,
+			isMainDriving: () => false,
+		},
 	) {
+		this.progress = newProgressSyncState();
+		// Pi is idle at session start; clear any assertion a pre-reload
+		// widget left on so a cancelled-while-reloading subtree cannot stick
+		// the tab spinner on with nothing to re-assert it.
+		try {
+			if (this.progressSources.showTerminalProgress()) this.tui.terminal?.setProgress(false);
+		} catch {
+			// Best effort.
+		}
 		this.refresh();
 		this.timer = setInterval(() => this.refresh(), POLL_MS);
 		this.timer.unref?.();
@@ -183,7 +201,24 @@ export class SubagentStatusWidget implements Component {
 		});
 	}
 
+	private readonly progress: ProgressSyncState;
+
+	/** Sync the tab spinner at once, without rebuilding rows or rendering:
+	 * OSC writes bypass the TUI, so record transitions (spawn, settle,
+	 * cancel) surface instantly instead of waiting for the tree tick. */
+	pokeProgress(): void {
+		syncTerminalProgress(this.progress, this.tui.terminal, {
+			showProgress: this.progressSources.showTerminalProgress(),
+			mainDriving: this.progressSources.isMainDriving(),
+			busy: subtreeBusy(this.agentDir, this.currentRunId),
+		});
+	}
+
 	private refresh(): void {
+		// Drive first, before the unchanged-lines early return: the setting
+		// or the main session can flip with identical rows, and the tab
+		// spinner must agree with the footer on every tick.
+		this.pokeProgress();
 		const lines = this.build();
 		const key = lines.join("\n");
 		if (key === this.lastKey) return;
@@ -202,5 +237,13 @@ export class SubagentStatusWidget implements Component {
 
 	dispose(): void {
 		clearInterval(this.timer);
+		if (this.progress.asserted) {
+			try {
+			this.tui.terminal?.setProgress(false);
+		} catch {
+			// Best effort.
+		}
+		this.progress.asserted = false;
+		}
 	}
 }

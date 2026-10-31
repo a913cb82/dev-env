@@ -122,6 +122,88 @@ function check(name, cond, extra) {
 	fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ rpcRequestTimeoutMs: 111, rpcStartupTimeoutMs: 222 }));
 	const rpcTimed = config.loadSettings({ agentDir, cwd: sandbox, projectTrusted: false, env: {} });
 	check("RPC timeouts load from configuration", rpcTimed.rpcRequestTimeoutMs === 111 && rpcTimed.rpcStartupTimeoutMs === 222, JSON.stringify({ request: rpcTimed.rpcRequestTimeoutMs, startup: rpcTimed.rpcStartupTimeoutMs }));
+	// Terminal progress end to end: the widget factory closes over the same
+	// main-driving flag the turn handlers set, so a busy subtree asserts the
+	// OSC 9;4 tab spinner only while the main session is idle — after
+	// agent_end, where Pi itself goes quiet.
+	const wireDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-wire-"));
+	const wireHandlers = new Map();
+	const wireTools = new Map();
+	let wireFactory;
+	const wireSettings = { terminal: { showTerminalProgress: true } };
+	const wireUi = { setWidget: (_key, factory) => { wireFactory = factory; }, notify: () => {} };
+	const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const prevRunId = process.env.PI_SUBAGENT_RUN_ID;
+	const prevRootId = process.env.PI_SUBAGENT_ROOT_ID;
+	try {
+		process.env.PI_CODING_AGENT_DIR = wireDir;
+		delete process.env.PI_SUBAGENT_RUN_ID;
+		delete process.env.PI_SUBAGENT_ROOT_ID;
+		subagentsExtension({
+			registerFlag: () => {},
+			on: (event, handler) => wireHandlers.set(event, handler),
+			registerMessageRenderer: () => {},
+			registerCommand: () => {},
+			registerTool: (tool) => wireTools.set(tool.name, tool),
+			getFlag: () => undefined,
+			getSettings: () => wireSettings,
+			sendMessage: () => {},
+			sendUserMessage: () => {},
+		});
+		check("turn_start handler tracked", typeof wireHandlers.get("turn_start") === "function", [...wireHandlers.keys()].join(","));
+		check("agent_end handler tracked", typeof wireHandlers.get("agent_end") === "function", [...wireHandlers.keys()].join(","));
+		await wireHandlers.get("session_start")({}, {
+			sessionManager: { getSessionId: () => "wire-parent", getEntries: () => [], getBranch: () => [] },
+			cwd: sandbox, isProjectTrusted: () => false, mode: "tui", hasUI: true, ui: wireUi,
+		});
+		check("tui session installs the status widget", typeof wireFactory === "function", typeof wireFactory);
+		const wnow = new Date().toISOString();
+		const wusage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 };
+		registry.saveRecord(wireDir, {
+			version: 1, runId: "wire-child", parentRunId: "wire-parent", rootRunId: "wire-parent",
+			sessionId: "s-wire", name: "wire-child", task: "t", cwd: "/tmp", model: "prov/m",
+			thinking: "xhigh", depth: 1, maxDepth: 3, status: "running", usage: { ...wusage },
+			startedAt: wnow, updatedAt: wnow,
+		});
+		const wireCalls = [];
+		const wireWidget = wireFactory({ requestRender() {}, terminal: { setProgress: (a) => wireCalls.push(a) } }, { fg: (_c, t) => t });
+		check("idle main with busy child asserts progress", JSON.stringify(wireCalls) === JSON.stringify([false, true]), JSON.stringify(wireCalls));
+		await wireHandlers.get("turn_start")({}, {});
+		wireWidget.invalidate();
+		check("busy child yields while the main turn drives", JSON.stringify(wireCalls) === JSON.stringify([false, true]), JSON.stringify(wireCalls));
+		await wireHandlers.get("agent_end")({}, {});
+		wireWidget.invalidate();
+		check("busy child re-asserts after agent_end", JSON.stringify(wireCalls) === JSON.stringify([false, true, true]), JSON.stringify(wireCalls));
+		wireSettings.terminal.showTerminalProgress = false;
+		wireWidget.invalidate();
+		check("disabling the setting clears the assertion", JSON.stringify(wireCalls) === JSON.stringify([false, true, true, false]), JSON.stringify(wireCalls));
+		// Event-driven off: cancelling a live child clears the spinner through
+		// trackChild→poke with no invalidate between the tool call and the
+		// terminal write — the 2s tick is only a backstop now.
+		wireSettings.terminal.showTerminalProgress = true;
+		const wnow2 = new Date().toISOString();
+		registry.saveRecord(wireDir, {
+			version: 1, runId: "wire-child2", parentRunId: "wire-parent", rootRunId: "wire-parent",
+			sessionId: "s-wire2", name: "wire-child2", task: "t", cwd: "/tmp", model: "prov/m",
+			thinking: "xhigh", depth: 1, maxDepth: 3, status: "running", usage: { ...wusage },
+			startedAt: wnow2, updatedAt: wnow2,
+		});
+		wireWidget.invalidate();
+		const beforeCancel = wireCalls.length;
+		check("second child re-asserts", wireCalls.length > 0 && wireCalls[wireCalls.length - 1] === true, JSON.stringify(wireCalls));
+		await wireTools.get("cancel_subagent").execute("x", { target: "wire-child2" }, undefined, undefined, {});
+		check("cancel keeps the spinner while a sibling works", wireCalls.length === beforeCancel && wireCalls[wireCalls.length - 1] === true, JSON.stringify(wireCalls));
+		await wireTools.get("cancel_subagent").execute("x", { target: "wire-child" }, undefined, undefined, {});
+		check("last cancel clears without invalidate", wireCalls.length === beforeCancel + 1 && wireCalls[wireCalls.length - 1] === false, JSON.stringify(wireCalls));
+		wireWidget.dispose();
+	} finally {
+		if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+		if (prevRunId === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+		else process.env.PI_SUBAGENT_RUN_ID = prevRunId;
+		if (prevRootId === undefined) delete process.env.PI_SUBAGENT_ROOT_ID;
+		else process.env.PI_SUBAGENT_ROOT_ID = prevRootId;
+	}
 	for (const [field, value] of [["rpcRequestTimeoutMs", 0], ["rpcStartupTimeoutMs", -5], ["rpcRequestTimeoutMs", "100"], ["rpcStartupTimeoutMs", 1.5]]) {
 		fs.writeFileSync(path.join(agentDir, "subagents.json"), JSON.stringify({ [field]: value }));
 		let rejected = false;

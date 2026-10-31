@@ -454,6 +454,18 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") deliveryPaused = true;
 		void flushMeshParked();
 	});
+	// Mirror Pi's own terminal-progress window (turn_start→agent_end): while
+	// it drives, the status widget yields the OSC 9;4 indicator silently, and
+	// once it goes quiet the widget asserts progress for a busy subtree.
+	// Closure state, like agentActive below: one flag per extension instance,
+	// shared with the widget factory so the wiring is observable, not global.
+	let mainDriving = false;
+	pi.on("turn_start", () => {
+		mainDriving = true;
+	});
+	pi.on("agent_end", () => {
+		mainDriving = false;
+	});
 	pi.on("agent_settled", () => {
 		agentActive = false;
 		if (activeSignal?.aborted) deliveryPaused = true;
@@ -628,6 +640,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				widget?.dispose();
 				widget = new SubagentStatusWidget(tui, theme, getAgentDir(), runtime!.runId, {
 				hideAfterMinutes: runtime!.settings.hideUncollectedAfterMinutes ?? 10,
+			}, {
+				showTerminalProgress: () => pi.getSettings().terminal?.showTerminalProgress === true,
+				isMainDriving: () => mainDriving,
 			});
 				return widget;
 			},
@@ -644,6 +659,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		if (shuttingDown) return;
 		refreshKeepAlive();
 		notifyWaiters(getAgentDir());
+		// Every parent-observed record transition (spawn, status flip, settle,
+		// cancel) syncs the tab spinner at once; the tree tick stays a
+		// backstop for changes no parent observes (mesh-down self-finalize).
+		widget?.pokeProgress();
 		if (isTerminalStatus(record.status)) scheduleDelivery();
 	};
 	// Self-reported completion: when our parent already settled, no live
