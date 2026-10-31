@@ -3209,6 +3209,111 @@ function textResult(chars) {
   check("timer keeps poking while rows live", live.invalidated() === 2, String(live.invalidated()));
 }
 
+// ---------------------------------------------------------------------------
+// 83. Expanded-row durations: the original renderers stamp startedAt/endedAt
+// on context.state (here: the trace entry) on first execution and completion
+// renders. An entry first observed late must not stamp both at expand time
+// ("Took 0.0s") — and must never show a negative duration.
+// ---------------------------------------------------------------------------
+{
+  const traceLib = await jiti.import(path.join(HERE, "trace.js"));
+  // Unit: stamps land on first observed execution and on result.
+  const started = traceLib.traceUpsert("bash", "dur-start", { name: "bash" });
+  traceLib.traceSync(started, { command: "sleep 5" }, { executionStarted: true, isPartial: true });
+  check("execution start stamps startedAt", started.startedAt > 0, String(started.startedAt));
+  traceLib.traceSync(started, { command: "sleep 5" }, { executionStarted: true, isPartial: false }, undefined, { content: [{ type: "text", text: "slept 5" }] });
+  check("result stamps endedAt", started.endedAt >= started.startedAt, `${started.endedAt} >= ${started.startedAt}`);
+  // A streaming partial must not stamp the end (it lands milliseconds after
+  // the start — that early stamp is exactly the "Took 0.0s" bug).
+  const streaming = traceLib.traceUpsert("bash", "dur-partial", { name: "bash" });
+  traceLib.traceSync(streaming, { command: "sleep 5" }, { executionStarted: true, isPartial: true });
+  traceLib.traceSync(streaming, { command: "sleep 5" }, { executionStarted: true, isPartial: true }, undefined, { content: [{ type: "text", text: "partial" }] });
+  check("partial result does not stamp endedAt", streaming.startedAt > 0 && streaming.endedAt === undefined, `${streaming.startedAt} ${streaming.endedAt}`);
+  // Unit: a call first observed already finished keeps startedAt unset (its
+  // true start is unknowable — no duration line beats a wrong one).
+  const late = traceLib.traceUpsert("bash", "dur-late", { name: "bash" });
+  traceLib.traceSync(late, { command: "sleep 5" }, { executionStarted: true, isPartial: false }, undefined, { content: [{ type: "text", text: "slept 5" }] });
+  check("late-observed completion leaves startedAt unset", late.startedAt === undefined && late.endedAt > 0, `${late.startedAt} ${late.endedAt}`);
+  // Integration: a live-observed 14s execution shows its true duration when
+  // expanded (wall-clock stubbed so the span is exact).
+  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  syncMod.resetTraceState();
+  const piD = createMockPi();
+  (syncMod.default ?? syncMod)(piD);
+  const bashD = piD.tools.get("bash");
+  const liveEntries = syncMod.traceEntries;
+  const realNow = Date.now;
+  let mockNow = 1700000000000;
+  Date.now = () => mockNow;
+  try {
+    const mkCtx = (id, flags) => ({
+      args: { command: "sleep 14" }, toolCallId: id,
+      invalidate: () => {},
+      lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: true,
+      expanded: false, showImages: true, isError: false,
+      ...flags,
+    });
+    bashD.renderCall({ command: "sleep 14" }, theme, mkCtx("dur-live", {}));
+    mockNow += 14000;
+    const res = { content: [{ type: "text", text: "slept 14" }] };
+    bashD.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-live", { isPartial: false }));
+    liveEntries.get("dur-live").rowOpen = true;
+    const expanded = bashD.renderCall({ command: "sleep 14" }, theme, mkCtx("dur-live", { isPartial: false })).render(120).join("");
+    check("expanded row shows the true duration", expanded.includes("Took 14.0s"), expanded.slice(-160));
+    // Integration: a late-observed completion shows no duration line rather
+    // than a stamped-at-expand (zero or negative) one. Fresh registry so
+    // this entry owns its run (otherwise the wrapper renders empty).
+    syncMod.resetTraceState();
+    bashD.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-done", { isPartial: false }));
+    liveEntries.get("dur-done").rowOpen = true;
+    const lateOut = bashD.renderCall({ command: "sleep 14" }, theme, mkCtx("dur-done", { isPartial: false })).render(120).join("");
+    check("late-observed row shows no duration", !lateOut.includes("Took"), lateOut.slice(-160));
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 84. Cross-mode timing: a run observed in hidden mode never invoked the
+// original renderers, so Pi's own state lacks the stamps a visible render
+// expects (it would stamp both at switch time). The entry bridges both
+// directions — and never overwrites exact stamps with approximate ones.
+// ---------------------------------------------------------------------------
+{
+  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  syncMod.resetTraceState();
+  const pi6 = createMockPi();
+  (syncMod.default ?? syncMod)(pi6);
+  const bash6 = pi6.tools.get("bash");
+  const mkCtx = (id, flags) => ({
+    args: { command: "sleep 5" }, toolCallId: id,
+    invalidate: () => {},
+    lastComponent: undefined, state: {}, cwd: "/repo",
+    executionStarted: true, argsComplete: true, isPartial: true,
+    expanded: false, showImages: true, isError: false,
+    ...flags,
+  });
+  const doneRes = { content: [{ type: "text", text: "slept 5" }] };
+  // A hidden-observed run seeds the entry; a later render with fresh Pi
+  // state (as after a mode switch) picks the seeds up.
+  bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-fill", {}));
+  bash6.renderResult(doneRes, { expanded: false, isPartial: false }, theme, mkCtx("dur-fill", { isPartial: false }));
+  const freshState = {};
+  bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-fill", { isPartial: false, state: freshState }));
+  check("backfill fills Pi state gaps", typeof freshState.startedAt === "number" && freshState.endedAt >= freshState.startedAt, JSON.stringify(freshState));
+  // ...but never overwrites exact stamps Pi already holds.
+  const T0 = 1699999990000;
+  const exactState = { startedAt: T0, endedAt: T0 + 14000 };
+  bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-noover", { state: exactState }));
+  check("backfill never overwrites exact stamps", exactState.startedAt === T0 && exactState.endedAt === T0 + 14000, JSON.stringify(exactState));
+  // Reverse direction: Pi's exact stamps (e.g. from a visible run) seed an
+  // entry that has none, so a later hidden expand shows the true duration.
+  bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-adopt", { state: { startedAt: T0, endedAt: T0 + 14000 } }));
+  const adopted = syncMod.traceEntries.get("dur-adopt");
+  check("entry adopts Pi state stamps", adopted.startedAt === T0 && adopted.endedAt === T0 + 14000, `${adopted.startedAt} ${adopted.endedAt}`);
+}
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

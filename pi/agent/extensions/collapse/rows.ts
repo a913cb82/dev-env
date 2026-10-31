@@ -303,7 +303,10 @@ function buildOpenedRow(
     lastComponent: entry.collapseCall,
     isPartial: entry.isPartial,
     isError: entry.isError,
-    executionStarted: entry.executionStarted,
+    // Without an observed start the original renderCall would stamp
+    // startedAt at expand time — after endedAt — yielding a negative
+    // duration. Suppress it: no start means no duration line.
+    executionStarted: entry.executionStarted && entry.startedAt !== undefined,
     argsComplete: entry.argsComplete,
     expanded,
     invalidate: () => tracePokeOwner(entry.runId),
@@ -456,6 +459,18 @@ function trackCollapse(state: CollapseSlots, context: any): void {
   if (typeof context?.invalidate === "function") state.collapseInvalidate = context.invalidate;
 }
 
+/** Backfill Pi's renderer timing from the entry (see the seeds in traceSync):
+ *  a run observed in hidden mode never invoked the original renderers, so
+ *  Pi's own state lacks the stamps a visible render expects — it would
+ *  stamp both at switch time ("Took 0.0s"). Read-only when no entry
+ *  exists (pure visible runs stay pure stock); fill gaps only, from either
+ *  side, never overwrite exact stamps. */
+function backfillRendererTiming(state: any, entry: TraceEntry | undefined): void {
+  if (!state || typeof state !== "object" || !entry) return;
+  if (state.startedAt === undefined && entry.startedAt !== undefined) state.startedAt = entry.startedAt;
+  if (state.endedAt === undefined && entry.endedAt !== undefined) state.endedAt = entry.endedAt;
+}
+
 /** Wrap a built-in definition with collapsed renderers; expanded + errors
  *  keep stock content, re-boxed in Pi's chrome for default-shell tools. */
 export function collapseTool(
@@ -477,6 +492,7 @@ export function collapseTool(
         // Visible thinking: stock sections per tool (expanded and collapsed
         // alike — compact rows only exist in hidden mode).
         const state = (context?.state ?? {}) as CollapseSlots;
+        backfillRendererTiming(state, typeof context?.toolCallId === "string" ? traceEntries.get(context.toolCallId) : undefined);
         const inner =
           original.renderCall(args, theme, { ...context, lastComponent: state.collapseCall }) ??
           new Text("", 0, 0);
@@ -496,6 +512,7 @@ export function collapseTool(
         return new CollapsedLine(makeLeft(theme, args, !!context?.isError, rowBudget(pi, right)), right, liveOutputPad(pi), theme, live);
       }
       const changed = traceSync(entry, args, context);
+      backfillRendererTiming(context?.state, entry);
       if (traceOwnerId(entry.runId) !== entry.id) {
         if (changed) tracePokeOwner(entry.runId);
         return new Container();
@@ -510,6 +527,7 @@ export function collapseTool(
         // Compact rows only exist in hidden mode, so there is no collapsed
         // branch here.
         const state = (context?.state ?? {}) as CollapseSlots;
+        backfillRendererTiming(state, typeof context?.toolCallId === "string" ? traceEntries.get(context.toolCallId) : undefined);
         const inner =
           original.renderResult(result, options, theme, { ...context, lastComponent: state.collapseResult }) ??
           new Text("", 0, 0);
@@ -529,6 +547,7 @@ export function collapseTool(
       const state = (context?.state ?? {}) as CollapseSlots;
       if (state.count !== count) state.count = count;
       const changed = entry ? traceSync(entry, context?.args, context, count, result) : false;
+      if (entry) backfillRendererTiming(context?.state, entry);
       if (changed) {
         context?.invalidate?.();
         if (entry && traceOwnerId(entry.runId) !== entry.id) tracePokeOwner(entry.runId);

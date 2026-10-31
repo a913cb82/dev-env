@@ -108,7 +108,7 @@ import {
 } from "./trace.js";
 
 /** Tests reset the registry through this; production never calls it. */
-export { resetTraceState } from "./trace.js";
+export { resetTraceState, traceEntries } from "./trace.js";
 export { collapseDefinition };
 
 const COLLAPSE_REVISION = 73;

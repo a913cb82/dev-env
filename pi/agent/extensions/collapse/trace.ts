@@ -36,6 +36,11 @@ export interface TraceEntry extends CollapseSlots {
   argsComplete: boolean;
   hasResult: boolean;
   result?: any;
+  // Timing seeds for expanded rows (see buildOpenedRow): the original
+  // renderers stamp startedAt/endedAt on context.state on first execution
+  // and completion renders. Seeds land on first observation, not on expand.
+  startedAt?: number;
+  endedAt?: number;
 }
 
 /** Adjacent same-turn tool calls, rendered as one component so Pi emits a
@@ -284,6 +289,31 @@ export function traceSync(
     changed = true;
   } else if (result !== undefined) {
     entry.result = result;
+  }
+  // Timing seeds for expanded rows (see buildOpenedRow and
+  // backfillRendererTiming): prefer Pi's own renderer stamps when present
+  // (exact — e.g. a run observed in visible mode); otherwise stamp first
+  // observed execution / final-or-error result. An entry first observed
+  // at/after completion would otherwise stamp both at expand time and show
+  // "Took 0.0s". A result alongside a fresh start means late observation
+  // of a finished call, whose true start is unknowable — leave it unset
+  // (no duration line beats a wrong one). Timestamps never poke: collapsed
+  // rows do not show them.
+  const piState = context?.state as { startedAt?: unknown; endedAt?: unknown } | undefined;
+  if (entry.startedAt === undefined) {
+    if (typeof piState?.startedAt === "number") entry.startedAt = piState.startedAt;
+    // No isPartial gate: stock stamps on the same guard, so a rebuilt
+    // component reads ~zero in both — parity keeps the stamp. Only a
+    // result-first observation leaves the start unset (no line beats a
+    // negative one; see backfillRendererTiming's suppression).
+    else if (flags.executionStarted && !entry.hasResult && result === undefined) entry.startedAt = Date.now();
+  }
+  // Mirror Pi's own guard (!isPartial || isError): streaming partials land
+  // milliseconds after the start, and stamping them freezes every duration
+  // near zero.
+  if (entry.endedAt === undefined) {
+    if (typeof piState?.endedAt === "number") entry.endedAt = piState.endedAt;
+    else if (result !== undefined && (!flags.isPartial || flags.isError)) entry.endedAt = Date.now();
   }
   return changed;
 }
