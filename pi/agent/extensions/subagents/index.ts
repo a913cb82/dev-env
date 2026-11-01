@@ -1089,7 +1089,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		name: "check_subagents",
 		label: "Check Subagents",
 		description:
-			"Check your subagents. Omit targets to check all of them. check_subagents delivers each finished result once. Delivered results never repeat. Mode all waits for every target. Mode any returns at the first finished target. The footer lists uncollected results. They hide after 10 minutes and 5 of your turns.",
+			"Check your subagents. Omit targets to check all of them. check_subagents delivers each finished result once. Delivered results never repeat. Mode all waits for every target. Mode any returns at the first newly finished (unclaimed) result; already-delivered rows never retrigger the wait. The footer lists uncollected results. They hide after 10 minutes and 5 of your turns.",
 		promptSnippet: "Check subagent results",
 		parameters: CheckSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -1128,11 +1128,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			};
 			if (params.wait) {
 				const timeoutMs = Math.min(Math.max(params.timeoutMs ?? 30000, 0), 300000);
+				// Claims already consumed (session memory plus persisted delivery
+				// flags) never retrigger an "any" wait: only a newly finished
+				// result resolves it. Keyed per execution, so a re-run under a
+				// new key still triggers.
+				const claimedKeys = new Set<string>();
+				for (const key of deliveredResults) claimedKeys.add(key);
+				for (const key of seenDescendantResults) claimedKeys.add(key);
+				for (const record of getCachedRecords(agentDir)) {
+					if (record.resultsDelivered) claimedKeys.add(resultKey(record));
+				}
 				await waitUntilSubagentsIdle(agentDir, runtime.runId, {
 					timeoutMs,
 					signal,
 					targets: targetIds ? [...targetIds] : undefined,
 					mode: params.mode === "any" ? "any" : "all",
+					excludeKeys: claimedKeys,
 				});
 			}
 			// Refresh before claiming results so auto-delivery that happened while

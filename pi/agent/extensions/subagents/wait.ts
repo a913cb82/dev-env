@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { descendantsOf, getCachedRecords, isTerminalStatus } from "./registry.ts";
+import { descendantsOf, executionResultKey, getCachedRecords, isTerminalStatus } from "./registry.ts";
 import type { AgentRecord } from "./types.ts";
 
 /** Default registry re-read interval for cross-process change detection.
@@ -19,6 +19,13 @@ export interface WaitUntilIdleOptions {
 	targets?: readonly string[];
 	/** Resolve when any (or all) of the selected subagents are terminal. Default "all". */
 	mode?: "any" | "all";
+	/** Result keys already consumed when the wait began. Mode "any" ignores
+	 * terminal rows under these keys, so repeat checks block for newly
+	 * finished runs instead of returning the same stale row instantly.
+	 * A new execution resurfaces under a new key and still triggers. */
+	excludeKeys?: ReadonlySet<string>;
+	/** Key function scoping a claim to one execution (default executionResultKey). */
+	resultKey?: (record: AgentRecord) => string;
 }
 
 interface Waiter {
@@ -48,15 +55,20 @@ function snapshotWatched(agentDir: string, parentRunId: string, targetIds?: Set<
 	return rows.length > 0 ? rows : descendantsOf(all, parentRunId);
 }
 
-/** Build the predicate over a (optionally targeted) selection of descendants. */
+/** Build the predicate over a (optionally targeted) selection of descendants.
+ * Mode "all" resolves once every watched run is terminal (claimed or not —
+ * there is nothing left to wait for either way). Mode "any" resolves only on
+ * an unclaimed finish, so already-delivered rows never retrigger the wait. */
 function selectionPredicate(options: WaitUntilIdleOptions): (rows: readonly AgentRecord[]) => boolean {
 	const targetIds = options.targets ? new Set(options.targets) : undefined;
 	const mode = options.mode ?? "all";
+	const keyOf = options.resultKey ?? executionResultKey;
+	const excluded = options.excludeKeys;
 	return (rows) => {
 		const watched = targetIds ? rows.filter((record) => targetIds.has(record.runId)) : rows;
 		if (watched.length === 0) return true; // nothing to wait for
 		return mode === "any"
-			? watched.some((record) => isTerminalStatus(record.status))
+			? watched.some((record) => isTerminalStatus(record.status) && !(excluded && excluded.has(keyOf(record))))
 			: watched.every((record) => isTerminalStatus(record.status));
 	};
 }
@@ -78,7 +90,7 @@ export function waitDebugState(): { waiters: number } {
  * Block until the selected runs are terminal, `timeoutMs` elapses, or `signal`
  * aborts. Without `targets` every descendant of `parentRunId` is watched and
  * `mode: "all"` waits for all of them; `mode: "any"` resolves on the first
- * finish. Completion is noticed by in-process notifications (spawn/settle/cancel),
+ * unclaimed finish (see excludeKeys). Completion is noticed by in-process notifications (spawn/settle/cancel),
  * mesh settle notices from other processes, or by re-reading the registry
  * every `pollMs`; the timeout is a ceiling.
  */

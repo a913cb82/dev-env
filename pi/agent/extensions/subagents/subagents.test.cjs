@@ -195,6 +195,32 @@ function check(name, cond, extra) {
 		check("cancel keeps the spinner while a sibling works", wireCalls.length === beforeCancel && wireCalls[wireCalls.length - 1] === true, JSON.stringify(wireCalls));
 		await wireTools.get("cancel_subagent").execute("x", { target: "wire-child" }, undefined, undefined, {});
 		check("last cancel clears without invalidate", wireCalls.length === beforeCancel + 1 && wireCalls[wireCalls.length - 1] === false, JSON.stringify(wireCalls));
+		// check(any) must not return stale finishes: with both children
+		// delivered and a third running, the wait pends past macrotask
+		// flushes and resolves only when the new child settles (here via
+		// cancel, whose trackChild wakes the waiter deterministically).
+		const delivered = await wireTools.get("check_subagents").execute("x", {}, undefined, undefined, {});
+		const deliveredText = JSON.stringify(delivered.content);
+		check("setup delivers both children", deliveredText.includes("wire-child") && deliveredText.includes("wire-child2"), deliveredText.slice(-300));
+		const wnow3 = new Date().toISOString();
+		registry.saveRecord(wireDir, {
+			version: 1, runId: "wire-child3", parentRunId: "wire-parent", rootRunId: "wire-parent",
+			sessionId: "s-wire3", name: "wire-child3", task: "t", cwd: "/tmp", model: "prov/m",
+			thinking: "xhigh", depth: 1, maxDepth: 3, status: "running", usage: { ...wusage },
+			startedAt: wnow3, updatedAt: wnow3,
+		});
+		let anyDone = false;
+		const anyPending = wireTools.get("check_subagents").execute("x", { wait: true, mode: "any", timeoutMs: 5000 }, undefined, undefined, {}).then((result) => {
+			anyDone = true;
+			return result;
+		});
+		await tick();
+		await tick();
+		await tick();
+		check("any waits past claimed finishes", anyDone === false);
+		await wireTools.get("cancel_subagent").execute("x", { target: "wire-child3" }, undefined, undefined, {});
+		const anyResult = await anyPending;
+		check("any returns the newly finished child", JSON.stringify(anyResult.content).includes("wire-child3"), JSON.stringify(anyResult.content).slice(-300));
 		wireWidget.dispose();
 	} finally {
 		if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1045,6 +1071,32 @@ function check(name, cond, extra) {
 		wait.notifyWaiters(dir);
 		const rows = await pending;
 		check("any wait resolves when one selected target finishes", resolved && rows.some((r) => r.runId === "b"));
+	}
+
+	{
+		const dir = waitCase("any-stale");
+		waitRecord(dir, "parent", "old", "completed");
+		waitRecord(dir, "parent", "live", "thinking");
+		const oldRow = registry.readRecords(dir).find((r) => r.runId === "old");
+		const stale = new Set([registry.executionResultKey(oldRow)]);
+		let resolved = false;
+		const pending = wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000, pollMs: 10000, mode: "any", excludeKeys: stale }).then((rows) => {
+			resolved = true;
+			return rows;
+		});
+		await waitSleep(30);
+		check("any wait ignores already-claimed finishes", resolved === false);
+		waitRecord(dir, "parent", "live", "completed");
+		wait.notifyWaiters(dir);
+		const rows = await pending;
+		check("any wait resolves on a newly finished run", resolved && rows.some((r) => r.runId === "live"));
+	}
+
+	{
+		const dir = waitCase("any-fresh");
+		waitRecord(dir, "parent", "new", "completed");
+		const rows = await wait.waitUntilSubagentsIdle(dir, "parent", { timeoutMs: 5000, mode: "any" });
+		check("any wait still returns instantly for unclaimed finishes", rows.some((r) => r.runId === "new"));
 	}
 
 	{
