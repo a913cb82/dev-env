@@ -114,7 +114,7 @@ import {
 export { resetTraceState, traceEntries } from "./trace.js";
 export { collapseDefinition };
 
-const COLLAPSE_REVISION = 74;
+const COLLAPSE_REVISION = 75;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -175,11 +175,69 @@ function breatheStatus(): string {
 let collapseSawUI = false;
 let collapseLastHidden: boolean | undefined;
 
+/** History groups waiting for the post-start render (startup resume only).
+ *
+ * Initial `pi`/`pi -r` emits session_start BEFORE renderInitialMessages,
+ * while rebind flows render BEFORE the start event. Sealing the history
+ * phase at start time is correct only when history already rendered: with
+ * an empty registry and pending history tools, every history tool would
+ * otherwise join one run (rows teleport to the first slot, later slots
+ * render empty, and thinking rows glue to the invisible tools). Keep the
+ * phase armed and merge once the render lands (next poll tick). */
+let pendingHistoryPlan: string[][] | undefined;
+let pendingHistoryIds: Set<string> | undefined;
+
+/** Apply a deferred history plan once its tools have rendered. Returns
+ * true when the pending plan settled (applied or discarded). */
+function settlePendingHistoryPlan(): boolean {
+  try {
+    if (!pendingHistoryPlan || !pendingHistoryIds) return false;
+    if (traceEntries.size === 0) return false;
+    let matched = false;
+    for (const id of traceEntries.keys()) {
+      if (pendingHistoryIds.has(id)) {
+        matched = true;
+        break;
+      }
+    }
+    if (matched) {
+      // History landed: merge contiguous groups so one blank line covers
+      // the block, then seal so live turns merge again. Poke to repaint:
+      // the merge reassigns ownership, but rendered rows are stale until
+      // Pi re-invokes their renderers — without this the non-owners keep
+      // showing their single row WITH its leading blank (extra spaces
+      // between tool calls) instead of going empty.
+      applyPlannedRuns(pendingHistoryPlan);
+      endHistoryPhase("session-start-restore-done");
+      try {
+        pokeAllCollapse();
+      } catch {
+        // Poke is cosmetic-only; the next repaint converges.
+      }
+    } else {
+      // Registry filled with ids the plan never named (e.g. a reload whose
+      // chat was built by the previous activation): the stale plan must not
+      // wipe live runs. Discard it and seal the armed phase.
+      endHistoryPhase("session-start-restore-done");
+    }
+    pendingHistoryPlan = undefined;
+    pendingHistoryIds = undefined;
+    return true;
+  } catch {
+    pendingHistoryPlan = undefined;
+    pendingHistoryIds = undefined;
+    return false;
+  }
+}
+
 /** One poll tick: if the thinking-visibility setting flipped since the last
  *  tick, invalidate every known tool so it re-renders in the other mode. */
 function collapseTick(pi: ExtensionAPI): void {
   try {
     if (!collapseSawUI) return;
+    // Startup resume renders history after session_start: merge the
+    // deferred plan first so the wrap pass below sees final ownership.
+    settlePendingHistoryPlan();
     detachPass(pi);
     wrappingPass(pi);
     // Also on the poll: a resize changes the label width, and reconcile is
@@ -326,9 +384,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     try {
       clearCollapsePokes();
-      // History is rendered before this event; keep those entries so their
-      // rows stay put, but seal the run so live tools start a fresh trace.
-      endHistoryPhase("session-start");
       if (ctx.hasUI) collapseSawUI = true;
       try {
         ctx.ui?.setWidget?.(WALKER_KEY, (tui: unknown) => {
@@ -347,10 +402,24 @@ export default function (pi: ExtensionAPI) {
       noteSessionManager(sm);
       const entries =
         typeof sm?.getBranch === "function" ? sm.getBranch() : (sm?.getEntries?.() ?? []);
-      // The rebuild rendered one run per history tool (anti-teleport while
-      // positions were unknown). Merge contiguous groups now: rows stay
-      // where they are, but share one component, so one blank line total.
-      applyPlannedRuns(planToolRuns(entries, isOwnTool));
+      // Rebind flows rendered one run per history tool BEFORE this event
+      // (anti-teleport while positions were unknown): merge contiguous
+      // groups now so one blank line covers the block. Startup resume
+      // (`pi`/`pi -r`) renders AFTER this event with an empty registry, so
+      // sealing now would merge all of history into one run; defer instead.
+      const groups = planToolRuns(entries, isOwnTool);
+      if (traceEntries.size === 0 && groups.some((group) => group.length > 0)) {
+        armHistoryPhase("session-start-restore");
+        pendingHistoryPlan = groups;
+        pendingHistoryIds = new Set(groups.flat());
+      } else {
+        // History is rendered before this event; keep those entries so their
+        // rows stay put, but seal the run so live tools start a fresh trace.
+        endHistoryPhase("session-start");
+        applyPlannedRuns(groups);
+        pendingHistoryPlan = undefined;
+        pendingHistoryIds = undefined;
+      }
       // Recover pre-reload execution windows from persisted message
       // timestamps, so expanding a history row shows its true duration.
       noteHistoryTimings(toolTimings(entries));

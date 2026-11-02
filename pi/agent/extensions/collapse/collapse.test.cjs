@@ -1231,6 +1231,104 @@ function textResult(chars) {
     check("prose-split history stays separate", alone.length === 1 && alone[0].includes("ls"), JSON.stringify(alone));
   }
 
+  // 25b. startup resume renders history AFTER session_start (`pi -r`):
+  // sealing at start time would merge all of history into one run (later
+  // slots render empty, thinking rows glue to invisible tools). History
+  // keeps one run per tool through the render; the poll settles the plan.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piH = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piH);
+    const entries = [
+      { type: "message", message: { role: "assistant", content: [
+        { type: "thinking", thinking: "first" },
+        { type: "text", text: "first prose" },
+        { type: "toolCall", id: "r1", name: "bash", arguments: {} },
+      ] } },
+      { type: "message", message: { role: "assistant", content: [
+        { type: "thinking", thinking: "second" },
+        { type: "text", text: "second prose" },
+        { type: "toolCall", id: "r2", name: "bash", arguments: {} },
+      ] } },
+    ];
+    // pi -r order: start first (empty registry), render after.
+    await handlers.get("session_start")[0](
+      {}, { hasUI: true, ui: { setWidget: () => {} }, sessionManager: { getBranch: () => entries, getEntries: () => entries } });
+    const bash = tools.get("bash");
+    const ctxFor = (id, cmd) => ({
+      args: { command: cmd }, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    });
+    bash.renderCall({ command: "echo one" }, theme, ctxFor("r1", "echo one"));
+    bash.renderCall({ command: "echo two" }, theme, ctxFor("r2", "echo two"));
+    const s1 = bash.renderCall({ command: "echo one" }, theme, ctxFor("r1", "echo one")).render(80);
+    const s2 = bash.renderCall({ command: "echo two" }, theme, ctxFor("r2", "echo two")).render(80);
+    check("startup resume keeps history separate", s1.length === 1 && s2.length === 1, `${s1.length}/${s2.length}`);
+    // The poll settles the deferred plan; prose-split groups stay separate.
+    await globalThis.__collapsePollTick.tick();
+    const p1 = bash.renderCall({ command: "echo one" }, theme, ctxFor("r1", "echo one")).render(80);
+    const p2 = bash.renderCall({ command: "echo two" }, theme, ctxFor("r2", "echo two")).render(80);
+    check("settled history stays separate", p1.length === 1 && p2.length === 1, `${p1.length}/${p2.length}`);
+    // Live tool-only turns merge again after the restore settles.
+    await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
+    bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1"));
+    bash.renderCall({ command: "echo live2" }, theme, ctxFor("n2", "echo live2"));
+    const live = bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1")).render(80);
+    check("live turns merge after restore", live.length === 2, JSON.stringify(live));
+  }
+
+  // 25c. settling the deferred merge repaints: contiguous history tools
+  // share one run after the poll, so the owner must repaint (2 rows) and
+  // the non-owner must go empty — otherwise the stale single row keeps its
+  // leading blank and every tool call gains a spacer line.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piH = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piH);
+    const entries = [
+      { type: "message", message: { role: "assistant", content: [
+        { type: "thinking", thinking: "plan" },
+        { type: "toolCall", id: "m1", name: "bash", arguments: {} },
+        { type: "toolCall", id: "m2", name: "bash", arguments: {} },
+      ] } },
+    ];
+    await handlers.get("session_start")[0](
+      {}, { hasUI: true, ui: { setWidget: () => {} }, sessionManager: { getBranch: () => entries, getEntries: () => entries } });
+    const bash = tools.get("bash");
+    let pokes = 0;
+    const ctxFor = (id, cmd) => ({
+      args: { command: cmd }, toolCallId: id, invalidate: () => { pokes++; }, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false,
+    });
+    bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one"));
+    bash.renderCall({ command: "echo two" }, theme, ctxFor("m2", "echo two"));
+    pokes = 0;
+    await globalThis.__collapsePollTick.tick();
+    check("settle repaints merged history", pokes > 0, String(pokes));
+    const owner = bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")).render(80);
+    const nonOwner = bash.renderCall({ command: "echo two" }, theme, ctxFor("m2", "echo two")).render(80);
+    check("merged owner shows both rows", owner.length === 2, JSON.stringify(owner));
+    check("merged non-owner renders empty", nonOwner.length === 0, JSON.stringify(nonOwner));
+  }
+
   // 26. tree-walk per-row labels: each thinking row shows its own message.
   {
     const mod = await jiti.import(path.join(HERE, "index.ts"));
