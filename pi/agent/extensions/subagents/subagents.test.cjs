@@ -2707,12 +2707,15 @@ function check(name, cond, extra) {
 	check("per-spawn invalid thinking throws", thinkingThrew);
 
 	let depthThrew = false;
+	let depthMsg = "";
 	try {
 		await spawn.startSubagent({ task: "x", name: "deep-limit" }, { ...baseCtx(), currentDepth: 2 });
 	} catch (error) {
 		depthThrew = String(error).includes("depth limit");
+		depthMsg = String(error);
 	}
 	check("depth limit throws at spawn", depthThrew);
+	check("depth limit error names the way out", /budget|--subagent-depth/.test(depthMsg), depthMsg);
 	// Only the root controls the tree budget: per-spawn maxDepth override,
 	// rejected for descendants, still enforced at spawn. Isolated dir: the
 	// budgeted child must not pollute the shared spawn-agent counts.
@@ -2730,12 +2733,15 @@ function check(name, cond, extra) {
 		}
 		check("descendant maxDepth override throws", nonRootThrew);
 		let zeroThrew = false;
+		let zeroMsg = "";
 		try {
 			await spawn.startSubagent({ task: "x", name: "nogrand", maxDepth: 0 }, budgetCtx);
 		} catch (error) {
 			zeroThrew = String(error).includes("depth limit");
+			zeroMsg = String(error);
 		}
 		check("per-spawn zero budget blocks spawn", zeroThrew);
+		check("zero-budget error says to omit maxDepth", /omit maxDepth/i.test(zeroMsg), zeroMsg);
 	}
 
 	// Cancel stops the child process; resume restarts it from the transcript.

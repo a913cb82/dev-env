@@ -670,7 +670,14 @@ export async function startSubagent(input: SpawnAgentInput, context: SpawnContex
 		? context.settings
 		: { ...context.settings, maxDepth: depth(input.maxDepth, "maxDepth") };
 	if (context.currentDepth >= settings.maxDepth) {
-		throw new Error(`Subagent depth limit reached (${context.currentDepth}/${settings.maxDepth})`);
+		if (input.maxDepth !== undefined && input.maxDepth <= context.currentDepth) {
+			throw new Error(
+				`Subagent depth limit reached (${context.currentDepth}/${settings.maxDepth}): maxDepth ${input.maxDepth} leaves no room to spawn: the child would start at depth ${context.currentDepth + 1}. Omit maxDepth to use the tree budget (default 2), or set at least ${context.currentDepth + 1}.`,
+			);
+		}
+		throw new Error(
+			`Subagent depth limit reached (${context.currentDepth}/${settings.maxDepth}): this session is already at the tree's depth budget, and descendants cannot raise it. Delegate from a shallower session, or restart the tree with a larger --subagent-depth.`,
+		);
 	}
 	const queued = gate.isFull(context.settings.maxConcurrency);
 	const runId = randomUUID();

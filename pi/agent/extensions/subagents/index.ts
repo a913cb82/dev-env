@@ -49,7 +49,7 @@ const SpawnAgentSchema = Type.Object({
 	),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "A subset of your active tools. Omit to inherit all of them." })),
 	maxDepth: Type.Optional(Type.Integer({
-		description: "Tree depth budget for this spawn. Default 2. Only the root session sets it. Descendants inherit it. They cannot increase it.",
+		description: "Tree depth budget for this spawn. Omit to inherit (default 2). Only the root session sets it; descendants inherit and cannot raise it. 0 disables spawning entirely, so a spawn with maxDepth 0 always fails; use at least 1.",
 		minimum: 0,
 	})),
 });
