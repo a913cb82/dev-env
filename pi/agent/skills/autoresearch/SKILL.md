@@ -1,6 +1,6 @@
 ---
 name: autoresearch
-description: Improve code against a repeatable score. Parallel explorer subagents each propose one change in a git worktree; the coordinator lands each change on the current champion, scores it, and keeps only confirmed gains. Use for measurable optimization (benchmarks, test metrics, game ratings). Not for one-off fixes or subjective quality.
+description: Improve code against a repeatable score. Parallel explorer subagents each work in a git worktree; the coordinator lands each candidate on the current champion, scores it, and keeps only confirmed gains. Use for measurable optimization (benchmarks, test metrics, game ratings). Not for one-off fixes or subjective quality.
 ---
 
 # autoresearch

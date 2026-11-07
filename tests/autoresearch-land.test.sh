@@ -77,13 +77,15 @@ echo 'a = 5' > "$WT/src/a.txt"
 wt_commit "exp: a5"
 echo 'a = 6' > "$WT/src/a.txt"
 wt_commit "exp: a6"
+SHA=$(git -C "$WT" rev-parse HEAD)
+TREE=$(git -C "$WT" rev-parse "$SHA^{tree}")
 land "$WT" "$BASE" "$BASE" src/ src/bench.txt
-expect "reject: two commits" 1 "reject: need exactly one commit"
+expect "ok: two commits on base" 0 "ok $SHA $TREE"
 
 # 4. No commit at all (explorer blocked).
 new_case none
 land "$WT" "$BASE" "$BASE" src/ src/bench.txt
-expect "reject: no commit" 1 "reject: need exactly one commit"
+expect "reject: no commit" 1 "reject: no commits on base"
 
 # 5. An empty commit.
 new_case empty

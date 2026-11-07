@@ -7,7 +7,7 @@
 - Setup: TODO bootstrap command (fresh worktrees lack ignored dependencies)
 - Gate: TODO command; run it before committing
 - Edit: TODO paths under target only; never touch frozen paths, the run dir, or other worktrees
-- Commit: exactly one commit, `exp: TODO idea`; then stop
+- Commit: `exp: TODO idea`; then stop
 - Report: candidate SHA and gate pass/fail
 - Never: run the exam, read logs or scores, create branches or tags, push, or amend
-- Learned so far: TODO lines from past PROGRESS rows
+- Learned: TODO at most one line from PROGRESS

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Check one explorer commit, then rebase it onto the current champion.
+# Check explorer commits, then rebase them onto the current champion.
 #
 # usage: land.sh WORKTREE BASE CHAMPION TARGET [FROZEN...]
 #   WORKTREE  the explorer's detached worktree
@@ -39,8 +39,8 @@ fi
 [ -z "$(git_wt status --porcelain)" ] || reject "dirty tree"
 
 count=$(git_wt rev-list --count "$base..HEAD")
-[ "$count" = 1 ] || reject "need exactly one commit on base, found $count"
-[ "$(git_wt rev-parse 'HEAD^')" = "$base" ] || reject "commit is not directly on base"
+[ "$count" -ge 1 ] || reject "no commits on base"
+git_wt merge-base --is-ancestor "$base" HEAD || reject "base is not an ancestor"
 
 # Tree-to-tree diff, renames off: a moved file shows its old path too.
 names=$(git_wt diff --no-renames --name-only "$base" HEAD)
