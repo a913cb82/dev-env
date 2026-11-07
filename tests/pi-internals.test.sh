@@ -17,7 +17,13 @@ elif [ -f "$HOME/.pi/agent/install/current-version" ]; then
 else
   bin="$(command -v pi || true)"
   [ -n "$bin" ] || fail "no Pi install found"
-  ROOT="$(dirname "$(dirname "$(realpath "$bin")")")"
+  # The entry point moved between releases (dist/cli.js -> dist/bundle/cli.js),
+  # so walk up from it to the package root instead of assuming a depth.
+  ROOT="$(dirname "$(realpath "$bin")")"
+  while [ "$ROOT" != "/" ] && [ ! -d "$ROOT/dist/modes" ]; do
+    ROOT="$(dirname "$ROOT")"
+  done
+  [ -d "$ROOT/dist/modes" ] || fail "cannot locate Pi dist/modes from $bin"
 fi
 
 node -e "
