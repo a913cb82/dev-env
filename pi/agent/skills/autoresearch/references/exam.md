@@ -1,78 +1,46 @@
 # Exam
 
-One fixed test per change. `EXAM.md` sets the numbers; keep them fixed.
+One fixed exam per run. `EXAM.md` defines the test, inputs, and score; keep them fixed. Explorers run only the blind gate. You run the scored exam; explorers never see candidate scores or result logs.
 
-Gate: explorers only. Exam: you only. Explorers never see scores.
+## Scoring
 
-## Budget
+- Use the same fixed inputs for baseline and every candidate. The coordinator chooses them; explorers never do.
+- Score each target patch-id once. Repeat only a close call (within the noise floor), once on the exam machine; use the mean.
+- A changed test or input set needs a new tag and run folder. Never compare across tags.
+- Choose one tie rule and score direction in `EXAM.md`.
 
-- Fix the budget before the first spawn; keep it repeatable.
-- Cheap stages first; fresh seeds each round.
-- You pick inputs and seeds — never the explorer.
-- Test each change once. Slow exam? Explorers pre-check more.
-- Example: the filled exam in `EXAM.md`.
+## Blind gate
 
-## Entry id and duplicates
+- Fast (<5% of exam budget), scoreless, and run in the candidate worktree.
+- Checks correctness, smoke behavior, and stable output; prints no scores or result logs.
+- Every brief names the gate. The explorer runs it before committing; you rerun it before the exam.
+- If it fails, do not run the scored exam.
 
-- Name each entry folder-plus-commit. Notes-only commits keep the old name and replay zero tests.
-- Matching code is one entry: same `git patch-id` on the target diff. Check before you test.
-- New test shape: new tag, new log file. Never append to the old one; never compare across.
+## Candidate guards
 
-## Blind gate (explorers run this)
+After copying `NOTES.md` out and removing it from the worktree, set `TREE` (candidate worktree), `BASE` (start commit in the brief), `CURRENT` (loop-branch HEAD), `SHA` (reported commit), and `TARGET` (allowed folder in `EXAM.md`). Check:
 
-- Fast (<5% of the exam budget), scoreless, in-tree.
-- Checks: suite, smoke, stable output.
-- Prints no scores, writes no logs.
-- Every brief names the gate; every explorer runs it pre-commit.
-- Gate fails? The explorer fixes it. Never waits on you.
+```sh
+git -C "$TREE" status --porcelain
+git -C "$TREE" rev-parse HEAD
+git -C "$TREE" rev-parse "$SHA^"
+git -C "$TREE" diff --quiet "$BASE" "$CURRENT" -- "$TARGET"
+git -C "$TREE" diff --name-only "$BASE" "$SHA"
+git -C "$TREE" diff "$BASE" "$SHA" -- "$TARGET" | git patch-id --stable
+```
 
-## Scored exam (you run this)
+- Status must be empty; HEAD must equal SHA; its parent must equal BASE; `diff --quiet` must exit 0; changed paths must be under target and outside frozen paths. Otherwise reject without scoring.
+- The final command gives the target patch-id. No patch means no code change. If that patch-id already has a result, reuse it and do not test again (except its one close-call repeat).
+- A candidate is stale if target code at BASE differs from CURRENT. Copy its notes, return its idea to `open`, and remove the worktree without scoring.
 
-- Inputs from the commit hash (first 8 hex digits mod N); log them with the score.
-- One fixed tie rule, every time.
-- Re-run the gate, then the full budget.
+## Scored exam
+
+After the explorer exits and guards pass, rerun the gate and the fixed exam in its worktree. Append raw output to `<run-folder>/results.log`, keyed by candidate ID.
 
 ## Recorded score
 
-- One JSON line per finished test, appended, immutable. Skip bad lines on read.
-- Champion = best recorded line for the current tag.
-- Schema: `date, id, score, budget, champion`. Extra fields allowed.
-- Example row: `{"date":"2026-01-01","id":"src/parser-d4e5f6","score":0.47,"budget":"pytest+bench3-seed0","champion":"src/parser-a1b2c3"}`.
-
-## Budget tag
-
-- The tag names the test shape. New shape: new tag plus new log file (see above). Old rows stay filed.
-
-## Guards (git example)
-
-Fail before you test: clean tree, in-target diff only, append-only log. Check the staged diff pre-commit.
-
-```sh
-if [ -n "$(git status --porcelain)" ]; then echo DIRTY; exit 1; fi
-if git diff --name-only <sha>^..<sha> | grep -vx '<target>/.*'; then echo OUT-OF-SCOPE; exit 1; fi
-if git diff --cached -- <run-dir>/PROGRESS.jsonl | grep '^-[^-]'; then echo REWROTE-HISTORY; exit 1; fi
-```
-
-- Dirty: commit first. Out-of-scope (tests, logs, harness always forbidden — named in every brief's Never-touch): drop it. Rewrote history: stop, fix it. Fill `<sha>`, `<target>/`, `<run-dir>/` in `EXAM.md`.
-
-## Commands
-
-From `EXAM.md`. Examples only.
-
-```sh
-# blind gate: explorer runs this inside its tree (fast, no scores)
-pytest -q && python bench.py --runs 1 --seed 0
-
-# scored exam: you run this (budgeted, seeded, logged)
-python bench.py --runs 3 --seed 0,1,2 >> <run-dir>/results.log
-
-# push the loop branch
-git push origin <loop-branch>
-```
-
-Never push `main` or tags ([worktrees](worktrees.md)).
-
-## Logs
-
-- One append-only result log; never edit. Outputs keyed by commit; prune old, keep current.
-- One worklog line per round: `score 0.47, best 0.42, gain +0.05, noise 0.03, keep`.
+- After the exam and any close-call repeat, append one JSON line per candidate to `PROGRESS.jsonl`. Never edit or delete rows; skip malformed rows when reading.
+- `score` is the effective score; after a close-call repeat, it is the mean. Store raw runs in an extra `runs` field.
+- Setup baseline is the initial champion, ID `<target>-<short baseline SHA>`. Each row's `champion` is the best code ID after that decision: `<target>-<short cherry-pick SHA>` if kept, otherwise the previous champion ID.
+- Schema: `date, id, patch_id, inputs, score, budget, champion`. Extra fields are allowed. `id` is `<target>-<short candidate SHA>`; `budget` is the tag.
+- Example: `{"date":"2026-01-01","id":"src/parser-d4e5f6","patch_id":"abc123","inputs":"0,1,2","score":4.2,"budget":"pytest+bench3-seeds0-2","champion":"src/parser-a1b2c3"}`.

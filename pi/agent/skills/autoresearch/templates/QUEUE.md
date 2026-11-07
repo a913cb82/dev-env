@@ -1,11 +1,11 @@
 # Queue
 
-Live list. One change in one commit; a mixed commit teaches nothing. Measure on the fixed exam only; explorer reports are not scores.
+One change per commit; mixed changes teach nothing. The fixed exam decides, not explorer reports.
 
-Statuses: open, trying, done, dropped, parked. Keep it in order. Promote the next idea on each finish.
+Statuses: `open`, `trying`, `done`, `dropped`, `parked`. Keep order. A `trying` row lists owned files. Count non-stale returned candidate commits; stale, crashed, or cancelled work does not count.
 
-| status | idea | files |
-|---|---|---|
-| open | <first single idea> | |
-| trying | <live idea> | <owned files> |
-| parked | <bold direction for later> | |
+| status | idea | source/evidence | owned files | attempts |
+|---|---|---|---|---:|
+| open | <one testable idea> | <profile, code path, or source> | | 0 |
+| trying | <active idea> | <evidence> | <files> | 0 |
+| parked | <later direction> | <evidence> | | 0 |

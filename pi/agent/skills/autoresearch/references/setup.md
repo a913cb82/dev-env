@@ -1,36 +1,26 @@
 # Setup
 
-Once per codebase; safe to repeat. No explorers until the checklist passes.
+Do not spawn explorers until setup passes. Freeze target, exam, and inputs until the run ends.
 
 ## When
 
-- The run folder, `EXAM.md`, or `PROGRESS.jsonl` is missing; the target moved; the test changed.
-- Otherwise skip to [run](run.md).
-
-## Inputs
-
-- Target folder. Explorers edit this folder only.
-- Run folder. Example: `runs/<date>-<slug>/`. One run, one folder.
-- Test command. The only way to score a change.
-- Loop branch. Never `main`.
+Start a new run if its config/log is missing, the target moved, or the exam or input set changed. Otherwise go to [run](run.md).
 
 ## Steps
 
-1. Draw the boundary. Explorers edit the target only — never the test, the notes, or each other's files.
-2. Write `EXAM.md`: copy `templates/EXAM.md`, fill every field.
-3. Copy notes, missing files only (never clobber a live run):
-   `RUN=runs/<date>-<slug> && mkdir -p $RUN && cp -n templates/EXAM.md templates/QUEUE.md templates/WORKLOG.md templates/PROGRESS.jsonl $RUN/`
-   Fill the starting backlog.
-4. Measure the baseline: run the exam on unchanged code, 3+ times back to back on one box. The spread sets the noise bar; smaller gains are not real. Confirm the gate runs fast in a fresh work area. Write both numbers in `EXAM.md`; paste them into `BRIEF.md`.
-5. Build one detached work area per explorer (`git worktree add --detach <path>`), deps installed, plus one spare. No branches for untested code. See [worktrees](worktrees.md).
-6. Set share, N, and budgets in `EXAM.md` per its N formula; keep peak headroom.
-7. Write the pass rule in `EXAM.md`: gate passes in-tree, suite passes, output stable, only the score changes — then past failures.
+1. Use a dedicated loop branch. If missing, run `git switch -c <loop-branch> main`; otherwise run `git switch <loop-branch> && git merge main`. Never run on `main`.
+2. From the target repository root, set `SKILL_DIR` to the directory containing this `SKILL.md`. Create the run folder and copy templates without overwriting existing files:
+   `SKILL_DIR="/path/to/autoresearch" && RUN="$(pwd)/runs/<date>-<slug>" && mkdir -p "$RUN/notes" && cp -n "$SKILL_DIR"/templates/EXAM.md "$SKILL_DIR"/templates/QUEUE.md "$SKILL_DIR"/templates/WORKLOG.md "$SKILL_DIR"/templates/PROGRESS.jsonl "$RUN/"`
+   The run folder must be in the coordinator tree, outside candidate worktrees.
+3. Fill `EXAM.md` with target, frozen paths, commands, pass rule, score direction, tie rule, fixed inputs, and tag. Seed `QUEUE.md` with ordered ideas, evidence, and owned-file slots.
+4. Run the exam on unchanged code at least 3 times on one machine with the same inputs. Baseline is the mean; noise floor is `max(score) - min(score)`. Record both in `EXAM.md`. The baseline is the initial champion, ID `<target>-<short baseline SHA>`; leave `PROGRESS.jsonl` empty. Include baseline and noise in each brief.
+5. Create a temporary detached worktree at the baseline commit (`git worktree add --detach <probe-path> <baseline-SHA>`). Install dependencies, build, verify the gate, and estimate one explorer's peak resource use; remove it with `git worktree remove --force <probe-path>`. Set share, exam reserve, explorer peak, and N: `N = floor((share - exam reserve) / explorer peak)`. Start at 1. If N is 0, reduce load or use a larger machine. Keep one spare worktree path available; create a fresh tree at each explorer's start commit.
+6. Fill `EXAM.md`'s forbidden list with past failures. `BRIEF.md` is an ephemeral spawn prompt, not a stored file.
 
 ## Exit checklist
 
-- [ ] `EXAM.md`: gate passes fast in a fresh area; exam runs end to end on baseline.
-- [ ] Same commit replays zero tests.
-- [ ] Baseline and noise in `EXAM.md` and `BRIEF.md`.
-- [ ] Run folder holds filled notes and empty `PROGRESS.jsonl`.
-- [ ] Work areas build clean, one spare ready.
-- [ ] N, loop branch, stop rule in `EXAM.md`.
+- [ ] `EXAM.md` is complete; gate passes in a fresh tree and the exam runs end to end on baseline.
+- [ ] Baseline/noise use at least 3 same-machine runs on the fixed inputs.
+- [ ] Run folder has filled `EXAM.md` and `QUEUE.md`, the `WORKLOG.md` template, `notes/`, and empty `PROGRESS.jsonl`.
+- [ ] The probe worktree builds; N fits the resource budget and one spare path is available.
+- [ ] A patch-id is scored once, apart from one close-call repeat; notes-only commits get no exam.

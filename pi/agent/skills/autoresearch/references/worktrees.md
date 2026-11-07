@@ -1,31 +1,21 @@
 # Worktrees
 
-One folder per explorer; delete after harvest. Git below is one way; the rules fit any version control.
+Use one detached Git worktree per explorer. Each starts from the SHA in its brief; never reuse a tree after its target code changes.
 
-## Detached explorers
+## Rules
 
-- Add detached: `git worktree add --detach <path>`.
-- Never share a tree between explorers.
-- No branches for untested code.
-- Explorers stay in their trees; you stay out mid-test.
+- Create a fresh tree: `git worktree add --detach <path> <start-commit>`.
+- Explorers stay in their own tree and never enter yours; stay out of theirs while they work.
+- Untested commits stay detached.
+- Stay on the loop branch. Merge `main` before a run; do not merge or change the exam mid-run. Promote winners with one cherry-pick each. Push only the loop branch; tags stay local.
 
-## Your tree
+## Harvest
 
-- Stay on the loop branch the whole run.
-- To include `main`: `git merge main`, staying put.
-- Check size, then copy the commit over. One straight line.
-- Push the loop branch. Never `main` or tags; tags stay local.
+1. Copy `<worktree>/NOTES.md` to `<run-folder>/notes/<idea>-<attempt>.md`; verify it, then remove `NOTES.md` from the worktree. If missing, request it; if still absent, reject without scoring and record why.
+2. Run guards and the exam before promotion; see [exam](exam.md).
+3. If kept, cherry-pick the `exp:` commit. If rejected or stale, do not cherry-pick.
+4. After notes are safe, remove the worktree with `git worktree remove --force <path>`.
 
-## Harvest (numbered — follow in order)
+On crash/cancel, do not test or promote any candidate, even if it committed. Copy and verify partial notes if present; if absent, note the crash. Add an unscored `WORKLOG.md` entry (`crash` or `cancel`), reset the queue row to `open` without incrementing attempts, then remove the dirty tree with `git worktree remove --force <path>`.
 
-1. Cherry-pick the explorer commit: `git cherry-pick <hash>`. One straight line.
-2. Copy notes out: `cp <work-area>/NOTES.md notes/<idea>-<n>.md`.
-3. Confirm the file. One name per explorer.
-4. Remove the tree: `git worktree remove <work-area>`.
-5. Untracked notes die with the tree — never remove first.
-
-## One idea per commit
-
-- Mixed diffs get dropped. (Doctrine: `QUEUE.md` header.)
-
-File-per-entry domains only: copy the best files to a new name, add one idea to the copy, delete the old files. Never edit the old files in place.
+One idea per commit; drop mixed diffs. For file-per-entry domains, copy the best file to a new name, add one idea, then delete the old file. Never edit the old file in place.

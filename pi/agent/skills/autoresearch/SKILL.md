@@ -5,29 +5,26 @@ description: Run parallel research explorers against a scored codebase. Use when
 
 # autoresearch
 
-You orchestrate. Subagents explore. You plan, launch, harvest, and decide. Use most of the box. Start with one explorer; add while it has room.
+You orchestrate. Subagents explore. You plan, launch, harvest, and decide. Start with one explorer; add only within the resource budget in `EXAM.md`.
 
 ## Two phases
-
-Do setup once. Then run the loop.
 
 - **Setup** defines the test, the notes, the work areas, and the baseline. See [setup](references/setup.md).
 - **Run** picks ideas, briefs explorers, measures, and keeps winners. See [run](references/run.md).
 
-If the run folder, `EXAM.md`, or `PROGRESS.jsonl` is missing, do setup first. Do not spawn explorers before setup passes.
+If the run config/log is missing or the target, exam, or inputs changed, start a new setup. Do not spawn explorers before it passes.
 
 ## Rules
 
 - Gate: explorers only. Exam: you only. Explorers never see scores. See [exam](references/exam.md).
-- Use one fixed exam per change.
+- Use one fixed exam and input set for every candidate in a run.
 - Keep untested code off branches. Only a tested change earns a branch or tag.
 
-Details in the references.
 
 ## Terms
 
-- Winners live on the loop branch — never `main`. Stay on it.
-- `exp:` marks an explorer change. `log:` marks your notes change.
+- Winners live on the loop branch — never `main`.
+- Prefix explorer-code commits with `exp:` and record-only commits with `log:`.
 
 ## References
 
