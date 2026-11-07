@@ -5,7 +5,7 @@ description: Run parallel research explorers against a scored codebase. Use when
 
 # autoresearch
 
-You orchestrate. Subagents explore. You plan, launch, harvest, and decide. Use most of the computer power. Start with one explorer. Add more while the computer has room.
+You orchestrate. Subagents explore. You plan, launch, harvest, and decide. Use most of the box. Start with one explorer; add while it has room.
 
 ## Two phases
 
@@ -22,11 +22,11 @@ If the run folder, `EXAM.md`, or `PROGRESS.jsonl` is missing, do setup first. Do
 - Use one fixed exam per change.
 - Keep untested code off branches. Only a tested change earns a branch or tag.
 
-Details live in the references. This file stays short on purpose.
+Details in the references.
 
 ## Terms
 
-- The loop branch holds winners. It is never `main`. Stay on it.
+- Winners live on the loop branch — never `main`. Stay on it.
 - `exp:` marks an explorer change. `log:` marks your notes change.
 
 ## References

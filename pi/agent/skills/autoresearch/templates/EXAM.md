@@ -14,10 +14,10 @@
 - target folder: <only mutable surface>
 - loop branch: <name, never main>
 - share: <percent of box; example: 75%>
-- exam slots: <start 1; more only if tests can run side by side and box has room>
-- N: <start 1; fill share after exam slots; +1 spare idle; then hold queue at 1>
+- exam slots: <start 1; more only if tests run side by side with room>
+- N: <start 1; fill share after exam slots; +1 spare idle; hold queue at 1>
 - N formula: <floor((share - exam reserve) / one explorer)>
-- explorer budget: <near N x exam time / exam slots; clamp 5-60 min>
+- explorer budget: <near N x exam time / slots; clamp 5-60 min>
 - spawn timeout: <budget plus 5 min>
 - near noise: <repeat once back to back>
 - drop idea: <after 3 failed changes>
