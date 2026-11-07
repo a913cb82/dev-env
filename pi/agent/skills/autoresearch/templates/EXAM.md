@@ -5,6 +5,10 @@
 - budget: <what one round costs>
 - budget tag: <short test name>
 - seed policy: <seeds used, written with result>
+- baseline: <score, date, commit; min 3 repeats on exam box>
+- noise floor: <bar plus how measured>
+- limits: <timeouts, counts, resource rules>
+- proved limits: <one line each: number plus proving run; empty at start>
 - score file: `<run-dir>/PROGRESS.jsonl`
 - result log: `<run-dir>/results.log` (append-only, never edit)
 - target folder: <only mutable surface>
@@ -23,24 +27,13 @@
 - forbidden:
   - <past failure 1>
 
-## Filled example A (latency)
+## Filled example A (latency, changed fields only)
 
-- exam command: `pytest -q && python bench.py --runs 3 --seed 0,1,2`
-- gate command: `pytest -q` (12s, blind, explorer runs it)
-- budget: suite plus 3 seeded bench runs, ~8 min
-- budget tag: `pytest+bench3-seed0`
-- seed policy: `--seed 0,1,2`, written with result
-- score file: `runs/2026-01-01-cache/PROGRESS.jsonl`
-- result log: `runs/2026-01-01-cache/results.log`
-- target folder: `src/parser`
-- loop branch: `loop/cache`
-- share: 75%
-- exam slots: 1 (scorer needs the box)
-- N: 2 (75% share fits 2 builders after 1 exam slot; +1 spare idle)
-- explorer budget: 30 min with 3 gate passes (exam is slow: near 2 x 8 min)
-- queue target: 1 waiting
-- stop: 10 tries, 2 h, or 3 in-noise in a row
-- forbidden:
-  - regex rewrite (lost 0.3s)
+- exam: `pytest -q && python bench.py --runs 3 --seed 0,1,2` (~8 min); gate: `pytest -q` (12s, blind)
+- tag: `pytest+bench3-seed0`; seeds: `--seed 0,1,2`, written with result
+- baseline: 4.2s @a1b2c3 (2026-01-01); noise: 0.15s, 3 repeats on one box
+- target: `src/parser`; branch: `loop/cache`; share: 75%; slots: 1; N: 2 (+1 spare idle)
+- budget: 30 min; queue: 1 waiting; stop: 10 tries, 2 h, or 3 in-noise; limits: gate <60s, exam <10 min
+- forbid: regex rewrite (lost 0.3s)
 
-Counter-example B (correctness): exam is `pytest -q` only; budget tag `pytest-only`; score is pass rate.
+Counter-example B (correctness): exam `pytest -q` only; tag `pytest-only`; score pass rate.

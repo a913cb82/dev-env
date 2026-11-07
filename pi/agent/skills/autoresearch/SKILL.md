@@ -33,4 +33,4 @@ Details live in the references. This file stays short on purpose.
 
 - Setup: [setup](references/setup.md). Run: [run](references/run.md).
 - Test: [exam](references/exam.md). Work areas: [worktrees](references/worktrees.md). Notes: [notes](references/notes.md).
-- `templates/` holds starter files. Copy them during setup.
+- `templates/` holds starter files: stored `EXAM/QUEUE/WORKLOG/PROGRESS.jsonl`, ephemeral `BRIEF`. Copy them during setup.

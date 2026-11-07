@@ -8,7 +8,7 @@ One entry per round. Never edit an old entry.
 - best: <baseline score>
 - verdict: keep
 - what changed: <exam, notes, work areas ready>
-- what you learned: <noise floor>
+- what you learned: <noise floor; source: <url> for outside claims>
 - next: <first idea>
 
 ## Filled example A (latency)

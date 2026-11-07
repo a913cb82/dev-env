@@ -10,16 +10,6 @@ Run the blind gate in your tree. Do not run the scored exam. Do not look for sco
 Forbid: <past failures>.
 Target: <pasted code or absolute paths>.
 
-## Filled example A (latency)
+## Filled example A (latency): cache parser output (queue 2, 60% in re-parse); HARD 30 min; baseline 4.2s @a1b2c3, noise 0.15s (3x, one box); gate `pytest -q` (12s in-tree); edit `src/parser.py:40-90` only, never `bench.py, tests/, run folder`; forbid regex rewrite (lost 0.3s).
 
-Idea: Cache parser output in parser.py (queue row 2, profile shows 60% in re-parse).
-Budget: HARD 30 min. Commit code plus tests and NOTES.md. Then stop.
-Baseline: 4.2s, commit a1b2c3. Noise: 0.15s, 3 repeats on one box.
-Gate: pytest -q passes in 12s in-tree.
-Edit: src/parser.py only. Never touch: bench.py, tests/, run folder.
-Report: baseline, gate pass, one-line verdict, commit hash.
-Run the blind gate in your tree. Do not run the scored exam. Do not look for scores or logs.
-Forbid: regex rewrite (lost 0.3s last round).
-Target: src/parser.py lines 40-90 pasted below.
-
-Counter-example B (correctness): fix login retry; gate is `pytest -q auth`; score is pass rate.
+Counter-example B (correctness): gate `pytest -q auth`, score pass rate.

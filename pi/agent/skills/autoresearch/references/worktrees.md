@@ -18,14 +18,14 @@ One folder per explorer. Delete it after harvest. Git commands below are one way
 
 ## Harvest (numbered — follow in order)
 
-1. Copy notes out: `cp <work-area>/NOTES.md notes/<idea>-<n>.md`.
-2. Check the file exists. Use one notes name per explorer.
-3. Remove the tree: `git worktree remove <work-area>`.
-4. Untracked notes die with the tree. Never remove first.
+1. Copy the explorer commit to the loop branch: `git cherry-pick <hash>`. Keep commits in one straight line.
+2. Copy notes out: `cp <work-area>/NOTES.md notes/<idea>-<n>.md`.
+3. Check the file exists. Use one notes name per explorer.
+4. Remove the tree: `git worktree remove <work-area>`.
+5. Untracked notes die with the tree. Never remove first.
 
 ## One idea per commit
 
-- Test one idea per commit. A mixed commit teaches nothing.
-- A diff that shows two ideas gets dropped.
+- A diff that shows two ideas gets dropped. (Doctrine: `QUEUE.md` header.)
 
-Skip this box for most code. It fits file-per-entry domains only. Copy the best files to a new name. Add one idea to the copy. Delete the old files. Never edit the old files in place.
+File-per-entry domains only: copy the best files to a new name, add one idea to the copy, delete the old files. Never edit the old files in place.

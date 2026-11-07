@@ -10,14 +10,8 @@ The loop. Requires a passing [setup](setup.md). You orchestrate. Explorers code.
 
 ## One iteration
 
-1. Pick the next `open` idea from `QUEUE.md`. Mark it `trying`. Give it files no live explorer owns.
-2. Brief one explorer from `BRIEF.md`. Keep it short:
-   - One idea and where it came from.
-   - Time budget from `EXAM.md`.
-   - Baseline and noise floor.
-   - Files it may edit. Files it must never touch.
-   - It runs the blind gate in its tree, then commits code plus tests as `exp: <idea>` plus `NOTES.md`. It replies with baseline, gate pass, verdict, and commit hash. Gate: explorers only. Exam: you only.
-   - Past failures it must avoid.
+1. Pick the next `open` idea from `QUEUE.md`. Mark it `trying` and record its owned files in the row. Give it files no live explorer owns. On steer, cancel, or crash, reset `trying` rows to `open` before the next pick.
+2. Brief one explorer from `BRIEF.md`: idea+source, HARD budget, baseline/noise, owned vs. never-touch files, baseline/gate/verdict/hash report, gate-only (no exam/scores/logs), past forbids.
 3. Wait with `any`. Relaunch when one finishes. Hold one finished result waiting while you test.
 
    | If | Do |
@@ -27,25 +21,13 @@ The loop. Requires a passing [setup](setup.md). You orchestrate. Explorers code.
    | Computer is too busy | Remove one explorer. |
 
 4. Harvest. See [worktrees](worktrees.md) for the numbered checklist.
-5. Test it yourself. Pre-exam checklist, then the scored exam:
-   `status clean, diff in target only, same tag, append-only log`. See [exam](exam.md) for the guard block.
-6. Write it down. Append `PROGRESS.jsonl`. Add one `WORKLOG.md` entry. Never edit an old entry. Mark the queue row `done` or `dropped`. Commit notes as `log: <idea>`. Push the loop branch. Never push `main` or tags.
+5. Test it yourself. Guards first, then the scored exam. See [exam](exam.md).
+6. Write it down. Append `PROGRESS.jsonl`. Add one `WORKLOG.md` entry. Never edit an old entry. Mark the queue row `done` or `dropped`. Commit notes as `log: <idea>`. Push the loop branch (branch rules: [worktrees](worktrees.md)).
 7. Check the stop rule in `EXAM.md`. Otherwise go to step 1.
 
 ## Spawn skeleton
 
-Paste this into the spawn task. Fill the brackets.
-
-```
-Idea: <one sentence, queue row + source>
-Budget: HARD <N> min. Commit code plus tests and NOTES.md. Then stop.
-Baseline: <score, commit> Noise: <bar, how measured>
-Edit: <owned files> only. Never touch: <frozen + run folder + other trees>
-Report: baseline, gate pass, one-line verdict, commit hash.
-Run the blind gate in your tree. Do not run the scored exam. Do not look for scores or logs.
-Forbid: <past failures>
-Target: <pasted code or absolute paths>
-```
+Paste the filled `BRIEF.md` into the spawn task — it is the sole spawn contract.
 
 Tips, not rules: paste one winner diff and one near-miss diff. Use a cheap model for sweeps and a strong model for hard lines. Send pure recon with no code as a table plus one next shot.
 
@@ -54,14 +36,13 @@ Tips, not rules: paste one winner diff and one near-miss diff. Use a cheap model
 - Ignore explorer verdicts. Compute the gain yourself.
 - Keep the change only if the gain beats the noise floor.
 - Check score, stability, and cost. Do not use score alone.
-- Repeat close calls once on one box.
+- Repeat close calls (within 1x noise floor) once on the exam box.
 - Compare tags only with the same tag. Old tags stay filed.
 
-## Bold work
+## Bold work (trigger and patience counts in `EXAM.md`)
 
-- Two misses in a row means try something different next. Starting example; tune in `EXAM.md`.
-- Start with notes, not code. Search the repo and the web. Pick a new design.
-- Give a new design 3 tries before you judge it. Starting example; tune in `EXAM.md`.
+- On a miss streak, try something different next. Start with notes, not code. Search the repo and the web. Pick a new design.
+- Give a new design its full patience before you judge it.
 - Keep the best of each line.
 
 ## If it breaks
@@ -70,7 +51,7 @@ Tips, not rules: paste one winner diff and one near-miss diff. Use a cheap model
 - No result at budget end: tell it to wrap up clean. Then cancel.
 - Crash: read the log first. Then write the next brief.
 - Flaky score: test again on your box. Your test wins.
-- Three failed tries drops the idea. Starting example; write the reason and tune in `EXAM.md`.
+- Drop rule (count in `EXAM.md`): write the reason, mark `dropped`.
 
 ## Defaults
 

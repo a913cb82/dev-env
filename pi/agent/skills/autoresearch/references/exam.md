@@ -10,15 +10,13 @@ Gate: explorers only. Exam: you only. Explorers never see scores.
 - Run cheap stages first. Use different seeds each round.
 - You pick the inputs and seeds. The explorer never picks easy ones.
 - Test each change once. Never test the same code twice. If the full test is slow, explorers check more work first.
-
-Example A (latency): `pytest -q` then `python bench.py --runs 3 --seed 0,1,2`.
-Example B (pass/fail): `pytest -q` with required files listed in `EXAM.md`.
+- Examples: the filled latency exam in `EXAM.md`.
 
 ## Entry id and duplicates
 
 - Name each entry by folder plus commit. Notes-only commits keep the old name. They replay zero tests.
-- Treat matching code as one entry.
-- If you change the test, start a new log. Do not compare across tests.
+- Treat matching code as one entry: same `git patch-id` on the target diff. Check before you test.
+- If you change the test, start a new tag and a new log file. Never append to the old file. Do not compare across tests.
 
 ## Blind gate (explorers run this)
 
@@ -30,7 +28,7 @@ Example B (pass/fail): `pytest -q` with required files listed in `EXAM.md`.
 
 ## Scored exam (you run this)
 
-- Pick random inputs from the commit hash. Write those inputs with the score.
+- Pick random inputs from the commit hash (first 8 hex digits mod N). Write those inputs with the score.
 - Pick one fixed rule for ties. Use that rule every time.
 - Run the gate first. The explorer already ran it blind. You re-run it, then run the full budget.
 
@@ -43,33 +41,19 @@ Example B (pass/fail): `pytest -q` with required files listed in `EXAM.md`.
 
 ## Budget tag
 
-- The tag names the test shape.
-- A new test shape means a new tag. Old rows stay filed. Never compare across tags.
+- The tag names the test shape. New shape: new tag plus new log file (see above). Old rows stay filed.
 
 ## Guards (git example)
 
-Fail before you test. Generic rule: clean tree, in-target diff only, append-only log.
+Fail before you test: clean tree, in-target diff only, append-only log. Check the staged diff before you commit.
 
 ```sh
-git status --porcelain | grep . && echo DIRTY
-git diff --name-only <sha>^..<sha> | grep -vx 'src/<target>/.*' && echo OUT-OF-SCOPE
-git diff HEAD -- PROGRESS.jsonl | grep '^-[^-]' && echo REWROTE-HISTORY
+if [ -n "$(git status --porcelain)" ]; then echo DIRTY; exit 1; fi
+if git diff --name-only <sha>^..<sha> | grep -vx '<target>/.*'; then echo OUT-OF-SCOPE; exit 1; fi
+if git diff --cached -- <run-dir>/PROGRESS.jsonl | grep '^-[^-]'; then echo REWROTE-HISTORY; exit 1; fi
 ```
 
-Filled example (matches `templates/EXAM.md` style):
-
-```sh
-git status --porcelain | grep . && echo DIRTY
-git diff --name-only d4e5f6^..d4e5f6 | grep -vx 'src/parser/.*' && echo OUT-OF-SCOPE
-git diff HEAD -- runs/2026-01-01-cache/PROGRESS.jsonl | grep '^-[^-]' && echo REWROTE-HISTORY
-```
-
-- If the tree is dirty, commit first.
-- If out-of-scope files changed, drop the commit.
-- Test files, score logs, and harness code are always forbidden — every brief's Never-touch list names them, no exceptions.
-- If history was rewritten, stop and fix it.
-
-Fill the paths in `EXAM.md`.
+- Dirty: commit first. Out-of-scope (test files, score logs, and harness code are always forbidden — every brief's Never-touch list names them, no exceptions): drop the commit. Rewrote history: stop and fix it. Fill `<sha>`, `<target>/`, `<run-dir>/` in `EXAM.md`.
 
 ## Commands
 
@@ -86,7 +70,7 @@ python bench.py --runs 3 --seed 0,1,2 >> <run-dir>/results.log
 git push origin <loop-branch>
 ```
 
-Never push `main` or tags.
+Never push `main` or tags (branch rules: [worktrees](worktrees.md)).
 
 ## Logs
 

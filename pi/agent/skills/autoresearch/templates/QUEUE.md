@@ -1,17 +1,11 @@
 # Queue
 
-Live list. Statuses: open, trying, done, dropped, parked. Doctrine plus parked backlog lives in `IDEAS.md`.
+Live list. One change in one commit; a mixed commit teaches nothing. Measure on the fixed exam only; explorer reports are not scores.
 
-| status | idea |
-|---|---|
-| open | <first single idea> |
-| open | <second single idea> |
-| parked | <bold direction for later> |
+Statuses: open, trying, done, dropped, parked. Keep it in order. Promote the next idea on each finish.
 
-## Filled example
-
-| status | idea |
-|---|---|
-| trying | cache hot nodes with size cap |
-| open | evict cold nodes first |
-| parked | rewrite parser (bold) |
+| status | idea | files |
+|---|---|---|
+| open | <first single idea> | |
+| trying | <live idea> | <owned files> |
+| parked | <bold direction for later> | |
