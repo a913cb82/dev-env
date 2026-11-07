@@ -1,10 +1,8 @@
 # Queue
 
-One change per commit; mixed changes teach nothing. The fixed exam decides, not explorer reports.
+Best idea first. The coordinator takes the first `open` row.
+Statuses: `open`, `trying`, `done`, `dropped`.
 
-Statuses: `open`, `trying`, `done`, `dropped`. Keep order. A `trying` row lists owned files. Count non-stale returned candidate commits; stale, crashed, or cancelled work does not count.
-
-| status | idea | source/evidence | owned files | attempts |
-|---|---|---|---|---:|
-| open | <one testable idea> | <profile, code path, or source> | | 0 |
-| trying | <active idea> | <evidence> | <files> | 0 |
+| status | idea | evidence | base | worktree | attempts |
+|---|---|---|---|---|---:|
+| open | TODO one testable change | TODO profile, code path, or source | | | 0 |

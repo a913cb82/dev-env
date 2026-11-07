@@ -1,13 +1,13 @@
-# Brief (fill once per explorer; paste into its task)
+# Brief (one copy per explorer; paste into its task)
 
-Idea: <QUEUE row and evidence>
-Start commit: <loop-branch HEAD SHA>
-Budget: HARD <minutes>.
-Baseline/noise: <score direction, baseline commit, noise bar/method>.
-Gate: <blind gate command>. Run it before committing.
-Edit: <owned files under target> only. Never touch: <frozen paths, run folder, other trees>.
-Commit one target change as `exp: <idea>`. Leave untracked `NOTES.md` with findings.
-Report: candidate SHA, gate pass/fail, one-line verdict.
-Do not run the exam or read score/results logs.
-Forbidden: <past failures>.
-Target: <absolute paths or pasted code>.
+- Idea: TODO from QUEUE with evidence
+- Worktree: TODO detached worktree path; work only here
+- Start commit: TODO loop HEAD SHA
+- Budget: stop coding after TODO; commit what you have
+- Setup: TODO bootstrap command (fresh worktrees lack ignored dependencies)
+- Gate: TODO command; run it before committing
+- Edit: TODO paths under target only; never touch frozen paths, the run dir, or other worktrees
+- Commit: exactly one commit, `exp: TODO idea`; then stop
+- Report: candidate SHA and gate pass/fail
+- Never: run the exam, read logs or scores, create branches or tags, push, or amend
+- Learned so far: TODO lines from past PROGRESS rows

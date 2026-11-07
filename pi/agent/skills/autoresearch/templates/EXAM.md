@@ -1,32 +1,16 @@
-# EXAM (copy and fill for each run)
+# EXAM (copy to the run dir and fill every TODO)
 
-- target: <one folder explorers may change>
-- frozen: <exam/gate harness, shared tests, score files; overrides target>
-- run folder: <absolute coordinator path, outside candidate worktrees>
-- base ref: <branch/ref to merge into the loop branch; often main>
-- loop branch: <name, different from the base ref>
-- gate: <fast, scoreless command>
-- exam: <scored command>
-- pass rule: <conditions for accepting a result>
-- score: <metric; higher or lower is better>
-- exam cost: <time/resource cost of one scored candidate>
-- explorer budget: <hard coding time limit>
-- max explorers: <cap; start at 1, increase only while exam stays responsive>
-- tag: <run label for the test shape and inputs; not a Git tag>
-- inputs: <fixed set used by baseline and every candidate>
-- baseline: <mean, date, commit; 3+ repeats on one machine>
-- baseline ID: <target>-<short baseline SHA; initial champion>
-- noise floor: <max(score) - min(score) across baseline repeats>
-- limits: <timeouts and constraints>
-- score file: `<run-folder>/PROGRESS.jsonl` (append-only)
-- result log: `<run-folder>/results.log` (append-only)
-- stop: <max attempts, time box, or in-noise streak>
-- forbidden: <past failures>
-
-## Example (latency)
-
-- target: `src/parser`; frozen: `bench.py`, shared tests, run folder
-- gate: `pytest -q`; exam: `pytest -q && python bench.py --runs 3 --seed 0,1,2`
-- score: wall time, lower is better
-- tag: `pytest+bench3-seeds0-2`; inputs: seeds 0,1,2 for baseline and all candidates
-- baseline: 4.2s @a1b2c3; noise: 0.15s, 3 repeats
+- target: TODO one folder explorers may change
+- frozen: TODO paths nobody edits, space-separated
+- gate: TODO fast pass/fail command, prints no score
+- exam: TODO scored command; last line `SCORE <number>`, exit 0
+- direction: TODO higher or lower is better
+- inputs: TODO fixed inputs for baseline and every candidate
+- holdout: TODO scored command on unseen inputs
+- explorers: TODO max parallel explorers (1 runs serially)
+- explorer budget: TODO hard coding time limit per explorer, e.g. 30m
+- candidate budget: TODO max returned explorers before spawning stops
+- min gain: TODO smallest gain worth keeping
+- margin: TODO max(noise, min gain); fill in at setup
+- baseline: TODO mean of 3 runs, date, commit
+- noise: TODO max minus min of the baseline runs
