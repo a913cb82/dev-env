@@ -1,33 +1,23 @@
 ---
 name: autoresearch
-description: Run parallel research explorers against a scored codebase. Use when you want many ideas tested at once with subagents while you orchestrate.
+description: Improve code through isolated experiments scored by a fixed exam. Use subagents to explore; the coordinator measures and keeps winners.
 ---
 
 # autoresearch
 
-You orchestrate. Subagents explore. You plan, launch, harvest, and decide. Start with one explorer; add only within the resource budget in `EXAM.md`.
+Use when code has a repeatable score. You coordinate and score; subagents explore and propose changes.
 
-## Two phases
+## Core loop
 
-- **Setup** defines the test, the notes, the work areas, and the baseline. See [setup](references/setup.md).
-- **Run** picks ideas, briefs explorers, measures, and keeps winners. See [run](references/run.md).
+1. Set a target, frozen test, fixed inputs, baseline/noise bar, queue, and loop branch. See [setup](references/setup.md).
+2. Give each explorer one idea and a private worktree. It runs only the blind gate and returns one code commit plus separate notes. See [run](references/run.md).
+3. Check and score it yourself. Keep only gains larger than measured baseline noise; log the result and repeat.
 
-If the run config/log is missing or the target, exam, or inputs changed, start a new setup. Do not spawn explorers before it passes.
+## Never break
 
-## Rules
+- Explorers never run the scored exam or read candidate scores. The coordinator chooses inputs and scores.
+- Keep the exam and inputs fixed within a run; changes require a new run tag and folder.
+- Untested code stays detached. Cherry-pick only tested winners to the loop branch, never the base ref.
+- Keep score and decision logs append-only. Copy notes before removing a worktree.
 
-- Gate: explorers only. Exam: you only. Explorers never see scores. See [exam](references/exam.md).
-- Use one fixed exam and input set for every candidate in a run.
-- Keep untested code off branches. Only a tested change earns a branch or tag.
-
-
-## Terms
-
-- Winners live on the loop branch — never `main`.
-- Prefix explorer-code commits with `exp:` and record-only commits with `log:`.
-
-## References
-
-- Setup: [setup](references/setup.md). Run: [run](references/run.md).
-- Test: [exam](references/exam.md). Work areas: [worktrees](references/worktrees.md). Notes: [notes](references/notes.md).
-- `templates/` holds starter files: stored `EXAM/QUEUE/WORKLOG/PROGRESS.jsonl`, ephemeral `BRIEF`. Copy them during setup.
+Details: [scoring and guards](references/exam.md), [worktrees](references/worktrees.md). Copy the run templates during setup; use `BRIEF` for each explorer.

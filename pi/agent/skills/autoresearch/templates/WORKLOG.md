@@ -4,8 +4,8 @@ One entry per candidate decision. Scores live in `PROGRESS.jsonl`; cite the resu
 
 ## <idea> (<date>)
 - result: <PROGRESS ID, or unscored>
-- verdict: keep | discard | bold | crash | cancel
+- verdict: keep | discard | stale | crash | cancel
 - why: <gain vs noise, stability, cost>
 - what changed: <one sentence>
-- what you learned: <one or two sentences; source: <URL> for outside claims>
+- what you learned: <one or two sentences>
 - next: <one idea>
