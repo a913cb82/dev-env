@@ -72,16 +72,7 @@ Tips, not rules: paste one winner diff and one near-miss diff. Use a cheap model
 - Flaky score: test again on your box. Your test wins.
 - Three failed tries drops the idea. Starting example; write the reason and tune in `EXAM.md`.
 
-## Defaults (starting example — copy into `EXAM.md` and tune)
+## Defaults
 
-| Item | Example |
-|---|---|
-| N | start 1; fill share after exam slots; +1 spare idle; then hold queue at 1 |
-| Explorer budget | near N x exam time / exam slots; clamp 5-60 min; more gate passes when slow |
-| Spawn timeout | budget plus 5 min |
-| Near noise | repeat once back to back |
-| Drop idea | after 3 failed changes |
-| Bold trigger | after 2 misses |
-| Bold patience | 3 tries |
-| Stop | 10 tries, 2 h, or 3 in-noise in a row |
-| Tags | old tags stay filed, never compare across tags |
+Starting numbers live in the EXAM template — copy them into the
+run folder's `EXAM.md` and tune there. This file states no numbers.

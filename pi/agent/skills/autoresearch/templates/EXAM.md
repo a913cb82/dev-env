@@ -11,8 +11,13 @@
 - loop branch: <name, never main>
 - share: <percent of box; example: 75%>
 - exam slots: <start 1; more only if tests can run side by side and box has room>
-- N: <start 1; fill share after exam slots; +1 spare idle>
-- explorer budget: <near N x exam time / exam slots; example clamp 5-60 min>
+- N: <start 1; fill share after exam slots; +1 spare idle; then hold queue at 1>
+- N formula: <floor((share - exam reserve) / one explorer)>
+- explorer budget: <near N x exam time / exam slots; clamp 5-60 min>
+- spawn timeout: <budget plus 5 min>
+- near noise: <repeat once back to back>
+- drop idea: <after 3 failed changes>
+- bold trigger: <after 2 misses>; bold patience: <3 tries>
 - queue target: <example: 1 submit waiting while 1 exam runs>
 - stop: <max tries, time box, or in-noise streak>
 - forbidden:

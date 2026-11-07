@@ -22,7 +22,7 @@ Example B (pass/fail): `pytest -q` with required files listed in `EXAM.md`.
 
 ## Blind gate (explorers run this)
 
-- The gate is fast and has no score. It runs inside the explorer tree.
+- The gate is fast (under ~5% of the exam budget) and has no score. It runs inside the explorer tree.
 - It checks: suite passes, smoke passes, output is stable.
 - It prints no scores. It writes no logs.
 - Every brief names the gate command. Every explorer runs it before it commits.
@@ -66,6 +66,7 @@ git diff HEAD -- runs/2026-01-01-cache/PROGRESS.jsonl | grep '^-[^-]' && echo RE
 
 - If the tree is dirty, commit first.
 - If out-of-scope files changed, drop the commit.
+- Test files, score logs, and harness code are always forbidden — every brief's Never-touch list names them, no exceptions.
 - If history was rewritten, stop and fix it.
 
 Fill the paths in `EXAM.md`.
@@ -92,5 +93,3 @@ Never push `main` or tags.
 - Keep every result in one append-only log. Never edit it.
 - Keep outputs keyed by commit. Prune old ones first. Always keep the current one.
 - Print one short line per round for the worklog. Example: `score 0.47, best 0.42, gain +0.05, noise 0.03, keep`.
-
-Example box (game tournaments only — skip unless your test is a game pool): fixed maps plus seed pool, quantile census, info-duel opponents, `mu`/`sigma` ratings, win-loss ranks, `games.log`, per-game `games` counts. Your `EXAM.md` names the real one.
