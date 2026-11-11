@@ -2273,6 +2273,49 @@ function openRun(comp) {
     detach.resetDetachState?.();
   }
 
+  // 29k. live placement never crosses mounted prose: a live thinking with
+  // live prose between it and its tools defers (no entries yet to consult,
+  // so the tree order decides), instead of attaching across the prose.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piK = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piK);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const base = { invalidate() {}, lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: false, expanded: false,
+      showImages: true, isError: false };
+    const mk = (id, cmd) => ({ ...base, args: { command: cmd }, toolCallId: id });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    bash.renderCall({ command: "echo live" }, theme, mk("k1", "echo live"));
+    const liveThink = { role: "assistant",
+      content: [{ type: "thinking", thinking: "live thought" }], stopReason: "stop" };
+    const rowThink = { lastMessage: liveThink, hiddenThinkingLabel: "\u2026live thought 0.1k ch",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const proseRow = { lastMessage: { role: "assistant",
+        content: [{ type: "text", text: "Rule confirmed: attach within the segment." }] },
+      hiddenThinkingLabel: "P",
+      updateContent() {}, setHiddenThinkingLabel() {} };
+    const chat = { children: [rowThink, proseRow, { toolCallId: "k1" }],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piK);
+    check("live thinking defers past live prose", r.detached === 0 && chat.children.includes(rowThink), JSON.stringify(r));
+    detach.resetDetachState?.();
+  }
+
   // 30. fail-open coupling: replacement preview renders iff detach confirmed.
   {
     const mod = await reuseIndex();

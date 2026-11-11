@@ -205,7 +205,9 @@ anchors to its neighboring tool); walk-blind thinkings keep the legacy top
 position. Placement never crosses a visible message: a thinking attaches
 only within its own segment (nearest in-segment tool run, next preferred),
 and a thinking past prose from every tool stands alone as `N thinking`
-instead of teleporting into a later block. A thinking row means a row
+instead of teleporting into a later block. Mounted tree order and entry
+order each veto a crossing: trees hold the live rows entries have not
+landed yet, entries hold the settled rows no longer mounted. A thinking row means a row
 with thinking content — prose-only rows are never walked as thinking rows,
 so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)

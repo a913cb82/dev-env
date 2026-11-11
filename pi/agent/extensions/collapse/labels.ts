@@ -120,6 +120,21 @@ export function isThinkingRow(node: unknown): node is {
   return content.some((block) => (block as { type?: unknown } | null | undefined)?.type === "thinking");
 }
 
+/** A mounted assistant row with user-visible prose (agent-to-user text).
+ *  Mixed rows (prose + thinking) count: their prose is a segment boundary
+ *  for OTHER thinkings, while their own thinking still hosts same-message. */
+export function hasVisibleProse(node: unknown): boolean {
+  if (!node || typeof node !== "object") return false;
+  const lastMessage = (node as { lastMessage?: unknown }).lastMessage;
+  if (!lastMessage || typeof lastMessage !== "object") return false;
+  if ((lastMessage as { role?: unknown }).role !== "assistant") return false;
+  const content = (lastMessage as { content?: unknown }).content;
+  return Array.isArray(content) && content.some((block) =>
+    (block as { type?: unknown })?.type === "text" &&
+    typeof (block as { text?: unknown }).text === "string" &&
+    (block as { text: string }).text.trim() !== "");
+}
+
 
 /** Pi writes OSC marks (133;A/B/C) and styles (SGR) before the pad cell. */
 const OSC_AT = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/y;

@@ -18,7 +18,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
-import { isThinkingRow, setStandaloneThinking, walkerTui } from "./labels.js";
+import { hasVisibleProse, isThinkingRow, setStandaloneThinking, walkerTui } from "./labels.js";
 import { traceEntries, tracePokeOwner, isTurnCurrent } from "./trace.js";
 
 /** Entry ids whose thinking row is confirmed detached (history + adopted). */
@@ -176,14 +176,19 @@ function entriesOf(sm: unknown): Array<{ id?: string; message?: unknown }> {
  *  nothing and stays stock. */
 type OrderedItem =
   | { kind: "thinking"; parent: { removeChild?(c: unknown): void } | undefined; row: unknown }
-  | { kind: "tool"; runId: number; toolCallId: string };
+  | { kind: "tool"; runId: number; toolCallId: string }
+  | { kind: "visible" };
 
 function collectOrdered(
   node: unknown,
   parent: { removeChild?(c: unknown): void } | undefined,
   out: OrderedItem[],
+  toolPos?: Map<string, number>,
 ): void {
   if (!node || typeof node !== "object") return;
+  // Mounted prose is a segment boundary for OTHER thinkings (their runs
+  // never span it); a mixed row's own thinking still hosts same-message.
+  if (hasVisibleProse(node)) out.push({ kind: "visible" });
   if (isThinkingRow(node)) {
     out.push({ kind: "thinking", parent, row: node });
     return;
@@ -192,6 +197,7 @@ function collectOrdered(
   if (typeof toolCallId === "string") {
     const runId = traceEntries.get(toolCallId)?.runId;
     if (runId !== undefined) {
+      toolPos?.set(toolCallId, out.length);
       out.push({ kind: "tool", runId, toolCallId });
       return;
     }
@@ -200,7 +206,7 @@ function collectOrdered(
   if (Array.isArray(children)) {
     const self = node as { removeChild?(c: unknown): void };
     const nextParent = typeof self.removeChild === "function" ? self : undefined;
-    for (const child of children) collectOrdered(child, nextParent, out);
+    for (const child of children) collectOrdered(child, nextParent, out, toolPos);
   }
 }
 
@@ -278,16 +284,26 @@ export function detachPass(
       (entry as { display?: unknown }).display !== false;
     /** Segment gate: a thinking attaches only within its own visible
      *  segment — never across a user message, agent prose, or visible
-     *  custom block. Unknown positions (live, unpersisted) allow: the
-     *  settled pass enforces the segment once entries land. */
-    const segmentClear = (thinkMsg: unknown, toolCallId: string): boolean => {
+     *  custom block. Mounted tree order and entry order EACH veto: trees
+     *  hold the live rows entries have not landed yet, entries hold the
+     *  settled rows no longer mounted. Fully unknown positions allow
+     *  (the settled pass re-checks once entries land). */
+    const segmentClear = (thinkIdx: number, thinkMsg: unknown, toolCallId: string): boolean => {
+      const mountedAt = toolPos.get(toolCallId);
+      if (mountedAt !== undefined) {
+        const lo = Math.min(thinkIdx, mountedAt), hi = Math.max(thinkIdx, mountedAt);
+        for (let k = lo + 1; k < hi; k++) {
+          if (ordered[k].kind === "visible") return false;
+        }
+      }
       const ti = entryIndex.get(thinkMsg);
       const ci = toolEntryIdx.get(toolCallId);
-      if (ti === undefined || ci === undefined) return true;
-      const lo = Math.min(ti, ci), hi = Math.max(ti, ci);
-      for (let k = lo + 1; k < hi; k++) {
-        if (isEntryVisible((entryList[k] as { message?: unknown })?.message) ||
-          isCustomEntryVisible(entryList[k])) return false;
+      if (ti !== undefined && ci !== undefined) {
+        const lo = Math.min(ti, ci), hi = Math.max(ti, ci);
+        for (let k = lo + 1; k < hi; k++) {
+          if (isEntryVisible((entryList[k] as { message?: unknown })?.message) ||
+            isCustomEntryVisible(entryList[k])) return false;
+        }
       }
       return true;
     };
@@ -314,7 +330,10 @@ export function detachPass(
       return undefined;
     };
     const ordered: OrderedItem[] = [];
-    collectOrdered(tui, undefined, ordered);
+    // Mounted tool positions: the live segment gate (tree order decides
+    // while entries are still landing). Entry order covers the rest.
+    const toolPos = new Map<string, number>();
+    collectOrdered(tui, undefined, ordered, toolPos);
     walkedTotal = ordered.length;
     walkedThinking = ordered.filter((o) => o.kind === "thinking").length;
     // Nearest tool run per position: next preferred (thinking usually
@@ -381,7 +400,7 @@ export function detachPass(
           if (!tool) return undefined;
           const g = guessOk(tool.runId);
           if (g === undefined) return undefined;
-          return segmentClear(message, tool.toolCallId) ? g : undefined;
+          return segmentClear(i, message, tool.toolCallId) ? g : undefined;
         };
         runId = tryTool(nextTool[i]) ?? tryTool(prev) ??
           tryTool(entryNeighborRun(message, true)) ?? tryTool(entryNeighborRun(message, false));
