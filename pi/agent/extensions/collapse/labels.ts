@@ -9,7 +9,7 @@
  * stops matching, everything below bails to stock behavior (never throws).
  */
 import { Container, type Component } from "@earendil-works/pi-tui";
-import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, thinkingLabelForWidth, wheelFrameAt } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatRunDuration, labelBudget, padLabel, thinkingLabelForWidth, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 
@@ -46,6 +46,32 @@ export function resetLabelsState(): void {
   rowColumns = new WeakMap<object, number>();
   streamLabelAt = new WeakMap<object, number>();
   streamWrites = 0;
+  standaloneMessages = new WeakSet<object>();
+  standaloneSeen = new WeakMap<object, { first: number; done?: number }>();
+}
+
+/** Thinking with nowhere to go: completed messages detach could not host
+ *  (no tools in any reachable run) collapse in place instead of lingering
+ *  as stock rows. Set by detachPass; honored by the reconcile below. */
+let standaloneMessages = new WeakSet<object>();
+/** First sighting + completion per standalone message, for the duration. */
+let standaloneSeen = new WeakMap<object, { first: number; done?: number }>();
+export function setStandaloneThinking(message: unknown, on: boolean): void {
+  try {
+    if (!message || typeof message !== "object") return;
+    if (on) standaloneMessages.add(message);
+    else standaloneMessages.delete(message);
+  } catch {
+    // Cosmetic only.
+  }
+}
+/** Collapsed form for homeless thinking: `>N thinking  DURATION`, sized
+ *  to the label width. The duration shows once a full second elapsed;
+ *  younger or untimed messages render the bare `>N thinking`. Pure. */
+export function standaloneThinkingLabel(count: number, durationMs: number | undefined, width: number): string {
+  const left = `>${count} thinking`;
+  if (durationMs === undefined || !(durationMs >= 1000)) return left;
+  return padLabel(left, formatRunDuration(durationMs), width);
 }
 
 export function walkerStatus(): string {
@@ -175,6 +201,32 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
 }
 
 
+/** Write the collapsed form for homeless thinking (see setStandaloneThinking).
+ *  Never cached: the duration ticks until it freezes at completion. */
+function writeStandaloneLabel(row: any, message: unknown, width: number | undefined, pad: number): void {
+  try {
+    const msg = message as { content?: unknown; stopReason?: unknown };
+    let runs = 0;
+    if (Array.isArray(msg?.content)) {
+      for (const block of msg.content as Array<{ type?: unknown; thinking?: unknown }>) {
+        if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim() !== "") runs++;
+      }
+    }
+    const now = Date.now();
+    let seen = standaloneSeen.get(message as object);
+    if (!seen) {
+      seen = { first: now };
+      standaloneSeen.set(message as object, seen);
+    }
+    if (msg?.stopReason != null && seen.done === undefined) seen.done = now;
+    const duration = seen.done === undefined ? undefined : Math.max(0, seen.done - seen.first);
+    const label = standaloneThinkingLabel(Math.max(1, runs), duration, labelBudget(width, pad));
+    if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
+  } catch {
+    // Cosmetic only.
+  }
+}
+
 /** Write a row's label WITHOUT rebuilding its content. Pi builds the hidden
  *  label as one `Text` inside a `MouseRegion`; the styled string is
  *  `theme.italic(theme.fg("thinkingText", label))`, so replacing the old
@@ -302,6 +354,11 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
       installRowRail(row, pi);
       const message = row.lastMessage as { role?: unknown; content?: unknown };
       if (message?.role !== "assistant") continue;
+      if (standaloneMessages.has(message as object)) {
+        writeStandaloneLabel(row, message, width, pad);
+        labeled++;
+        continue;
+      }
       const cached = labeledFor.get(row);
       if (cached && cached.message === message && cached.width === width && cached.pad === pad) continue;
       const thinking = extractThinkingText(message);

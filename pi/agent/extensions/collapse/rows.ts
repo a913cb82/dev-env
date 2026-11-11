@@ -386,18 +386,20 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
   const duration = formatRunDuration(runDuration(runId));
   // Run-level header: every run rests as one line. Click opens the per-row
   // view below. While entries stream the header carries the live wheel
-  // (and the arg text written so far) instead of expanding.
+  // and the elapsed time; settled runs show the final duration. Time is
+  // always on the right — never arg chars.
   if (!isRunOpen(runId)) {
     const live = runHasLive(runId);
     const summary = summarizeRun(runToolNames(runId), runThinkingCount(runId));
     let right = duration ? theme.fg("dim", duration) : "";
     if (live) {
-      let chars = 0;
+      let start: number | undefined;
       for (const id of ids) {
-        const entry = traceEntries.get(id);
-        if (entry) chars += argsTextChars(entry.args);
+        const s = traceEntries.get(id)?.startedAt;
+        if (typeof s === "number") start = start === undefined ? s : Math.min(start, s);
       }
-      if (chars > 0) right = liveCountSuffix(theme, chars);
+      const elapsed = start === undefined ? undefined : Date.now() - start;
+      right = elapsed !== undefined && elapsed >= 0 ? theme.fg("dim", formatRunDuration(elapsed)) : "";
     }
     const header = new CollapsedLine(summary, right, liveOutputPad(pi), theme, live, live ? undefined : ">");
     trace.addChild(

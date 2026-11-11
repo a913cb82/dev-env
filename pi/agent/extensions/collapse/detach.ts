@@ -16,8 +16,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractThinkingText, isSafeToDetach, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
-import { isThinkingRow, walkerTui } from "./labels.js";
-import { traceCurrentRunId, traceEntries, tracePokeOwner } from "./trace.js";
+import { isThinkingRow, setStandaloneThinking, walkerTui } from "./labels.js";
+import { traceEntries, tracePokeOwner, isTurnCurrent } from "./trace.js";
 
 /** Entry ids whose thinking row is confirmed detached (history + adopted). */
 const hiddenEntryIds = new Set<string>();
@@ -41,6 +41,12 @@ const runThinkingOpen = new Set<number>();
 /** Last session manager seen (session_start); the poller has no ctx. */
 let lastSessionManager: any = undefined;
 
+/** Last pass summary for /collapse: walked rows, tools seen, outcomes. */
+let lastDetachDiag = "no pass yet";
+export function detachDiag(): string {
+  return lastDetachDiag;
+}
+
 export function resetDetachState(): void {
   hiddenEntryIds.clear();
   liveHidden = new WeakSet<object>();
@@ -49,6 +55,7 @@ export function resetDetachState(): void {
   hiddenRuns.clear();
   runThinkingOpen.clear();
   lastSessionManager = undefined;
+  lastDetachDiag = "no pass yet";
 }
 
 export function noteSessionManager(sm: unknown): void {
@@ -175,6 +182,9 @@ export function detachPass(
   sessionManager?: unknown,
 ): { detached: number; skipped: number } {
   const result = { detached: 0, skipped: 0 };
+  let noHome = 0;
+  let walkedTotal = 0;
+  let walkedThinking = 0;
   try {
     if (!isDetachEnabled() || !isHiddenThinking(pi)) return result;
     const tui = walkerTui();
@@ -215,6 +225,8 @@ export function detachPass(
     };
     const ordered: OrderedItem[] = [];
     collectOrdered(tui, undefined, ordered);
+    walkedTotal = ordered.length;
+    walkedThinking = ordered.filter((o) => o.kind === "thinking").length;
     // Nearest tool run per position: next preferred (thinking usually
     // precedes the tools it informs), else previous.
     const nextRun: (number | undefined)[] = new Array(ordered.length);
@@ -243,25 +255,44 @@ export function detachPass(
       if (runId === undefined) {
         // Live-edge guard: a thinking row whose message is not yet persisted
         // has no settled home — its tools may not have rendered (the poll
-        // beats them). Falling back across a boundary would teleport the
-        // thinking into the previous turn's run, so a guessed neighbor only
-        // counts when it is the run the next tool joins; otherwise defer —
-        // the poll retries once the tools land. A host toolCall in the same
-        // message is direct evidence and always counts. Persisted (history)
-        // messages keep the old behavior: their runs are final.
+        // beats them). Falling back across a turn-resetting boundary would
+        // teleport the thinking into the previous turn, so a guessed
+        // neighbor only counts while its turn is still open (no user
+        // message, session switch, or foreign tool since its tools
+        // rendered); same-turn content splits never strand. Otherwise
+        // defer — the poll retries once the tools land. A host toolCall in
+        // the same message is direct evidence and always counts.
+        // Persisted (history) messages keep the old behavior: their runs
+        // are final.
         const settled = byMessage.has(message);
-        const current = traceCurrentRunId();
         const guessOk = (candidate: number | undefined): number | undefined =>
-          candidate !== undefined && (settled || candidate === current) ? candidate : undefined;
+          candidate !== undefined && (settled || isTurnCurrent(candidate)) ? candidate : undefined;
         runId = guessOk(nextRun[i]) ?? guessOk(prev) ??
           guessOk(entryNeighborRun(message, true)) ?? guessOk(entryNeighborRun(message, false));
-      }
-      if (runId === undefined) {
-        result.skipped++;
-        continue;
+        if (runId === undefined && !settled) {
+          // Walk-blind trees (no tool components mounted): the most
+          // recently rendered tool is the turn's own while its turn is
+          // open. Same guard — a stale newest means the tools are still
+          // coming, so defer.
+          let newest: number | undefined;
+          for (const entry of traceEntries.values()) newest = entry.runId;
+          if (newest !== undefined && isTurnCurrent(newest)) runId = newest;
+        }
       }
       const overrides = (row as { thinkingVisibilityOverrides?: unknown })
         .thinkingVisibilityOverrides as Map<number, boolean> | undefined;
+      if (runId === undefined) {
+        // No home: a completed thinking with nowhere to go collapses in
+        // place (standalone header) instead of lingering as a stock row.
+        // Streaming rows keep their live preview; unsafe rows keep stock.
+        const text = extractThinkingText(message);
+        if (text && message.stopReason != null && isSafeToDetach(message, true, overrides)) {
+          setStandaloneThinking(message, true);
+        }
+        result.skipped++;
+        noHome++;
+        continue;
+      }
       if (!isSafeToDetach(message, true, overrides)) {
         result.skipped++;
         continue;
@@ -288,6 +319,7 @@ export function detachPass(
       } else {
         liveHidden.add(message);
       }
+      setStandaloneThinking(message, false);
       const texts = runThinking.get(runId) ?? [];
       // Latest placement wins: Pi rebuilds re-add removed rows, so a second
       // detach of the same text moves it instead of duplicating it across
@@ -312,6 +344,9 @@ export function detachPass(
   } catch {
     // Cosmetic only; never break the event loop.
   }
+  lastDetachDiag =
+    `walked ${walkedTotal} (${walkedThinking} thinking, ${walkedTotal - walkedThinking} tools); ` +
+    `attached ${result.detached}; homeless ${noHome}; skipped ${result.skipped}`;
   return result;
 }
 

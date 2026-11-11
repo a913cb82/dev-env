@@ -1805,6 +1805,173 @@ function openRun(comp) {
     detach.resetDetachState?.();
   }
 
+  // 86a. a same-turn content split must not strand thinking: trailing
+  // prose bumps the run, but the turn's tools are already rendered, so
+  // the thinking still joins them (strict equality with the newest run
+  // would defer forever).
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piS = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piS);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [{ children: [] }] }, {});
+    bash.renderCall({ command: "echo t" }, theme, mk("t1", { command: "echo t" }));
+    // Trailing prose in a later message splits the run (rows stay under
+    // their content) but stays in the same turn.
+    await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
+    await handlers.get("message_update")[0](
+      { message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+      {},
+    );
+    const thinkMsg = { role: "assistant",
+      content: [{ type: "thinking", thinking: "trailing thought" }], stopReason: "toolUse" };
+    const rowThink = { lastMessage: thinkMsg, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const chat = { children: [rowThink, { toolCallId: "t1" }],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piS);
+    check("trailing split keeps the run", r.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r));
+    check("thinking joins its tools", (detach.runThinkingForTool("t1") ?? "").includes("trailing thought"), detach.runThinkingForTool("t1") ?? "(none)");
+    detach.resetDetachState?.();
+  }
+
+  // 86b. walk-blind trees still attach: with no tool components mounted,
+  // the most recently rendered tool's run hosts the thinking (live only).
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piB = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piB);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [{ children: [] }] }, {});
+    bash.renderCall({ command: "echo t" }, theme, mk("t1", { command: "echo t" }));
+    const thinkMsg = { role: "assistant",
+      content: [{ type: "thinking", thinking: "blind thought" }], stopReason: "toolUse" };
+    const rowThink = { lastMessage: thinkMsg, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const chat = { children: [rowThink],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piB);
+    check("blind tree attaches to newest run", r.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r));
+    check("newest run hosts it", (detach.runThinkingForTool("t1") ?? "").includes("blind thought"), detach.runThinkingForTool("t1") ?? "(none)");
+    detach.resetDetachState?.();
+  }
+
+  // 86c. thinking-only with nowhere to go collapses in place: a completed
+  // thinking with no host run stays mounted but relabels as a header.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piQ = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piQ);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [{ children: [] }] }, {});
+    const thinkMsg = { role: "assistant",
+      content: [{ type: "thinking", thinking: "solo thought" }], stopReason: "stop" };
+    const rowThink = { lastMessage: thinkMsg, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const chat = { children: [rowThink],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piQ);
+    check("homeless thinking stays mounted", r.detached === 0 && chat.children.includes(rowThink), JSON.stringify(r));
+    mod.reconcileThinkingLabels(piQ);
+    check("homeless thinking collapses in place", (rowThink.hiddenThinkingLabel ?? "").includes(">1 thinking"), rowThink.hiddenThinkingLabel);
+    detach.resetDetachState?.();
+  }
+
+  // 86d. a live header shows elapsed time on the right, never arg chars.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piE = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piE);
+    const detach = mod;
+    detach.resetDetachState?.();
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const realNow = Date.now;
+    let mockNow = 1700000000000;
+    Date.now = () => mockNow;
+    try {
+      const live = { args: { command: "sleep 14" }, toolCallId: "w-el", invalidate() {},
+        lastComponent: undefined, state: {}, cwd: "/repo",
+        executionStarted: true, argsComplete: true, isPartial: true,
+        expanded: false, showImages: true, isError: false };
+      bash.renderCall(live.args, theme, live);
+      mockNow += 14000;
+      const header = bash.renderCall(live.args, theme, live).render(120).join("");
+      check("live header shows elapsed", header.includes("1 bash") && header.includes("14s"), header.slice(0, 120));
+      check("live header shows no arg chars", !/\dk ch/.test(header), header.slice(0, 120));
+    } finally {
+      Date.now = realNow;
+    }
+    detach.resetDetachState?.();
+  }
+
+  // 86e. standalone header format: bare below one second, padded with
+  // duration after (the user's `>1 thinking  1m54s` case).
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    check("standalone bare below one second", labelsLib.standaloneThinkingLabel(1, 500, 100) === ">1 thinking",
+      labelsLib.standaloneThinkingLabel(1, 500, 100));
+    const long = labelsLib.standaloneThinkingLabel(1, 114000, 100);
+    check("standalone shows 1m54s", long.startsWith(">1 thinking") && long.includes("1m54s"), long);
+    check("standalone fits its width", long.length === 100, `${long.length}`);
+  }
+
   // 30. fail-open coupling: replacement preview renders iff detach confirmed.
   {
     const mod = await reuseIndex();

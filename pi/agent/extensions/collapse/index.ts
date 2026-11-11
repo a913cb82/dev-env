@@ -52,6 +52,7 @@ import {
   createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+  detachDiag,
   detachPass,
   hiddenRunCount,
   isMessageHidden,
@@ -62,6 +63,7 @@ import {
   runThinkingTexts,
 } from "./detach.js";
 export {
+  detachDiag,
   detachPass,
   hiddenRunCount,
   isMessageHidden,
@@ -278,7 +280,7 @@ export default function (pi: ExtensionAPI) {
       detachPass(pi);
       wrappingPass(pi);
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s); ${breatheStatus()}; ${timingStatus()}${uncollapsedReport(pi)}`,
+        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s); detach: ${detachDiag()}; ${breatheStatus()}; ${timingStatus()}${uncollapsedReport(pi)}`,
       );
     },
   });

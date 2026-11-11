@@ -178,16 +178,21 @@ clean stop, has tools) means a detach never hides anything but hidden-label
 rows; a lone thinking row with no host tool attaches to the nearest tool
 run in transcript order (next preferred, else previous) so its preview
 still has a home — except at the live edge: a thinking row whose message
-is not yet persisted never attaches to an older run (its tools have not
-rendered yet; the poll would otherwise teleport it into the previous
-turn). The pass defers and retries once the turn's tools land. A host
+is not yet persisted never attaches across a turn-resetting boundary
+(user message, session switch, foreign tool — its tools have not rendered
+yet; the poll would otherwise teleport it into the previous turn).
+Same-turn content splits (trailing prose) never strand: the pass defers
+only across hard boundaries and retries once the turn's tools land. A host
 toolCall in the same message is direct evidence and always counts, and
 settled history keeps the old behavior. A re-detach moves the text
 (latest placement wins — Pi rebuilds re-add removed rows) instead of
 stacking duplicates across runs; and the replacement preview row (one per
 hosted thinking block, middle-truncated to the row width with its size on
 the right, click to expand the full stashed text) renders iff the detach is
-confirmed — a miss degrades to the stock Pi row, never a duplicate. Detach runs on
+confirmed — a miss degrades to the stock Pi row, never a duplicate.
+A completed thinking with nowhere to go (no tools in any reachable run)
+collapses in place as `>1 thinking  1m54s` instead of lingering — same
+header shape, frozen at completion. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
 are never edited, so history, replay, compaction, and reload backfill keep
@@ -282,6 +287,13 @@ never built from a megabyte. When no argument is telling, the pairs alone are
 the row, so a collapsed row is never emptier than stock. Definitions with
 their own renderers keep them, wrapped in the shared chrome. `/collapse` lists
 any tool that never opted in.
+
+**Live headers show elapsed time.** A resting header carries the final
+duration on the right; a streaming one carries the time so far (ticking
+with the wheel), never arg chars — the right column is always time.
+`/collapse` reports the last detach pass (`walked N (T thinking, M tools);
+attached A; homeless H; skipped S`): homeless that never drops to zero
+means the poll is not seeing the tools.
 
 **Live rows.** Until a call has a result, an open run's row also streams
 the arguments its summary hides — the `write` body, both sides of an `edit`, the

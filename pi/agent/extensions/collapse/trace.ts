@@ -46,6 +46,9 @@ export interface TraceEntry extends CollapseSlots {
   // means a renderer stamped it outside traceSync (expand-time ??=).
   startedAtSrc?: TimingSrc;
   endedAtSrc?: TimingSrc;
+  // Turn stamp at first render: placement trusts a candidate run only
+  // while no turn-resetting boundary fired since its tools rendered.
+  turnSeq: number;
 }
 
 export type TimingSrc = "pi" | "history" | "fallback";
@@ -141,11 +144,30 @@ export function traceSummary(): string {
  *  The reason is kept for `/collapse`: when rows show an unexpected gap,
  *  the report says exactly which boundary split them. */
 export const boundaryReasons: string[] = [];
+/** Turn-resetting boundary counter. Same-turn content splits (trailing
+ *  prose) reposition runs but never close a turn: only hard boundaries
+ *  (user messages, session starts, foreign tools) strand thinking. */
+let hardBoundarySeq = 0;
+/** Newest-tool stamp per run: the turn a run's tools rendered in. */
+const runTurnSeq = new Map<number, number>();
 export function traceBoundary(reason = "?") {
+  traceRunId++;
+  hardBoundarySeq++;
+  boundaryReasons.push(`${reason}#${traceRunId}`);
+  if (boundaryReasons.length > 8) boundaryReasons.shift();
+  return reason;
+}
+/** Same-turn split (leading/trailing prose): new run, same turn. */
+export function traceSoftBoundary(reason = "?") {
   traceRunId++;
   boundaryReasons.push(`${reason}#${traceRunId}`);
   if (boundaryReasons.length > 8) boundaryReasons.shift();
   return reason;
+}
+/** True while no turn-resetting boundary fired since the run's tools
+ *  rendered: a guessed thinking host from this run is still its turn. */
+export function isTurnCurrent(runId: number): boolean {
+  return runTurnSeq.get(runId) === hardBoundarySeq;
 }
 
 /** Test-only: clear registry state so a render test starts from a known
@@ -158,6 +180,8 @@ export function resetTraceState(): void {
   historyTimings.clear();
   plannedRunById.clear();
   runOpen.clear();
+  runTurnSeq.clear();
+  hardBoundarySeq = 0;
   boundaryReasons.length = 0;
   try {
     if (historyTimer !== undefined) clearTimeout(historyTimer);
@@ -233,6 +257,7 @@ export function applyPlannedRuns(groups: string[][]): void {
   const planned = new Set<string>();
   traceRuns.clear();
   traceOwnerPoke.clear();
+  runTurnSeq.clear();
   for (const group of groups) {
     const ids = group.filter((id) => byId.has(id));
     if (ids.length === 0) continue;
@@ -258,12 +283,6 @@ export function applyPlannedRuns(groups: string[][]): void {
 
 export function traceOwnerId(runId: number): string | undefined {
   return traceRuns.get(runId)?.[0];
-}
-
-/** The run the next rendered tool joins. Thinking that has not settled yet
- *  may only attach to this run — anything older sits across a boundary. */
-export function traceCurrentRunId(): number {
-  return traceRunId;
 }
 
 export function tracePokeOwner(runId: number): void {
@@ -296,11 +315,13 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
       executionStarted: false,
       argsComplete: false,
       hasResult: false,
+      turnSeq: hardBoundarySeq,
     };
     traceEntries.set(toolCallId, entry);
     const run = traceRuns.get(entry.runId) ?? [];
     run.push(toolCallId);
     traceRuns.set(entry.runId, run);
+    runTurnSeq.set(entry.runId, hardBoundarySeq);
     // Rebuilding from history: one run per tool (see traceHistoryPhase).
     if (traceHistoryPhase) traceRunId++;
   }
@@ -502,7 +523,7 @@ export function traceOnMessageUpdate(event: unknown): void {
     const message = (event as { message?: unknown })?.message;
     if (!hasLeadingVisibleContent(message as { role?: unknown; content?: unknown })) return;
     visibleBumpSeq = messageSeq;
-    traceBoundary("leading-content");
+    traceSoftBoundary("leading-content");
   } catch {
     // Cosmetic only.
   }
