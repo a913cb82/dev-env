@@ -712,6 +712,25 @@ function openRun(comp) {
     check("cross-turn tool-only rows merge", merged.length === 3, JSON.stringify(merged));
     check("merged keeps both rows", merged[0].includes("one") && merged[1].includes("two"), JSON.stringify(merged));
 
+    // 14a2. consecutive think→tool messages merge: hidden thinking is not
+    // a breakpoint, so adjacent headers can never happen without prose.
+    resetTrace();
+    const thinkTool = async (id, cmd, thought) => {
+      await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
+      await handlers.get("message_update")[0]({ message: { role: "assistant", content: [
+        { type: "thinking", thinking: thought },
+        { type: "toolCall", name: "bash", id, arguments: { command: cmd } },
+      ] } }, {});
+      render(id, cmd);
+    };
+    await thinkTool("q1", "echo one", "t1");
+    await thinkTool("q2", "echo two", "t2");
+    await thinkTool("q3", "echo three", "t3");
+    openRun(render("q1", "echo one"));
+    const consecutive = render("q1", "echo one").render(90);
+    check("think-tool turns merge into one block", consecutive.length === 4, JSON.stringify(consecutive));
+    check("merged block keeps all three", consecutive[0].includes("one") && consecutive[1].includes("two") && consecutive[2].includes("three"), JSON.stringify(consecutive));
+
     // 14b. visible text between turns still splits the run
     resetTrace();
     render("y1", "echo one");

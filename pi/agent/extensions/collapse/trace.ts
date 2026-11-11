@@ -512,9 +512,11 @@ export function traceOnMessageStart(event: unknown): void {
   }
 }
 
-/** Streaming update: a turn whose visible content (prose or a thinking block)
- *  renders ABOVE its tool calls must start its own run, or merging would lift
- *  those rows above the content. Tool-only turns never split. Content that
+/** Streaming update: a turn whose visible prose renders ABOVE its tool
+ *  calls must start its own run, or merging would lift those rows above
+ *  the content. Hidden thinking never splits: it renders as a one-line
+ *  label that detach absorbs into the run, so consecutive think→tool
+ *  turns merge into one block. Tool-only turns never split. Content that
  *  only follows the tools renders below the rows and changes nothing. */
 export function traceOnMessageUpdate(event: unknown): void {
   try {

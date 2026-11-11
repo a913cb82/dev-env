@@ -351,12 +351,12 @@ function check(name, cond, extra) {
   {
     const hv = logic.hasLeadingVisibleContent;
     check("leading text", hv({ role: "assistant", content: [{ type: "text", text: "hi" }] }) === true);
-    check("leading thinking", hv({ role: "assistant", content: [{ type: "thinking", thinking: "hmm" }] }) === true);
+    check("leading thinking never splits (hidden)", hv({ role: "assistant", content: [{ type: "thinking", thinking: "hmm" }] }) === false);
     check("blank text is invisible", hv({ role: "assistant", content: [{ type: "text", text: "  " }] }) === false);
     check("blank thinking is invisible", hv({ role: "assistant", content: [{ type: "thinking", thinking: "\n " }] }) === false);
     check("tool first", hv({ role: "assistant", content: [{ type: "toolCall", name: "bash", id: "1" }, { type: "text", text: "after" }] }) === false);
     check("text before tool", hv({ role: "assistant", content: [{ type: "text", text: "before" }, { type: "toolCall", name: "bash", id: "1" }] }) === true);
-    check("thinking before tool", hv({ role: "assistant", content: [{ type: "thinking", thinking: "t" }, { type: "toolCall", name: "bash", id: "1" }] }) === true);
+    check("thinking before tool never splits (hidden)", hv({ role: "assistant", content: [{ type: "thinking", thinking: "t" }, { type: "toolCall", name: "bash", id: "1" }] }) === false);
     check("tool only", hv({ role: "assistant", content: [{ type: "toolCall", name: "bash", id: "1" }] }) === false);
     check("user is not assistant", hv({ role: "user", content: [{ type: "text", text: "x" }] }) === false);
     check("empty content", hv({ role: "assistant", content: [] }) === false);

@@ -105,8 +105,10 @@ proportional to the transcript (~2.3KB per tool row), not to elapsed time.
 
 **One component per run.** Adjacent tool calls share a single component, so Pi
 emits one blank line per run instead of one per tool. A run continues across
-turn boundaries; only a turn whose *visible* content (prose or a thinking
-block) renders above its tools starts a new one. Rows therefore stay adjacent
+turn boundaries; only a turn whose visible prose renders above its tools
+starts a new one — hidden thinking never splits, so consecutive think→tool
+turns merge into one block and two collapsed headers are never adjacent
+without a visible message between them. Rows therefore stay adjacent
 to whatever is actually on screen, and consecutive tool-only turns are
 gapless. A message that renders nothing — a custom message with
 `display: false` (extension notifications) or a system message — never starts

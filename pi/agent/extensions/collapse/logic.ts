@@ -407,21 +407,17 @@ export function hasLeadingVisibleContent(message: {
   role?: unknown;
   content?: unknown;
 }): boolean {
+  // Hidden thinking is NOT visible content: it renders as a one-line label
+  // that detach absorbs into the run, so it must never split one. Only
+  // prose (or anything else that paints above the tools) is a breakpoint.
   if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return false;
   for (const block of message.content) {
     const candidate = block as
-      | { type?: unknown; text?: unknown; thinking?: unknown }
+      | { type?: unknown; text?: unknown }
       | null
       | undefined;
     if (candidate?.type === "toolCall") return false;
     if (candidate?.type === "text" && typeof candidate.text === "string" && candidate.text.trim()) {
-      return true;
-    }
-    if (
-      candidate?.type === "thinking" &&
-      typeof candidate.thinking === "string" &&
-      candidate.thinking.trim()
-    ) {
       return true;
     }
   }
