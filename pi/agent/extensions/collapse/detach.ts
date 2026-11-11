@@ -248,6 +248,7 @@ export function detachPass(
   let noHome = 0;
   let walkedTotal = 0;
   let walkedThinking = 0;
+  let walkedTools = 0;
   try {
     if (!isDetachEnabled() || !isHiddenThinking(pi)) return result;
     const tui = walkerTui();
@@ -351,6 +352,7 @@ export function detachPass(
     collectOrdered(tui, undefined, ordered, toolPos);
     walkedTotal = ordered.length;
     walkedThinking = ordered.filter((o) => o.kind === "thinking").length;
+    walkedTools = ordered.filter((o) => o.kind === "tool").length;
     // Nearest tool run per position: next preferred (thinking usually
     // precedes the tools it informs), else previous. Tool ids ride along
     // so stashed thinkings anchor to their transcript neighbors.
@@ -447,24 +449,37 @@ export function detachPass(
       // Mixed message: prose stays, only the thinking children go.
       // Requires our label (proves the row is managed, never stock) so a
       // visible-thinking run can never match by label text.
+      const text = extractThinkingText(message);
+      if (!text) {
+        skip("empty");
+        continue;
+      }
       let partialKids: unknown[] = [];
       if (!wholeSafe) {
+        // Mixed message: prose stays, only the thinking children go.
+        // The row's label must be OURS — derived from this message's own
+        // thinking text — so a stock row can never match. Requiring a
+        // middle ellipsis was wrong: a short thinking has none, and every
+        // such row was vetoed as unsafe (the visible stray label).
         const label = (row as { hiddenThinkingLabel?: unknown }).hiddenThinkingLabel;
+        const stem = thinkingPreview(text, 240).slice(0, 20).trim();
         if (!isPartialSafeToDetach(message, true, overrides) ||
-            typeof label !== "string" || !label.includes("\u2026")) {
+            typeof label !== "string" || label.length === 0 ||
+            !stem || !stripAnsi(label).includes(stem)) {
           skip("unsafe");
           continue;
         }
         partialKids = hiddenLabelKids(row, label);
         if (partialKids.length === 0) {
+          // Already stashed for this run: the row's thinking kid is gone and
+          // only the prose remains. A rebuild re-adds the kid, so re-detach
+          // still runs when there is something to remove — but an empty row
+          // must not be re-reported as a failure on every poll.
+          const stashed = (runThinking.get(runId) ?? []).some((item) => item.text === text);
+          if (stashed) continue;
           skip("parent");
           continue;
         }
-      }
-      const text = extractThinkingText(message);
-      if (!text) {
-        skip("empty");
-        continue;
       }
       if (wholeSafe) {
         try {
@@ -535,7 +550,7 @@ export function detachPass(
     // Cosmetic only; never break the event loop.
   }
   lastDetachDiag =
-    `walked ${walkedTotal} (${walkedThinking} thinking, ${walkedTotal - walkedThinking} tools); ` +
+    `walked ${walkedTotal} (${walkedThinking} thinking, ${walkedTools} tools); ` +
     `attached ${result.detached}; homeless ${noHome}; skipped ${result.skipped} ` +
     `(role=${result.reasons.role} nohome=${result.reasons.nohome} unsafe=${result.reasons.unsafe} ` +
     `empty=${result.reasons.empty} parent=${result.reasons.parent} remove=${result.reasons.remove})`;

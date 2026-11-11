@@ -107,6 +107,42 @@ const loadFixture = (name) =>
       JSON.stringify([shots.restore, shots.restoreLate]));
   }
 
+  // R5. the deferred history plan settles on the first poll — which can
+  // land MID-TURN. The re-plan must not scatter the live runs into one-run-
+  // per-tool (that produced adjacent blocks with no visible message
+  // between them): live tools keep their grouping.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    const hist = loadFixture("history-split").restore;
+    await driver.armRestore(world, hist);
+    // Live turn starts while the history plan is still pending.
+    await driver.runLive(world, loadFixture("live-consecutive-turns").live.slice(0, 9));
+    driver.tickOnce(world); // settle fires here, mid-turn
+    await driver.runLive(world, loadFixture("live-consecutive-turns").live.slice(9));
+    driver.tickOnce(world);
+    const shot = driver.dump(world);
+    const headers = shot.lines.filter((l) => l.trim().startsWith(">"));
+    check("mid-turn settle keeps one header for the live segment",
+      headers.length === 3 && headers[2].includes("3 bash") && headers[2].includes("1 write"),
+      shot.lines.join("\n"));
+  }
+
+  // R6. spacing: a header never glues to a prose row above it (blank line
+  // kept), and the run's own rows stay glued together.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, loadFixture("prose-blank-trailing-thinking").restore);
+    const lines = driver.dump(world).lines;
+    const prose = lines.findIndex((l) => l.includes("That's a faithful live session"));
+    const header = lines.findIndex((l, i) => i > prose && l.trim().startsWith(">"));
+    check("blank line between prose and the header below it",
+      prose >= 0 && header > prose && lines.slice(prose + 1, header).some((l) => l.trim() === ""),
+      JSON.stringify(lines.slice(Math.max(0, prose - 2), header + 2)));
+    check("no blank between the block's own header and rows",
+      lines.filter((l) => l.trim() === "").length > 0,
+      JSON.stringify(lines));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

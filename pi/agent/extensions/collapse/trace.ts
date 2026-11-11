@@ -253,7 +253,7 @@ export function runDuration(runId: number): number | undefined {
  *  context. Entries the planner could not place keep single-row runs. */
 const plannedRunById = new Map<string, number>();
 
-export function applyPlannedRuns(groups: string[][]): void {
+export function applyPlannedRuns(groups: string[][], keepLivePointer = false): void {
   traceBump();
   plannedRunById.clear();
   const byId = new Map(traceEntries);
@@ -273,15 +273,39 @@ export function applyPlannedRuns(groups: string[][]): void {
     }
     traceRuns.set(runId, [...ids]);
   }
+  // Everything the plan did not name keeps the grouping it already had.
+  // Assigning one run per tool here scattered live runs that happened to be
+  // in flight while the deferred history plan settled — one header became
+  // several adjacent ones with no visible message between them.
+  const orphans = new Map<number, string[]>();
   for (const [id, entry] of byId) {
     if (planned.has(id)) continue;
-    traceRunId++;
-    entry.runId = traceRunId;
-    traceRuns.set(entry.runId, [id]);
+    const ids = orphans.get(entry.runId) ?? [];
+    ids.push(id);
+    orphans.set(entry.runId, ids);
   }
-  // traceRunId always names the run the next tool joins: leave it on a fresh
-  // run, or the first live tool would collide into the last history run.
-  traceRunId++;
+  // History orphans keep one run each (anti-teleport while positions were
+  // unknown). Live orphans keep the grouping they already had.
+  let lastLiveRun: number | undefined;
+  for (const ids of orphans.values()) {
+    const live = ids.some((id) => byId.get(id)!.history !== true);
+    traceRunId++;
+    for (const id of ids) byId.get(id)!.runId = traceRunId;
+    traceRuns.set(traceRunId, [...ids]);
+    if (live) lastLiveRun = traceRunId;
+  }
+  // traceRunId always names the run the next tool joins. With live entries
+  // in flight it must stay on the newest live run, or the next tool opens a
+  // second block with no visible message between them (the deferred history
+  // plan settles on a poll, so this path runs mid-turn). A pure history
+  // re-plan leaves it on a fresh run instead, so live tools never collide
+  // into the last history run.
+  // Only the deferred STARTUP plan keeps the live pointer: it settles on a
+  // poll with no boundary since the history was rendered. A switch/fork/seal
+  // already bounded, so those tools belong to another session and the next
+  // live tool must start a fresh run.
+  if (keepLivePointer && lastLiveRun !== undefined) traceRunId = lastLiveRun;
+  else traceRunId++;
 }
 
 /** Bumped on every observable change to run state (new/updated entry, run
@@ -332,6 +356,9 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
       argsComplete: false,
       hasResult: false,
       turnSeq: hardBoundarySeq,
+      // Created during a history rebuild? Live tools must never be merged
+      // into that run, and the run pointer must not stop on it.
+      history: traceHistoryPhase,
     };
     traceEntries.set(toolCallId, entry);
     traceBump();
@@ -502,9 +529,11 @@ export function traceSync(
 
 /** The transcript is no longer being rebuilt: seal the run so live tools
  *  merge again, and start a fresh message sequence. */
-export function endHistoryPhase(reason: string): void {
+export function endHistoryPhase(reason: string, seal = true): void {
   traceHistoryPhase = false;
-  traceBoundary(reason);
+  // `seal: false` closes the history phase without starting a new run: the
+  // plan already left the run pointer where the live turn continues.
+  if (seal) traceBoundary(reason);
   messageSeq++;
   visibleBumpSeq = -1;
 }

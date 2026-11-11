@@ -1,0 +1,26 @@
+{
+  "name": "thinking-before-prose-tools",
+  "note": "The real Pi shape: a thinking-only message, then a mixed thinking+prose+tool message, then another. The thinking must be absorbed into the run (counted in the header), never left as a stray label row above the prose.",
+  "live": [
+    { "op": "user", "text": "think step by step" },
+    { "op": "start", "id": "m1" },
+    { "op": "thinking", "id": "m1", "text": "Applying sequential arithmetic operations via bash under abstract output constraints." },
+    { "op": "end", "id": "m1", "stop": "stop" },
+    { "op": "start", "id": "m2" },
+    { "op": "thinking", "id": "m2", "text": "Compute both products with bash for accuracy." },
+    { "op": "text", "id": "m2", "text": "I'll compute 17x23 and 5+6 step by step." },
+    { "op": "tool", "id": "m2", "toolId": "k1", "name": "bash", "args": { "command": "echo $((17*23))" } },
+    { "op": "end", "id": "m2", "stop": "toolUse" },
+    { "op": "result", "toolId": "k1", "text": "391" },
+    { "op": "turn" },
+    { "op": "tick" },
+    { "op": "start", "id": "m3" },
+    { "op": "thinking", "id": "m3", "text": "Now the second sum." },
+    { "op": "text", "id": "m3", "text": "17x23 is 391. Now computing 5+6." },
+    { "op": "tool", "id": "m3", "toolId": "k2", "name": "bash", "args": { "command": "echo $((5+6))" } },
+    { "op": "end", "id": "m3", "stop": "toolUse" },
+    { "op": "result", "toolId": "k2", "text": "11" },
+    { "op": "turn" },
+    { "op": "tick" }
+  ]
+}

@@ -184,7 +184,10 @@ partial-detach instead: only the thinking toggle children leave the row, the
 prose stays mounted, and the run still counts the thinking. Partial needs a
 completed message (streaming labels never flicker), our own label on the row
 (never stock, so visible thinking can never match), and every thinking run
-hidden. A lone thinking row with no host tool attaches to the nearest tool
+hidden. The label proves ownership by carrying the head of the preview
+derived from that message's own thinking text — never by a middle ellipsis,
+which a short thinking does not have (requiring one vetoed every short row
+and left its label visible above the block). A lone thinking row with no host tool attaches to the nearest tool
 run in transcript order (next preferred, else previous) so its preview
 still has a home — except at the live edge: a thinking row whose message
 is not yet persisted never attaches across a turn-resetting boundary
@@ -213,7 +216,21 @@ Every mounted member of a run gets a self-healing view: it resolves its
 run and owner on each render and repaints when they move, so a history
 re-plan (session_start) can never leave a stale grouping on screen. That
 is what makes both resume orders (`pi` and `pi -r`) converge on the same
-transcript. A thinking row means a row
+transcript.
+
+Run boundaries are visible content only. A prose-only assistant message
+breaks the run (it renders a row of its own); a thinking-only message never
+does; trailing text in a message that has tools renders below its rows and
+changes nothing. The deferred startup plan settles on the first poll, which
+can land mid-turn: it preserves the grouping of the live entries it did not
+name and leaves the run pointer on the newest live run, so one segment never
+splits into adjacent blocks. A switch/fork/seal already starts a new run, so
+those tools never continue the previous session's.
+
+Spacing is Pi's: its self shell emits the separator blank before a block and
+the render wrap strips it only when the block glues to a thinking label or
+another tool row. The extension's own container stays free of spacing, so
+prose above always keeps its blank line. A thinking row means a row
 with thinking content — prose-only rows are never walked as thinking rows,
 so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)

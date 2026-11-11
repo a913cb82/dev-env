@@ -170,10 +170,32 @@ function mountTool(world, name, toolCallId, args, partial) {
   // driver must do the same.
   const ctx = ctxFor(toolCallId, args, partial);
   ctx.invalidate = () => refreshTool(world, toolCallId);
-  const comp = tool.renderCall(args, world.PI.theme, ctx);
-  world.chat.addChild(comp);
-  world.toolComps.set(toolCallId, { comp, ctx, name });
-  return comp;
+  const inner = tool.renderCall(args, world.PI.theme, ctx);
+  // Pi mounts a ToolExecutionComponent, not the renderer's component:
+  // for the `self` shell it pushes a separator blank and delegates, and the
+  // extension's render wrap then strips that blank when the block glues to
+  // the row above. Emulate both, or spacing in the dump is fiction.
+  const node = {
+    toolCallId,
+    getRenderShell: () => "self",
+    handleMouse: () => undefined,
+    invalidate() { ctx.invalidate(); },
+    render(width) {
+      if (this.inner !== inner) this.inner = inner;
+      const lines = inner.render(width);
+      if (lines.length === 0) return lines;
+      return ["", ...lines];
+    },
+    inner,
+  };
+  const prevOf = () => {
+    const at = world.chat.children.indexOf(node);
+    return at > 0 ? world.chat.children[at - 1] : undefined;
+  };
+  try { world.mod.wrapToolComponent?.(node, world.pi, prevOf); } catch {}
+  world.chat.addChild(node);
+  world.toolComps.set(toolCallId, { comp: node, inner, ctx, name });
+  return node;
 }
 
 function refreshTool(world, toolCallId) {
@@ -182,11 +204,8 @@ function refreshTool(world, toolCallId) {
   const slot = world.toolComps.get(toolCallId);
   if (!slot) return;
   const tool = world.tools.get(slot.name);
-  const comp = tool.renderCall(slot.ctx.args, world.PI.theme, slot.ctx);
-  const at = world.chat.children.indexOf(slot.comp);
-  if (at >= 0) world.chat.children[at] = comp;
-  slot.comp = comp;
-  return comp;
+  slot.inner = tool.renderCall(slot.ctx.args, world.PI.theme, slot.ctx);
+  return slot.comp;
 }
 
 // Restore: entries load BEFORE session_start (production order — the
@@ -346,9 +365,26 @@ function openRun(world, toolCallId) {
   // Click the header exactly like the TUI test helper does.
   const slot = world.toolComps.get(toolCallId);
   if (!slot) throw new Error(`no mounted tool: ${toolCallId}`);
-  const comp = slot.comp;
+  const comp = slot.inner;
   if (comp?.children?.length === 1) comp.children[0]?.onMouse?.({ type: "click", button: "left" });
   return comp;
 }
 
-module.exports = { loadPi, createWorld, restore, restoreLate, runLive, reload, dump, openRun };
+// Production startup, un-converged: push history, fire session_start (which
+// arms the deferred plan), mount history with the registry still empty, and
+// leave the plan pending. The next poll (collapseTick) settles it — possibly
+// mid-turn, which is exactly where a re-plan can scatter live runs.
+async function armRestore(world, entries) {
+  for (const entry of entries) world.entries.push(entry);
+  await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
+  mountEntries(world, entries);
+}
+
+function tickOnce(world) {
+  try { world.mod.collapseTick(world.pi); } catch {}
+}
+
+module.exports = {
+  loadPi, createWorld, restore, restoreLate, armRestore,
+  runLive, reload, dump, openRun, tickOnce,
+};

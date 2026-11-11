@@ -447,6 +447,17 @@ function check(name, cond, extra) {
       JSON.stringify(plan([msg("assistant", [call("a", "read"), think("hmm"), call("b", "bash")])])) === '[["a","b"]]');
     check("trailing text does not split",
       JSON.stringify(plan([msg("assistant", [call("a", "read"), text("done")]), msg("assistant", [call("b", "bash")])])) === '[["a","b"]]');
+    // A prose-only assistant message renders a visible row of its own, so
+    // tools after it must not merge into the block above it. Trailing text
+    // in a message WITH tools still renders below its rows (no split).
+    check("prose-only message splits",
+      JSON.stringify(plan([msg("assistant", [call("a", "read")]),
+        msg("assistant", [text("here is what I found")]),
+        msg("assistant", [call("b", "bash")])])) === '[["a"],["b"]]');
+    check("thinking-only message never splits",
+      JSON.stringify(plan([msg("assistant", [call("a", "read")]),
+        msg("assistant", [think("hmm")]),
+        msg("assistant", [call("b", "bash")])])) === '[["a","b"]]');
     check("tool results do not split",
       JSON.stringify(plan([
         msg("assistant", [call("a", "read")]),

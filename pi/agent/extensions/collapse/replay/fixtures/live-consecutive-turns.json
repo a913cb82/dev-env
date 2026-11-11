@@ -1,0 +1,25 @@
+{
+  "name": "live-consecutive-turns",
+  "note": "Two live turns, each thinking + tools, with NO visible message between them. They must merge into one collapsed block (thinking never splits a run). Mirrors the reported `>2 bash · 2 thinking` / `>1 write · 1 bash · 1 thinking` pair.",
+  "live": [
+    { "op": "user", "text": "go" },
+    { "op": "start", "id": "m1" },
+    { "op": "thinking", "id": "m1", "text": "First I look at the driver fidelity gaps" },
+    { "op": "tool", "id": "m1", "toolId": "k1", "name": "bash", "args": { "command": "node replay.test.cjs" } },
+    { "op": "tool", "id": "m1", "toolId": "k2", "name": "bash", "args": { "command": "node collapse.test.cjs" } },
+    { "op": "end", "id": "m1", "stop": "toolUse" },
+    { "op": "result", "toolId": "k1", "text": "ok" },
+    { "op": "result", "toolId": "k2", "text": "ok" },
+    { "op": "turn" },
+    { "op": "tick" },
+    { "op": "start", "id": "m2" },
+    { "op": "thinking", "id": "m2", "text": "Now I commit the demo artifact" },
+    { "op": "tool", "id": "m2", "toolId": "w1", "name": "write", "args": { "path": "/repo/demo.cjs", "content": "x" } },
+    { "op": "tool", "id": "m2", "toolId": "k3", "name": "bash", "args": { "command": "git push" } },
+    { "op": "end", "id": "m2", "stop": "toolUse" },
+    { "op": "result", "toolId": "w1", "text": "ok" },
+    { "op": "result", "toolId": "k3", "text": "ok" },
+    { "op": "turn" },
+    { "op": "tick" }
+  ]
+}

@@ -560,6 +560,9 @@ function buildTraceFor(
       // A failed repaint must never blank the transcript: keep the last
       // good paint (fail-open, same rule as detach).
     }
+    // Pi's self shell adds the separator blank line itself (see
+    // ToolExecutionComponent.render); the render wrap strips it when this
+    // block glues to the row above. Keep this component free of spacing.
     return paintRender(width);
   };
   sync();

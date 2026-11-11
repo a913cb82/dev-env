@@ -130,7 +130,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 81;
+const COLLAPSE_REVISION = 82;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -223,8 +223,10 @@ function settlePendingHistoryPlan(): boolean {
       // Pi re-invokes their renderers — without this the non-owners keep
       // showing their single row WITH its leading blank (extra spaces
       // between tool calls) instead of going empty.
-      applyPlannedRuns(pendingHistoryPlan);
-      endHistoryPhase("session-start-restore-done");
+      applyPlannedRuns(pendingHistoryPlan, true);
+      // No seal boundary: the settle can land mid-turn, and a fresh run id
+      // there would split the live segment into adjacent blocks.
+      endHistoryPhase("session-start-restore-done", false);
       try {
         pokeAllCollapse();
       } catch {

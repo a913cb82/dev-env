@@ -1,0 +1,29 @@
+{
+  "name": "prose-blank-trailing-thinking",
+  "note": "Two prose-delimited runs, then a thinking-only message AFTER the last tools (the live edge). Expectation: a blank line between each prose row and the header below it, and the trailing thinking absorbed into the run above it (inside the collapsed block), not left as a stray label row.",
+  "restore": [
+    { "id": "e1", "type": "message", "message": { "role": "user", "content": [{ "type": "text", "text": "start" }] } },
+    { "id": "e2", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "text", "text": "The demo works — and it immediately caught two driver-fidelity gaps. Fixing the driver." },
+      { "type": "toolCall", "id": "x1", "name": "edit", "arguments": { "path": "/repo/a.ts", "oldText": "a", "newText": "b" } },
+      { "type": "toolCall", "id": "x2", "name": "bash", "arguments": { "command": "node collapse.test.cjs" } }
+    ], "stopReason": "toolUse" } },
+    { "id": "e3", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "thinking", "thinking": "The demo works and it caught two gaps in the driver fidelity, so fixing those first" }
+    ], "stopReason": "stop" } },
+    { "id": "e4", "type": "message", "message": { "role": "toolResult", "toolCallId": "x1", "content": [{ "type": "text", "text": "ok" }] } },
+    { "id": "e5", "type": "message", "message": { "role": "toolResult", "toolCallId": "x2", "content": [{ "type": "text", "text": "ok" }] } },
+    { "id": "e6", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "text", "text": "That's a faithful live session now. Committing the demo as a permanent artifact." }
+    ], "stopReason": "stop" } },
+    { "id": "e7", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "toolCall", "id": "y1", "name": "bash", "arguments": { "command": "git add -A" } },
+      { "type": "toolCall", "id": "y2", "name": "bash", "arguments": { "command": "git push" } }
+    ], "stopReason": "toolUse" } },
+    { "id": "e8", "type": "message", "message": { "role": "toolResult", "toolCallId": "y1", "content": [{ "type": "text", "text": "ok" }] } },
+    { "id": "e9", "type": "message", "message": { "role": "toolResult", "toolCallId": "y2", "content": [{ "type": "text", "text": "ok" }] } },
+    { "id": "e10", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "thinking", "thinking": "Analyzing sync script output and preparing regression tests, so I would recommend running them next" }
+    ], "stopReason": "stop" } }
+  ]
+}

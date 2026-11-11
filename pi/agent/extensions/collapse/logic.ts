@@ -677,6 +677,12 @@ export function planToolRuns(
       const part = parts[i] as { type?: unknown } | undefined;
       if (part?.type === "toolCall") lastTool = i;
     }
+    // No tool calls at all: a prose-only message is a visible row of its
+    // own, so it breaks the run (thinking-only renders no row: no break).
+    if (lastTool < 0) {
+      if (parts.some(visible)) boundary();
+      continue;
+    }
     let seenTool = false;
     let splitBeforeNextTool = false;
     for (let i = 0; i < parts.length; i++) {
