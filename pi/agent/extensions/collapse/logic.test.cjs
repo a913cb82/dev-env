@@ -554,6 +554,23 @@ function check(name, cond, extra) {
     check("non-array yields empty", logic.toolTimings(undefined).size === 0, "");
   }
 
+  // summarizeRun + formatRunDuration: run-level header content.
+  {
+    const s = logic.summarizeRun;
+    check("summary empty", s([], 0) === "", JSON.stringify(s([], 0)));
+    check("summary 4 read", s(["read", "read", "read", "read"], 0) === "4 read", s(["read", "read", "read", "read"], 0));
+    check("summary mixed", s(["read", "bash", "read"], 0) === "2 read · 1 bash", s(["read", "bash", "read"], 0));
+    check("summary with thinking", s(["read", "read", "read", "read"], 1) === "4 read · 1 thinking", s(["read", "read", "read", "read"], 1));
+    check("summary thinking only", s([], 1) === "1 thinking", s([], 1));
+    check("summary single", s(["bash"], 0) === "1 bash", s(["bash"], 0));
+    const d = logic.formatRunDuration;
+    check("duration empty", d(undefined) === "", JSON.stringify(d(undefined)));
+    check("duration seconds", d(12000) === "12s", d(12000));
+    check("duration minutes", d(336000) === "5m36s", d(336000));
+    check("duration hours", d(3720000) === "1h2m", d(3720000));
+    check("duration zero", d(0) === "0s", d(0));
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

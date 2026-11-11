@@ -1,4 +1,5 @@
-/** Detach-hiding of Pi thinking rows (collapse r27 experiment, default off).
+/** Detach-hiding of Pi thinking rows (collapse r27 experiment, now on by
+ *  default; opt out with COLLAPSE_HIDE_THINKING=0).
  *
  * Pi's thinking row (spacer + label) is unconditional given visible thinking,
  * so the only way to merge thinking into our gapless tool block is to
@@ -27,8 +28,9 @@ let liveHidden = new WeakSet<object>();
 /** Full thinking text by entry id (history) for the replacement row. */
 const entryThinking = new Map<string, string>();
 
-/** Full thinking text by trace run id for the replacement row. */
-const runThinking = new Map<number, string>();
+/** Full thinking texts by trace run id for the replacement rows (a run can
+ *  host several thinking-only messages; each keeps its own preview row). */
+const runThinking = new Map<number, string[]>();
 
 /** Run ids with a confirmed detach: the ONLY gate for the preview row. */
 const hiddenRuns = new Set<number>();
@@ -63,16 +65,27 @@ export function isRunHidden(runId: number): boolean {
   return hiddenRuns.has(runId);
 }
 
-/** Full stashed thinking text for a hidden run (expansion view). */
+/** Full stashed thinking texts for a hidden run (expansion view). */
+export function runThinkingTexts(runId: number): string[] {
+  return [...(runThinking.get(runId) ?? [])];
+}
+
+export function runThinkingCount(runId: number): number {
+  return runThinking.get(runId)?.length ?? 0;
+}
+
+/** Full stashed thinking text for a hidden run (joined expansion view). */
 export function runThinkingText(runId: number): string | undefined {
-  return runThinking.get(runId);
+  const texts = runThinking.get(runId);
+  if (!texts || texts.length === 0) return undefined;
+  return texts.join("\n\n");
 }
 
 /** Full stashed thinking text for a tool (diagnostics; follows run merges). */
 export function runThinkingForTool(toolCallId: string): string | undefined {
   const entry = traceEntries.get(toolCallId);
   if (!entry) return undefined;
-  return runThinking.get(entry.runId);
+  return runThinkingText(entry.runId);
 }
 
 export function hiddenRunCount(): number {
@@ -107,26 +120,39 @@ function entriesOf(sm: unknown): Array<{ id?: string; message?: unknown }> {
   }
 }
 
-function collectDetachable(
+/** Transcript order walk: thinking rows plus the tool components that own
+ *  trace runs. Thinking-only messages carry no toolCall, so a bare
+ *  `hostRunFor` cannot place them; the nearest tool run in transcript order
+ *  (next preferred — thinking usually precedes the tools it informs — else
+ *  previous) hosts them instead. A transcript with no tools at all hosts
+ *  nothing and stays stock. */
+type OrderedItem =
+  | { kind: "thinking"; parent: { removeChild?(c: unknown): void } | undefined; row: unknown }
+  | { kind: "tool"; runId: number };
+
+function collectOrdered(
   node: unknown,
   parent: { removeChild?(c: unknown): void } | undefined,
-  out: Array<{ parent: { removeChild?(c: unknown): void } | undefined; row: unknown }>,
+  out: OrderedItem[],
 ): void {
   if (!node || typeof node !== "object") return;
   if (isThinkingRow(node)) {
-    out.push({ parent, row: node });
+    out.push({ kind: "thinking", parent, row: node });
     return;
+  }
+  const toolCallId = (node as { toolCallId?: unknown }).toolCallId;
+  if (typeof toolCallId === "string") {
+    const runId = traceEntries.get(toolCallId)?.runId;
+    if (runId !== undefined) {
+      out.push({ kind: "tool", runId });
+      return;
+    }
   }
   const children = (node as { children?: unknown }).children;
   if (Array.isArray(children)) {
     const self = node as { removeChild?(c: unknown): void };
-    for (const child of children) {
-      collectDetachable(
-        child,
-        typeof self.removeChild === "function" ? self : undefined,
-        out,
-      );
-    }
+    const nextParent = typeof self.removeChild === "function" ? self : undefined;
+    for (const child of children) collectOrdered(child, nextParent, out);
   }
 }
 
@@ -155,18 +181,56 @@ export function detachPass(
     if (!tui || typeof tui !== "object") return result;
     if (!Array.isArray((tui as { children?: unknown }).children)) return result;
     const sm = sessionManager ?? lastSessionManager;
+    const entryList = entriesOf(sm);
     const byMessage = new Map<unknown, { id?: string }>();
-    for (const entry of entriesOf(sm)) {
+    const entryIndex = new Map<unknown, number>();
+    entryList.forEach((entry, index) => {
       if (entry && typeof entry === "object" && "message" in entry) {
-        byMessage.set((entry as { message?: unknown }).message, entry);
+        const message = (entry as { message?: unknown }).message;
+        byMessage.set(message, entry as { id?: string });
+        if (!entryIndex.has(message)) entryIndex.set(message, index);
       }
+    });
+    /** Nearest run hosting a toolCall in entry order (forward, then back).
+     *  Covers trees whose tool components are not mounted (tests, virtual
+     *  rows): the transcript order still places the thinking. */
+    const entryNeighborRun = (message: unknown, forward: boolean): number | undefined => {
+      const at = entryIndex.get(message);
+      if (at === undefined) return undefined;
+      const step = forward ? 1 : -1;
+      for (let k = at + step; k >= 0 && k < entryList.length; k += step) {
+        const content = (entryList[k] as { message?: { content?: unknown } })?.message?.content;
+        if (!Array.isArray(content)) continue;
+        for (const block of content) {
+          const id = (block as { type?: unknown; id?: unknown })?.type === "toolCall"
+            ? (block as { id?: unknown }).id
+            : undefined;
+          if (typeof id === "string") {
+            const runId = traceEntries.get(id)?.runId;
+            if (runId !== undefined) return runId;
+          }
+        }
+      }
+      return undefined;
+    };
+    const ordered: OrderedItem[] = [];
+    collectOrdered(tui, undefined, ordered);
+    // Nearest tool run per position: next preferred (thinking usually
+    // precedes the tools it informs), else previous.
+    const nextRun: (number | undefined)[] = new Array(ordered.length);
+    let next: number | undefined;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      nextRun[i] = next;
+      if (ordered[i].kind === "tool") next = ordered[i].runId;
     }
-    const found: Array<{
-      parent: { removeChild?(c: unknown): void } | undefined;
-      row: unknown;
-    }> = [];
-    collectDetachable(tui, undefined, found);
-    for (const { parent, row } of found) {
+    let prev: number | undefined;
+    for (let i = 0; i < ordered.length; i++) {
+      const item = ordered[i];
+      if (item.kind !== "thinking") {
+        if (item.kind === "tool") prev = item.runId;
+        continue;
+      }
+      const { parent, row } = item;
       const message = (row as { lastMessage?: unknown }).lastMessage as {
         role?: unknown;
         content?: Array<{ type?: string; thinking?: string; id?: unknown }>;
@@ -175,7 +239,8 @@ export function detachPass(
         result.skipped++;
         continue;
       }
-      const runId = hostRunFor(message);
+      let runId = hostRunFor(message) ?? nextRun[i] ?? prev;
+      if (runId === undefined) runId = entryNeighborRun(message, true) ?? entryNeighborRun(message, false);
       if (runId === undefined) {
         result.skipped++;
         continue;
@@ -208,7 +273,9 @@ export function detachPass(
       } else {
         liveHidden.add(message);
       }
-      runThinking.set(runId, text);
+      const texts = runThinking.get(runId) ?? [];
+      if (!texts.includes(text)) texts.push(text);
+      runThinking.set(runId, texts);
       hiddenRuns.add(runId);
       tracePokeOwner(runId);
       result.detached++;

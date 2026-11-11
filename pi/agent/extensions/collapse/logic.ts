@@ -762,3 +762,30 @@ export function isSafeToDetach(
   if (!hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
   return true;
 }
+
+/** Run-level header: `4 read · 1 thinking`. Groups tool names in first-seen
+ *  order, thinking appended last. Empty run renders nothing. */
+export function summarizeRun(names: readonly string[], thinkingCount = 0): string {
+  const counts = new Map<string, number>();
+  for (const name of names) {
+    if (!name) continue;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const parts: string[] = [];
+  for (const [name, n] of counts) parts.push(`${n} ${name}`);
+  if (thinkingCount > 0) parts.push(`${thinkingCount} thinking`);
+  return parts.join(" · ");
+}
+
+/** Run duration for the header right column: `12s`, `5m36s`, `1h2m`.
+ *  Integer seconds (no flicker); undefined/negative/NaN renders blank. */
+export function formatRunDuration(ms: number | undefined | null): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "";
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const rest = secs % 60;
+  if (mins < 60) return `${mins}m${rest}s`;
+  const hours = Math.floor(mins / 60);
+  return `${hours}h${mins % 60}m`;
+}

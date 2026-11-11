@@ -57,14 +57,18 @@ import {
   isMessageHidden,
   noteSessionManager,
   resetDetachState,
+  runThinkingCount,
   runThinkingForTool,
+  runThinkingTexts,
 } from "./detach.js";
 export {
   detachPass,
   hiddenRunCount,
   isMessageHidden,
   resetDetachState,
+  runThinkingCount,
   runThinkingForTool,
+  runThinkingTexts,
 };
 import {
   captureWalkerTui,

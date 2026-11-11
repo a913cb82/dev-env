@@ -157,6 +157,7 @@ export function resetTraceState(): void {
   traceOwnerPoke.clear();
   historyTimings.clear();
   plannedRunById.clear();
+  runOpen.clear();
   boundaryReasons.length = 0;
   try {
     if (historyTimer !== undefined) clearTimeout(historyTimer);
@@ -168,6 +169,54 @@ export function resetTraceState(): void {
   visibleBumpSeq = -1;
   traceRunId++;
   traceHistoryPhase = false;
+}
+
+/** Run-level header: every run rests closed (one header line), live or
+ *  settled; a click opens the per-row view. The header carries the live
+ *  wheel while any entry streams, so progress stays visible collapsed. */
+const runOpen = new Set<number>();
+
+export function isRunOpen(runId: number): boolean {
+  return runOpen.has(runId);
+}
+
+export function toggleRunOpen(runId: number): void {
+  if (runOpen.has(runId)) runOpen.delete(runId);
+  else runOpen.add(runId);
+}
+
+export function runToolNames(runId: number): string[] {
+  const out: string[] = [];
+  for (const id of traceRuns.get(runId) ?? []) {
+    const entry = traceEntries.get(id);
+    if (entry) out.push(entry.toolName);
+  }
+  return out;
+}
+
+export function runHasLive(runId: number): boolean {
+  for (const id of traceRuns.get(runId) ?? []) {
+    const entry = traceEntries.get(id);
+    if (entry && entry.isPartial && !entry.isError) return true;
+  }
+  return false;
+}
+
+export function runDuration(runId: number): number | undefined {
+  let start: number | undefined;
+  let end: number | undefined;
+  for (const id of traceRuns.get(runId) ?? []) {
+    const entry = traceEntries.get(id);
+    if (!entry) continue;
+    if (typeof entry.startedAt === "number") {
+      start = start === undefined ? entry.startedAt : Math.min(start, entry.startedAt);
+    }
+    if (typeof entry.endedAt === "number") {
+      end = end === undefined ? entry.endedAt : Math.max(end, entry.endedAt);
+    }
+  }
+  if (start === undefined || end === undefined || end < start) return undefined;
+  return end - start;
 }
 
 /** History runs planned at session_start (see planToolRuns in logic): the

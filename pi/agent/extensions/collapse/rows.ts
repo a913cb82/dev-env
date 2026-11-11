@@ -2,7 +2,7 @@
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { ROW_RAIL, WHEEL_FRAMES, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, textCharCount, type BashSegment, type GenericPair } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, formatRunDuration, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, summarizeRun, textCharCount, type BashSegment, type GenericPair } from "./logic.js";
 /** Re-exported so the wheel-test surface keeps its path (rows.ts owns the
  *  timer quantum BREATHE_MS; the frames live on the shared leaf). */
 export { WHEEL_FRAMES };
@@ -10,11 +10,17 @@ import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
   isRunThinkingOpen,
-  runThinkingText,
+  runThinkingCount,
+  runThinkingTexts,
   thinkingRowPreview,
   toggleRunThinking,
 } from "./detach.js";
 import {
+  isRunOpen,
+  runDuration,
+  runHasLive,
+  runToolNames,
+  toggleRunOpen,
   traceEntries,
   traceOwnerId,
   traceOwnerPoke,
@@ -72,14 +78,20 @@ export class CollapsedLine implements Component {
     private pad = 1,
     private theme?: Theme,
     private live = false,
+    private marker?: string,
   ) {}
 
-  /** Column 1 carries the rail — or the wheel while live. With no pad
+  /** Column 1 carries the rail — or the wheel while live, or the
+   *  run-level marker (`>` header, `|` footer). With no pad
    *  the row starts at column 1 (stock cell with outputPad=0), so neither
    *  is drawn there: content must never shift sideways. */
   private prefix(): string {
     const pad = " ".repeat(Math.max(0, this.pad));
     if (this.pad < 1) return pad;
+    if (this.marker !== undefined) {
+      const glyph = this.marker;
+      return (this.theme ? this.theme.fg("accent", glyph) : glyph) + pad.slice(1);
+    }
     const glyph = this.live ? breatheWheel() : ROW_RAIL;
     const color = this.live ? "accent" : "dim";
     return (this.theme ? this.theme.fg(color, glyph) : glyph) + pad.slice(1);
@@ -370,15 +382,44 @@ export function liveCountSuffix(theme: Theme, chars: number): string {
 function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI): Component {
   const trace = new Container();
   const piExpanded = !!ownerCtx?.expanded;
-  // Replacement for a detached Pi thinking row (fail-open: renders only
-  // when the detach pass confirmed this run's row is gone — a missed
-  // detach degrades to the stock Pi row, never a duplicate).
-  const hiddenThinking = isRunHidden(runId) ? runThinkingText(runId) : undefined;
-  if (hiddenThinking) {
-    const open = isRunThinkingOpen(runId);
-    const thinkingRow = open
-      ? new Text(hiddenThinking, liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, hiddenThinking), "", liveOutputPad(pi), theme);
+  const ids = traceRuns.get(runId) ?? [];
+  const duration = formatRunDuration(runDuration(runId));
+  // Run-level header: every run rests as one line. Click opens the per-row
+  // view below. While entries stream the header carries the live wheel
+  // (and the arg text written so far) instead of expanding.
+  if (!isRunOpen(runId)) {
+    const live = runHasLive(runId);
+    const summary = summarizeRun(runToolNames(runId), runThinkingCount(runId));
+    let right = duration ? theme.fg("dim", duration) : "";
+    if (live) {
+      let chars = 0;
+      for (const id of ids) {
+        const entry = traceEntries.get(id);
+        if (entry) chars += argsTextChars(entry.args);
+      }
+      if (chars > 0) right = liveCountSuffix(theme, chars);
+    }
+    const header = new CollapsedLine(summary, right, liveOutputPad(pi), theme, live, live ? undefined : ">");
+    trace.addChild(
+      new MouseRegion(header, (event: any) => {
+        if (!event || event.type !== "click") return undefined;
+        toggleRunOpen(runId);
+        tracePokeOwner(runId);
+        return { handled: true };
+      }),
+    );
+    return trace;
+  }
+  // Replacement for detached Pi thinking rows (fail-open: renders only
+  // when the detach pass confirmed this run's rows are gone — a missed
+  // detach degrades to the stock Pi row, never a duplicate). One preview
+  // row per hosted thinking block, in transcript order.
+  const hiddenThinkings = isRunHidden(runId) ? runThinkingTexts(runId) : [];
+  const thinkOpen = isRunThinkingOpen(runId);
+  for (const thinkingText of hiddenThinkings) {
+    const thinkingRow = thinkOpen
+      ? new Text(thinkingText, liveOutputPad(pi), 0)
+      : new CollapsedLine(thinkingRowPreview(theme, thinkingText), "", liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -418,6 +459,20 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
         entry.rowOpen = !entry.rowOpen;
+        tracePokeOwner(runId);
+        return { handled: true };
+      }),
+    );
+  }
+  // Footer collapses the run back to its header. Row-open state is preserved.
+  // The footer keeps the run rail (col 1) so the block margin stays even.
+  if (ids.length >= 1) {
+    const footerRight = duration ? theme.fg("dim", duration) : "";
+    const footer = new CollapsedLine("Collapse", footerRight, liveOutputPad(pi), theme, false);
+    trace.addChild(
+      new MouseRegion(footer, (event: any) => {
+        if (!event || event.type !== "click") return undefined;
+        toggleRunOpen(runId);
         tracePokeOwner(runId);
         return { handled: true };
       }),

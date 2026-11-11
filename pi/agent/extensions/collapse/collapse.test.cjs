@@ -135,6 +135,15 @@ function textResult(chars) {
   return { content: [{ type: "text", text: "x".repeat(chars) }], details: {} };
 }
 
+// Run-level header helper: a settled run rests closed (one `>` line);
+// click the header to open the per-row view + footer. Closed runs render
+// exactly one child (the header); open runs render rows + footer, so the
+// click only fires when closed (repeat calls are safe no-ops).
+function openRun(comp) {
+  if (comp?.children?.length === 1) comp.children[0]?.onMouse?.({ type: "click", button: "left" });
+  return comp;
+}
+
 (async () => {
   const mod = await jiti.import(path.join(HERE, "index.ts"));
   resetTrace = mod.resetTraceState ?? resetTrace;
@@ -163,12 +172,13 @@ function textResult(chars) {
     check(`${name} self shell`, pi.tools.get(name).renderShell === "self", pi.tools.get(name).renderShell);
   }
 
-  // 2. read collapsed call before result: one line, styled parts, no count
+  // 2. read collapsed call before result: header rests closed; open for rows.
   {
     const read = pi.tools.get("read");
     const { ctx } = callContext({ args: { path: "/path/to/file", offset: 10, limit: 11 } });
+    openRun(read.renderCall(ctx.args, theme, ctx));
     const lines = read.renderCall(ctx.args, theme, ctx).render(80);
-    check("read one line", lines.length === 1, JSON.stringify(lines));
+    check("read one line", lines.length === 2, JSON.stringify(lines));
     const line = lines[0];
     check("read starts at column 2", isRow(line), JSON.stringify(line));
     check("read tool bold", line.includes("<b:accent>read "), JSON.stringify(line));
@@ -194,6 +204,7 @@ function textResult(chars) {
     check("read result collapsed empty", out.render(80).join("") === "", JSON.stringify(out.render(80)));
     check("read result stores count", state.count === 5300, JSON.stringify(state));
     check("read result invalidates", invalidated === 1, String(invalidated));
+    openRun(read.renderCall(ctx.args, ansiTheme, { ...ctx, state }));
     const lines = read.renderCall(ctx.args, ansiTheme, { ...ctx, state }).render(100);
     check("read count shown", plainText(lines[0]).endsWith("5.3k ch"), JSON.stringify(plainText(lines[0])));
     check("read padded to width", plainText(lines[0]).length === 98, `${plainText(lines[0]).length}: ${JSON.stringify(plainText(lines[0]))}`);
@@ -203,6 +214,7 @@ function textResult(chars) {
   {
     const read = pi.tools.get("read");
     const { ctx } = callContext({ args: { path: "/path/to/file" }, isError: true, state: { count: 12 } });
+    openRun(read.renderCall(ctx.args, theme, ctx));
     const line = read.renderCall(ctx.args, theme, ctx).render(80)[0];
     check("read failure red bold", line.includes("<b:error>read </b>"), JSON.stringify(line));
   }
@@ -211,6 +223,7 @@ function textResult(chars) {
   {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" } });
+    openRun(bash.renderCall(ctx.args, theme, ctx));
     const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
     check("bash starts at column 2", isRow(line), JSON.stringify(line));
     check("bash prompt accent", line.includes("<b:accent>$</b> <b>timeout</b>"), JSON.stringify(line));
@@ -221,6 +234,7 @@ function textResult(chars) {
   {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "PIN=/x ls /y" } });
+    openRun(bash.renderCall(ctx.args, theme, ctx));
     const line = bash.renderCall(ctx.args, theme, ctx).render(80)[0];
     check("bash env name accent", line.includes("<b:accent>$</b> <b:accent>PIN</b><dim>=/x</>"), JSON.stringify(line));
     check("bash env value not accent", line.includes("=/x") && !line.includes("<b:accent>=/x"), JSON.stringify(line));
@@ -230,23 +244,28 @@ function textResult(chars) {
   {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" }, isError: true, state: { count: 100 } });
+    openRun(bash.renderCall(ctx.args, theme, ctx));
     const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
     check("bash failure red bold", line.includes("<b:error>$</b> <b>timeout</b>"), JSON.stringify(line));
   }
 
-  // 7. Pi-expanded rest is still one row; a click opens the stock box
+  // 7. Live rest stays collapsed (header with wheel); clicks open rows, then stock.
   {
     const read = pi.tools.get("read");
     const args = { path: "/path/to/file", offset: 10, limit: 11 };
     const { ctx } = callContext({ args, expanded: true, isPartial: true });
     const rest = read.renderCall(args, theme, ctx).render(80);
-    check("expanded rest stays a row", rest.length === 1, JSON.stringify(rest));
+    check("live rest stays collapsed", rest.length === 1 && rest[0].includes(">"), JSON.stringify(rest));
+    openRun(read.renderCall(args, theme, ctx));
+    const open = read.renderCall(args, theme, ctx).render(80);
+    check("open shows row+footer", open.length === 2, JSON.stringify(open));
     read.renderCall(args, theme, ctx).children[0].onMouse({ type: "click", button: "left" });
     const lines = read.renderCall(args, theme, ctx).render(80);
     check("opened call boxed", lines.length > 2, `${lines.length}`);
     check("opened call pending bg", lines[0].includes("toolPendingBg"), JSON.stringify(lines[0]));
     check("opened call keeps content", lines.some((l) => l.includes("/path/to/file")), JSON.stringify(lines).slice(0, 200));
     const { ctx: doneCtx } = callContext({ args, expanded: true, isPartial: false });
+    openRun(read.renderCall(args, theme, doneCtx));
     read.renderCall(args, theme, doneCtx).children[0].onMouse({ type: "click", button: "left" });
     const doneLines = read.renderCall(args, theme, doneCtx).render(80);
     check("opened call success bg", doneLines[0].includes("toolSuccessBg"), JSON.stringify(doneLines[0]));
@@ -262,11 +281,13 @@ function textResult(chars) {
     const { ctx } = callContext({ args, expanded: true, state });
     read.renderCall(args, theme, { ...ctx, state });
     read.renderResult(textResult(5300), { expanded: true, isPartial: false }, theme, { ...ctx, state });
+    openRun(read.renderCall(args, theme, { ...ctx, state }));
     read.renderCall(args, theme, { ...ctx, state }).children[0].onMouse({ type: "click", button: "left" });
     const lines = read.renderCall(args, theme, { ...ctx, state }).render(80);
     check("opened result boxed", lines.length > 2 && lines[0].includes("toolSuccessBg"), JSON.stringify(lines[0]));
     const edit = pi.tools.get("edit");
     const { ctx: ectx } = callContext({ args: { path: "/f", edits: [{ oldText: "a", newText: "b" }] }, expanded: true });
+    openRun(edit.renderCall(ectx.args, theme, ectx));
     edit.renderCall(ectx.args, theme, ectx).children[0].onMouse({ type: "click", button: "left" });
     const elines = edit.renderCall(ectx.args, theme, ectx).render(80);
     check("edit opened stays bare", !elines.some((l) => l.includes("toolSuccessBg")), JSON.stringify(elines).slice(0, 160));
@@ -304,15 +325,20 @@ function textResult(chars) {
     const stock = mkcomp(agent.createBashToolDefinition("/repo"));
     wrapped.updateResult({ content: [{ type: "text", text: "hi" }], details: {} }, false);
     stock.updateResult({ content: [{ type: "text", text: "hi" }], details: {} }, false);
-    // Pi-expanded rest is one row; open it to reach the stock section.
+    // Pi-expanded rest is the run header (settled); open it to reach rows.
     const beforeClick = wrapped.render(100);
-    check("wrapped rest is one row", beforeClick.length === 2 && isRow(beforeClick[1]), JSON.stringify(beforeClick));
+    check("wrapped rest is header", beforeClick.length === 2 && beforeClick[1].includes(">"), JSON.stringify(beforeClick));
+    wrapped.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
+    wrapped.invalidate();
+    const openedRun = wrapped.render(100);
+    check("run opens to row+footer", openedRun.length === 3, JSON.stringify(openedRun));
     wrapped.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
     wrapped.invalidate();
     const wlines = wrapped.render(100);
     const slines = stock.render(100);
-    check("expanded single box", wlines.length === slines.length, `${wlines.length} vs ${slines.length}`);
-    check("expanded box aligned", JSON.stringify(wlines) === JSON.stringify(slines), "wrapped differs from stock");
+    // The open run keeps its Collapse footer; the stock cell above it is stock.
+    check("expanded single box", wlines.length === slines.length + 1, `${wlines.length} vs ${slines.length}`);
+    check("expanded box aligned", JSON.stringify(wlines.slice(0, slines.length)) === JSON.stringify(slines), "wrapped differs from stock");
     // second update pass: stock reuse chain must survive (no fallback)
     wrapped.updateResult({ content: [{ type: "text", text: "hi\nbye" }], details: {} }, false);
     const wlines2 = wrapped.render(100);
@@ -343,6 +369,7 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const cmd = `run ${"x".repeat(100)} end`;
     const { ctx } = callContext({ args: { command: cmd }, state: { count: 10 } });
+    openRun(bash.renderCall(ctx.args, theme, ctx));
     const line = bash.renderCall(ctx.args, theme, ctx).render(200)[0];
     check("bash long kept", line.includes("end"), JSON.stringify(line).slice(-80));
     check("bash long no early ellipsis", !line.includes("…"), JSON.stringify(line).slice(-80));
@@ -353,6 +380,7 @@ function textResult(chars) {
     const bash = pi.tools.get("bash");
     const cmd = `run ${"x".repeat(100)} end`;
     const { ctx } = callContext({ args: { command: cmd }, state: { count: 10 } });
+    openRun(bash.renderCall(ctx.args, ansiTheme, ctx));
     const line = bash.renderCall(ctx.args, ansiTheme, ctx).render(50)[0];
     check("row middle keeps head", plainText(line).includes("$ ru"), JSON.stringify(plainText(line)));
     check("row middle keeps tail", line.includes("end"), JSON.stringify(line).slice(-60));
@@ -418,6 +446,7 @@ function textResult(chars) {
       const read = pi.tools.get("read");
       const state = { count: 100 };
       const { ctx: rctx } = callContext({ args: { path: "/path/to/file" }, state });
+      openRun(read.renderCall(rctx.args, ansiTheme, { ...rctx, state }));
       const rows = read.renderCall(rctx.args, ansiTheme, { ...rctx, state }).render(80);
       // Marker theme adds literal tag characters: measure what the terminal sees.
       const visible = plainText(rows[0]);
@@ -431,10 +460,12 @@ function textResult(chars) {
   {
     const ls = pi.tools.get("ls");
     const { ctx: lsCtx } = callContext({ args: { path: "/some/dir" }, state: { count: 300 } });
+    openRun(ls.renderCall(lsCtx.args, theme, lsCtx));
     const lsLine = ls.renderCall(lsCtx.args, theme, lsCtx).render(100)[0];
     check("ls row", lsLine.includes("<b:accent>ls </b>") && lsLine.includes("<dim>/some/dir</>"), JSON.stringify(lsLine));
     const grep = pi.tools.get("grep");
     const { ctx: grepCtx } = callContext({ args: { pattern: "foo.*", path: "/a" }, state: { count: 300 } });
+    openRun(grep.renderCall(grepCtx.args, theme, grepCtx));
     const grepLine = grep.renderCall(grepCtx.args, theme, grepCtx).render(100)[0];
     check(
       "grep row",
@@ -443,10 +474,12 @@ function textResult(chars) {
     );
     const find = pi.tools.get("find");
     const { ctx: findCtx } = callContext({ args: { pattern: "*.ts" }, state: { count: 300 } });
+    openRun(find.renderCall(findCtx.args, theme, findCtx));
     const findLine = find.renderCall(findCtx.args, theme, findCtx).render(100)[0];
     check("find row", findLine.includes("<b:accent>find </b>") && findLine.includes("*.ts") && !findLine.includes("<b>*.ts"), JSON.stringify(findLine));
     const ps = pi.tools.get("powershell");
     const { ctx: psCtx } = callContext({ args: { command: "Get-ChildItem" }, state: { count: 300 } });
+    openRun(ps.renderCall(psCtx.args, theme, psCtx));
     const psLine = ps.renderCall(psCtx.args, theme, psCtx).render(100)[0];
     check("powershell row", psLine.includes("<b:accent>PS></b> <b>Get-ChildItem</b>"), JSON.stringify(psLine));
   }
@@ -476,8 +509,8 @@ function textResult(chars) {
       args: { path: "/very/long/path/that/keeps/going/on/and/on/file.txt" },
       state: { count: 5300 },
     });
-    const lines = read.renderCall(ctx.args, ansiTheme, ctx).render(60);
-    check("ansi one line", lines.length === 1, JSON.stringify(lines));
+    const lines = (() => { openRun(read.renderCall(ctx.args, ansiTheme, ctx)); return read.renderCall(ctx.args, ansiTheme, ctx).render(60); })();
+    check("ansi one line", lines.length === 2, JSON.stringify(lines));
     check("ansi padded to width", tui.visibleWidth(lines[0]) === 58, `${tui.visibleWidth(lines[0])}: ${JSON.stringify(lines[0])}`);
     check("ansi keeps count", lines[0].endsWith("\x1b[31m5.3k ch\x1b[0m"), JSON.stringify(lines[0]).slice(-40));
   }
@@ -527,10 +560,45 @@ function textResult(chars) {
     const bctx = { ...rctx, args: { command: "echo hi" }, state: bashState, toolCallId: "t-bash" };
     read.renderCall(rctx.args, theme, { ...rctx, state: readState });
     const hidden = bash.renderCall(bctx.args, theme, bctx).render(80);
+    openRun(read.renderCall(rctx.args, theme, { ...rctx, state: readState }));
     const trace = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
-    check("trace has both rows", trace.length === 2, JSON.stringify(trace));
+    check("trace has both rows", trace.length === 3, JSON.stringify(trace));
     check("trace keeps read row", trace[0].includes("file"), JSON.stringify(trace[0]));
     check("trace keeps bash row", trace[1].includes("echo"), JSON.stringify(trace[1]));
+    check("trace has collapse footer", trace[2].includes("Collapse"), JSON.stringify(trace[2]));
+    // Run-level header: settled multi-row runs rest closed. Unique ids so
+    // this probe never disturbs the outer test's run.
+    {
+      await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
+      const mkHdr = (id, args) => ({
+        args, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
+        state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+        expanded: false, showImages: true, isError: false,
+      });
+      read.renderCall({ path: "/ha" }, theme, mkHdr("t-hdr1", { path: "/ha" }));
+      // Same-turn second tool joins the run: need a message boundary that
+      // does NOT split (tool-only turns merge), so render directly.
+      pi.tools.get("bash").renderCall({ command: "echo hdr" }, theme, mkHdr("t-hdr2", { command: "echo hdr" }));
+      const hdrComp = () => read.renderCall({ path: "/ha" }, theme, mkHdr("t-hdr1", { path: "/ha" }));
+      const header = hdrComp().render(90);
+      check("run rests as header", header.length === 1 && header[0].includes(">") && header[0].includes("1 read"), JSON.stringify(header));
+      openRun(hdrComp());
+      const openedHdr = hdrComp().render(90);
+      check("header click opens rows+footer", openedHdr.length === 3 && openedHdr[2].includes("Collapse"), JSON.stringify(openedHdr));
+      check("footer keeps the rail", plainText(openedHdr[2]).startsWith("▏"), JSON.stringify(openedHdr[2]));
+      hdrComp().children[2].onMouse({ type: "click", button: "left" });
+      const closed = hdrComp().render(90);
+      check("footer click closes to header", closed.length === 1 && closed[0].includes(">"), JSON.stringify(closed));
+      // Singleton runs also rest as a header (`>1 read`).
+      await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
+      const soloComp = () => read.renderCall({ path: "/solo-hdr" }, theme, mkHdr("t-hdr-solo", { path: "/solo-hdr" }));
+      const soloHdr = soloComp().render(90);
+      check("singleton rests as header", soloHdr.length === 1 && soloHdr[0].includes(">") && soloHdr[0].includes("1 read"), JSON.stringify(soloHdr));
+      openRun(soloComp());
+      const soloOpen = soloComp().render(90);
+      check("singleton opens to row+footer", soloOpen.length === 2 && soloOpen[1].includes("Collapse") && plainText(soloOpen[1]).startsWith("▏"), JSON.stringify(soloOpen));
+      await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
+    }
     check("non-owner renders nothing", hidden.join("") === "", JSON.stringify(hidden));
     check("trace itself has no blanks", !trace.some((l) => l.trim() === ""), JSON.stringify(trace));
     // result counts flow into the shared trace via the owner
@@ -549,14 +617,17 @@ function textResult(chars) {
     check("first run renders", a1.length === 1, JSON.stringify(a1));
     await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
     const { ctx: bctx } = callContext({ args: { command: "echo hi" }, state: {} });
-    const b1 = bash.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-b2" }).render(80);
-    check("user turn renders alone", b1.length === 1 && b1[0].includes("echo"), JSON.stringify(b1));
+    const b1comp = () => bash.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-b2" });
+    openRun(b1comp());
+    const b1 = b1comp().render(80);
+    check("user turn renders alone", b1.length === 2 && b1[0].includes("echo"), JSON.stringify(b1));
     // click the bash row inside the read-owned trace from test 13's run? fresh run:
     resetTrace();
     const { ctx: rctx } = callContext({ args: { path: "/p" }, state: {} });
     read.renderCall(rctx.args, theme, rctx);
     const bState = {};
     bash.renderCall({ command: "ls" }, theme, { ...rctx, args: { command: "ls" }, state: bState, toolCallId: "t-click" });
+    openRun(read.renderCall(rctx.args, theme, rctx));
     const traceComp = read.renderCall(rctx.args, theme, rctx);
     const row2 = traceComp.children[1];
     check("row region clickable", !!row2?.onMouse, typeof row2?.onMouse);
@@ -576,9 +647,12 @@ function textResult(chars) {
     read.renderCall(rctx.args, theme, rctx);
     bash.renderCall({ command: "ls" }, theme, { ...rctx, args: { command: "ls" }, state: {}, toolCallId: "t-all", expanded: true });
     const lines = read.renderCall(rctx.args, theme, rctx).render(100);
-    check("pi-expand rows stay one-line", lines.length === 2, JSON.stringify(lines));
-    check("pi-expand rows unboxed", !lines.some((l) => l.includes("toolSuccessBg")), JSON.stringify(lines[0]));
-    check("pi-expand keeps both", lines[0].includes("read") && lines[1].includes("ls"), JSON.stringify(lines).slice(0, 200));
+    check("pi-expand run rests as header", lines.length === 1 && lines[0].includes("read"), JSON.stringify(lines));
+    openRun(read.renderCall(rctx.args, theme, rctx));
+    const openLines = read.renderCall(rctx.args, theme, rctx).render(100);
+    check("pi-expand rows stay one-line", openLines.length === 3, JSON.stringify(openLines));
+    check("pi-expand rows unboxed", !openLines.some((l) => l.includes("toolSuccessBg")), JSON.stringify(openLines[0]));
+    check("pi-expand keeps both", openLines[0].includes("read") && openLines[1].includes("ls"), JSON.stringify(openLines).slice(0, 200));
   }
 
   // 13d. foreign tools split runs
@@ -590,8 +664,10 @@ function textResult(chars) {
     read.renderCall(actx.args, theme, actx);
     await pi.handlers.get("tool_execution_start")[0]({ toolName: "custom-thing", toolCallId: "x1", args: {} }, {});
     const { ctx: bctx } = callContext({ args: { path: "/b" }, state: {} });
-    const alone = ls.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-after-foreign" }).render(80);
-    check("foreign tool splits run", alone.length === 1 && alone[0].includes("/b"), JSON.stringify(alone));
+    const aloneComp = () => ls.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-after-foreign" });
+    openRun(aloneComp());
+    const alone = aloneComp().render(80);
+    check("foreign tool splits run", alone.length === 2 && alone[0].includes("/b"), JSON.stringify(alone));
   }
 
   // 14. cross-turn merging: no line gaps between tool rows in consecutive turns
@@ -631,8 +707,9 @@ function textResult(chars) {
     render("x1", "echo one");
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
     render("x2", "echo two");
+    openRun(render("x1", "echo one"));
     const merged = render("x1", "echo one").render(90);
-    check("cross-turn tool-only rows merge", merged.length === 2, JSON.stringify(merged));
+    check("cross-turn tool-only rows merge", merged.length === 3, JSON.stringify(merged));
     check("merged keeps both rows", merged[0].includes("one") && merged[1].includes("two"), JSON.stringify(merged));
 
     // 14b. visible text between turns still splits the run
@@ -643,8 +720,10 @@ function textResult(chars) {
       { message: { role: "assistant", content: [{ type: "text", text: "now some prose" }] } },
       {},
     );
-    const split = render("y2", "echo two").render(90);
-    check("visible text splits runs", split.length === 1 && split[0].includes("two"), JSON.stringify(split));
+    const splitComp = () => render("y2", "echo two");
+    openRun(splitComp());
+    const split = splitComp().render(90);
+    check("visible text splits runs", split.length === 2 && split[0].includes("two"), JSON.stringify(split));
 
     // 14c. a leading-content turn (text before its tool call) also splits
     resetTrace();
@@ -657,8 +736,10 @@ function textResult(chars) {
       ] } },
       {},
     );
-    const lead = render("z2", "echo two").render(90);
-    check("leading content splits runs", lead.length === 1 && lead[0].includes("two"), JSON.stringify(lead));
+    const leadComp = () => render("z2", "echo two");
+    openRun(leadComp());
+    const lead = leadComp().render(90);
+    check("leading content splits runs", lead.length === 2 && lead[0].includes("two"), JSON.stringify(lead));
 
     // 14d. empty/whitespace-only thinking is not visible content
     resetTrace();
@@ -669,8 +750,9 @@ function textResult(chars) {
       {},
     );
     render("w2", "echo two");
+    openRun(render("w1", "echo one"));
     const emptyThinking = render("w1", "echo one").render(90);
-    check("empty thinking still merges", emptyThinking.length === 2, JSON.stringify(emptyThinking));
+    check("empty thinking still merges", emptyThinking.length === 3, JSON.stringify(emptyThinking));
 
 
   // 14c. history rebuild must not stack past tools into one row (teleport)
@@ -698,7 +780,8 @@ function textResult(chars) {
     const h1 = hist.renderCall({ command: "echo past1" }, theme, ctxFor("past1", "echo past1"));
     const h2 = hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2"));
     check("history rows stay separate", h1.render(90).length === 1 && h2.render(90).length === 1, `${h1.render(90).length}/${h2.render(90).length}`);
-    check("history row keeps its own text", h2.render(90)[0].includes("past2"), JSON.stringify(h2.render(90)));
+    openRun(h2);
+    check("history row keeps its own text", hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2")).render(90)[0].includes("past2"), JSON.stringify(hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2")).render(90)));
     // After session_start, live tools merge again.
     await handlers.get("session_start")[0](
       {},
@@ -708,8 +791,10 @@ function textResult(chars) {
     const l2 = hist.renderCall({ command: "echo live2" }, theme, ctxFor("live2", "echo live2"));
     // The owner rebuilds on its next render pass (the poke path in production).
     const l1b = hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1"));
-    check("live rows merge after start", l1b.render(90).length === 2, `${l1b.render(90).length}`);
-    check("merged row keeps order", l1b.render(90)[0].includes("live1") && l1b.render(90)[1].includes("live2"), JSON.stringify(l1b.render(90)));
+    openRun(l1b);
+    const l1open = hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1"));
+    check("live rows merge after start", l1open.render(90).length === 3, `${l1open.render(90).length}`);
+    check("merged row keeps order", l1open.render(90)[0].includes("live1") && l1open.render(90)[1].includes("live2"), JSON.stringify(l1open.render(90)));
     check("non-owner after merge renders empty", l2.render(90).length === 0, `${l2.render(90).length}`);
   }
 
@@ -769,12 +854,13 @@ function textResult(chars) {
     read.renderCall(args, realTheme, ctxA);
     read.renderResult(result, { expanded: false, isPartial: false }, realTheme, { ...ctxA, lastComponent: undefined });
     const rest = read.renderCall(args, realTheme, ctxA).render(100);
-    check("depth0 rest is one line", rest.length === 1 && isRow(rest[0]), JSON.stringify(rest));
+    check("depth0 rest is header", rest.length === 1 && rest[0].includes(">"), JSON.stringify(rest));
+    openRun(read.renderCall(args, realTheme, ctxA));
     const rowA = read.renderCall(args, realTheme, ctxA).children[0];
     rowA.onMouse({ type: "click", button: "left" });
     const openedA = read.renderCall(args, realTheme, ctxA).render(100);
     const stA = stockLines(false);
-    check("collapsed click matches stock collapsed", JSON.stringify(openedA) === JSON.stringify(stA), JSON.stringify(openedA[1] ?? openedA[0]) + " VS " + JSON.stringify(stA[1] ?? stA[0]));
+    check("collapsed click matches stock collapsed", JSON.stringify(openedA.slice(0, stA.length)) === JSON.stringify(stA), JSON.stringify(openedA[1] ?? openedA[0]) + " VS " + JSON.stringify(stA[1] ?? stA[0]));
     check("collapsed click hides full body", !openedA.join("").includes("line 14"), JSON.stringify(openedA).slice(0, 160));
 
     // 15b. Pi expanded: rest is STILL one line; click == stock expanded cell
@@ -783,20 +869,21 @@ function textResult(chars) {
     readB.renderCall(args, realTheme, ctxB);
     readB.renderResult(result, { expanded: true, isPartial: false }, realTheme, { ...ctxB, lastComponent: undefined });
     const restB = readB.renderCall(args, realTheme, ctxB).render(100);
-    check("expanded rest is one line", restB.length === 1 && isRow(restB[0]), JSON.stringify(restB));
+    check("expanded rest is header", restB.length === 1 && restB[0].includes(">"), JSON.stringify(restB));
+    openRun(readB.renderCall(args, realTheme, ctxB));
     const rowB = readB.renderCall(args, realTheme, ctxB).children[0];
     rowB.onMouse({ type: "click", button: "left" });
     const openedB = readB.renderCall(args, realTheme, ctxB).render(100);
     const stB = stockLines(true);
     const firstDiff = openedB.findIndex((l, i) => l !== stB[i]);
-    check("expanded click matches stock expanded", JSON.stringify(openedB) === JSON.stringify(stB), `line ${firstDiff}: ${JSON.stringify(openedB[firstDiff])} VS ${JSON.stringify(stB[firstDiff])}`);
+    check("expanded click matches stock expanded", JSON.stringify(openedB.slice(0, stB.length)) === JSON.stringify(stB), `line ${firstDiff}: ${JSON.stringify(openedB[firstDiff])} VS ${JSON.stringify(stB[firstDiff])}`);
     check("expanded click shows full body", openedB.join("").includes("line 14"), JSON.stringify(openedB).slice(0, 160));
 
-    // 15c. clicking again closes back to the one-liner
+    // 15c. clicking again closes the row back to the open run view.
     const rowClose = readB.renderCall(args, realTheme, ctxB).children[0];
     rowClose.onMouse({ type: "click", button: "left" });
     const closed = readB.renderCall(args, realTheme, ctxB).render(100);
-    check("second click returns to row", closed.length === 1 && isRow(closed[0]), JSON.stringify(closed));
+    check("second click returns to rows", closed.length === 2 && closed[1].includes("Collapse"), JSON.stringify(closed));
   }
 
   // 16. /collapse reports WHY runs split (live diagnostics)
@@ -847,8 +934,9 @@ function textResult(chars) {
     mk("tr1", "echo one");
     await pi.handlers.get("message_start")[0]({ message: { role: "toolResult", content: [] } }, {});
     mk("tr2", "echo two");
+    openRun(mk("tr1", "echo one"));
     const merged = mk("tr1", "echo one").render(90);
-    check("toolResult does not split", merged.length === 2, JSON.stringify(merged));
+    check("toolResult does not split", merged.length === 3, JSON.stringify(merged));
     // A real user turn still splits.
     await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
     mk("tr3", "echo three");
@@ -883,19 +971,22 @@ function textResult(chars) {
     // live turns merge
     mk("s1", "echo one");
     mk("s2", "echo two");
-    check("switch: baseline merges", mk("s1", "echo one").render(90).length === 2, JSON.stringify(mk("s1", "echo one").render(90)));
+    openRun(mk("s1", "echo one"));
+    check("switch: baseline merges", mk("s1", "echo one").render(90).length === 3, JSON.stringify(mk("s1", "echo one").render(90)));
     // resume another session: its history renders before session_start
     await handlers.get("session_before_switch")[0]({ reason: "resume" }, {});
     const h1 = mk("other1", "echo old one");
     const h2 = mk("other2", "echo old two");
     check("switch: other branch rows stay separate", h1.render(90).length === 1 && h2.render(90).length === 1, `${h1.render(90).length}/${h2.render(90).length}`);
-    check("switch: other branch row keeps its own text", h2.render(90)[0].includes("old two"), JSON.stringify(h2.render(90)));
+    openRun(h2);
+    check("switch: other branch row keeps its own text", mk("other2", "echo old two").render(90)[0].includes("old two"), JSON.stringify(mk("other2", "echo old two").render(90)));
     // after the switch settles, live turns merge again
     await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
     mk("n1", "echo new one");
     mk("n2", "echo new two");
+    openRun(mk("n1", "echo new one"));
     const merged = mk("n1", "echo new one").render(90);
-    check("switch: live turns merge after settle", merged.length === 2, JSON.stringify(merged));
+    check("switch: live turns merge after settle", merged.length === 3, JSON.stringify(merged));
   }
 
   // 18b. tree navigation arms the history phase too
@@ -926,8 +1017,9 @@ function textResult(chars) {
     mk("tree3", "echo live one");
     const live = mk("tree3", "echo live one").render(90);
     mk("tree4", "echo live two");
+    openRun(mk("tree3", "echo live one"));
     const live2 = mk("tree3", "echo live one").render(90);
-    check("tree: live merges after settle", live.length === 1 && live2.length === 2, `${live.length}/${live2.length}`);
+    check("tree: live merges after settle", live.length === 1 && live2.length === 3, `${live.length}/${live2.length}`);
   }
 
   // 18c. a transcript rebuild re-registers the SAME ids: rows must keep their
@@ -953,12 +1045,13 @@ function textResult(chars) {
     await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
     mk("rb1", "echo one");
     mk("rb2", "echo two");
-    check("rebuild: baseline merged", mk("rb1", "echo one").render(90).length === 2, "");
+    openRun(mk("rb1", "echo one"));
+    check("rebuild: baseline merged", mk("rb1", "echo one").render(90).length === 3, "");
     // Simulate outputPad/cache-notice rebuild: same ids rendered again.
     mk("rb1", "echo one");
     mk("rb2", "echo two");
     const again = mk("rb1", "echo one").render(90);
-    check("rebuild: rows keep their own runs", again.length === 2, JSON.stringify(again));
+    check("rebuild: rows keep their own runs", again.length === 3, JSON.stringify(again));
   }
 
   // 19. sync must not re-serialize args on every render pass (same object
@@ -1028,6 +1121,7 @@ function textResult(chars) {
     };
     read.renderCall(args, theme, base);
     read.renderResult({ content: [{ type: "text", text: body }], details: {} }, { expanded: false, isPartial: false }, theme, { ...base, lastComponent: undefined });
+    openRun(read.renderCall(args, theme, base));
     read.renderCall(args, theme, base).children[0].onMouse({ type: "click", button: "left" });
     const atCollapsed = read.renderCall(args, theme, base).render(100).join("\n");
     check("depth follows: collapsed cell first", !atCollapsed.includes("line 14"), "");
@@ -1069,16 +1163,18 @@ function textResult(chars) {
       expanded: false, showImages: true, isError: false,
     });
     const args = { name: "api-check", prompt: "Check the API\nmore text" };
+    openRun(wrapped.renderCall(args, theme, ctx("e1", args)));
     const row = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
-    check("generic tool collapses to one row", row.length === 1 && isRow(row[0]), JSON.stringify(row));
+    check("generic tool collapses to one row", row.length === 2 && isRow(row[0]), JSON.stringify(row));
     check("generic row names the tool", row[0].includes("spawn_agent"), JSON.stringify(row[0]));
     check("generic row shows the argument", row[0].includes("api-check"), JSON.stringify(row[0]));
     // Two different extension tools in one message share a run.
     const other = rows.collapseDefinition({ ...bare, name: "check_subagents" }, piE);
     const oargs = { target: "api-check" };
     other.renderCall(oargs, theme, ctx("e2", oargs));
+    openRun(wrapped.renderCall(args, theme, ctx("e1", args)));
     const merged = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
-    check("generic tools share a run", merged.length === 2, JSON.stringify(merged));
+    check("generic tools share a run", merged.length === 3, JSON.stringify(merged));
     // Result count flows into the row.
     wrapped.renderResult({ content: [{ type: "text", text: "x".repeat(2400) }], details: {} },
       { expanded: false, isPartial: false }, theme, ctx("e1", args));
@@ -1156,8 +1252,9 @@ function textResult(chars) {
       { name: "check_subagents", description: "d", parameters: {}, async execute() { return {}; } }, piW);
     await handlers.get("tool_execution_start")[0]({ toolName: "check_subagents", toolCallId: "t-cs", args: {} }, {});
     mk(checker, "t-cs", { target: "demo" });
+    openRun(mk(read, "r1", { path: "/a" }));
     const lines = mk(read, "r1", { path: "/a" }).render(80);
-    check("wrapped foreign tools share the run", lines.length === 3, JSON.stringify(lines));
+    check("wrapped foreign tools share the run", lines.length === 4, JSON.stringify(lines));
     let said = "";
     await commands.get("collapse").handler("", { ui: { notify: (m) => { said = m; } } });
     check("no foreign boundary for wrapped tools", !said.includes("foreign-tool:spawn_agent") && !said.includes("foreign-tool:check_subagents"), said);
@@ -1183,9 +1280,10 @@ function textResult(chars) {
       cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
       expanded: false, showImages: true, isError: false,
     });
+    openRun(wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })));
     const row = wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })).render(90);
     // No telling argument: show Pi's own key=value line, not an empty row.
-    check("unspecified args show the args line", row.length === 1 && plainText(row[0]) === "▏check_subagents wait=true timeoutMs=120000", JSON.stringify(row));
+    check("unspecified args show the args line", row.length === 2 && plainText(row[0]) === "▏check_subagents wait=true timeoutMs=120000", JSON.stringify(row));
     // opened (clicked) rows show the same call line
     const opened = wrapped.renderCall({ wait: true }, theme, { ...ctx("e1", { wait: true }), state: {} }).render(90);
     check("opened args-line row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
@@ -1236,11 +1334,14 @@ function textResult(chars) {
     await handlers.get("session_start")[0](
       {}, { hasUI: false, sessionManager: { getEntries: () => entries } });
     const merged = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
-    check("contiguous history merges", merged.length === 2, JSON.stringify(merged));
+    openRun(read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })));
+    const mergedOpen = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
+    check("contiguous history merges", mergedOpen.length === 3, JSON.stringify(mergedOpen));
     check("merged history keeps order",
-      plainText(merged[0]).endsWith("/a") && plainText(merged[1]).endsWith("/b"), JSON.stringify(merged));
+      plainText(mergedOpen[0]).endsWith("/a") && plainText(mergedOpen[1]).endsWith("/b"), JSON.stringify(mergedOpen));
+    openRun(bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })));
     const alone = bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })).render(80);
-    check("prose-split history stays separate", alone.length === 1 && alone[0].includes("ls"), JSON.stringify(alone));
+    check("prose-split history stays separate", alone.length === 2 && alone[0].includes("ls"), JSON.stringify(alone));
   }
 
   // 25b. startup resume renders history AFTER session_start (`pi -r`):
@@ -1294,8 +1395,9 @@ function textResult(chars) {
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
     bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1"));
     bash.renderCall({ command: "echo live2" }, theme, ctxFor("n2", "echo live2"));
+    openRun(bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1")));
     const live = bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1")).render(80);
-    check("live turns merge after restore", live.length === 2, JSON.stringify(live));
+    check("live turns merge after restore", live.length === 3, JSON.stringify(live));
   }
 
   // 25c. settling the deferred merge repaints: contiguous history tools
@@ -1335,9 +1437,10 @@ function textResult(chars) {
     pokes = 0;
     await globalThis.__collapsePollTick.tick();
     check("settle repaints merged history", pokes > 0, String(pokes));
+    openRun(bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")));
     const owner = bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")).render(80);
     const nonOwner = bash.renderCall({ command: "echo two" }, theme, ctxFor("m2", "echo two")).render(80);
-    check("merged owner shows both rows", owner.length === 2, JSON.stringify(owner));
+    check("merged owner shows both rows", owner.length === 3, JSON.stringify(owner));
     check("merged non-owner renders empty", nonOwner.length === 0, JSON.stringify(nonOwner));
   }
 
@@ -1478,12 +1581,13 @@ function textResult(chars) {
     await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager });
     widgets[0]({ children: [chat] }, {});
     widgets[0]({ children: [chat] }, {});
-    // flag off by default: nothing detached
-    delete process.env.COLLAPSE_HIDE_THINKING;
+    // flag explicitly off: nothing detached
+    process.env.COLLAPSE_HIDE_THINKING = "0";
     let r = detach.detachPass(piL, sessionManager);
     check("flag off detaches nothing", r.detached === 0 && chat.children.length === 3, JSON.stringify(r));
-    // flag on: only the SAFE+hosted row goes (lonely thinking has no host run)
-    process.env.COLLAPSE_HIDE_THINKING = "1";
+    // flag on (also the default): SAFE rows detach; the thinking-only row
+    // attaches to the nearest tool run (previous here).
+    delete process.env.COLLAPSE_HIDE_THINKING;
     const bash = tools.get("bash");
     const theme = { fg: (c, t) => t, style: (t) => t };
     const mk = (t, id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
@@ -1494,10 +1598,63 @@ function textResult(chars) {
     r = detach.detachPass(piL, sessionManager);
     check("SAFE+hosted row detached", !chat.children.includes(rowSafe), chat.children.length);
     check("text row stays mounted", chat.children.includes(rowText), "");
-    check("lonely thinking stays (no host run)", chat.children.includes(rowLonely), "");
+    check("lonely thinking attaches to prev run", !chat.children.includes(rowLonely), chat.children.length);
     check("detach recorded", detach.isMessageHidden("e1") === true, "");
-    check("others not recorded", detach.isMessageHidden("e2") === false && detach.isMessageHidden("e3") === false, "");
+    check("lonely recorded too", detach.isMessageHidden("e3") === true, "");
+    check("others not recorded", detach.isMessageHidden("e2") === false, "");
     delete process.env.COLLAPSE_HIDE_THINKING;
+    detach.resetDetachState?.();
+  }
+
+  // 29b. detach is on by default; thinking-only rows attach to the nearest
+  // tool run (next preferred, else previous); several keep their own rows.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piN = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piN);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING; // default must be on
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    bash.renderCall({ command: "echo A" }, theme, mk("n1", { command: "echo A" }));
+    await handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
+    bash.renderCall({ command: "echo B" }, theme, mk("n2", { command: "echo B" }));
+    const thinkMsg = { role: "assistant", content: [{ type: "thinking", thinking: "bridge thought" }], stopReason: "stop" };
+    const rowThink = { lastMessage: thinkMsg, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const toolA = { toolCallId: "n1" };
+    const toolB = { toolCallId: "n2" };
+    const chat = { children: [toolA, rowThink, toolB],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [chat] }, {});
+    const r = detach.detachPass(piN);
+    check("thinking-only attaches (default on)", r.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r));
+    check("attached to next run", (detach.runThinkingForTool("n2") ?? "").includes("bridge thought"), detach.runThinkingForTool("n2") ?? "(none)");
+    check("previous run keeps nothing", (detach.runThinkingForTool("n1") ?? "") === "", detach.runThinkingForTool("n1") ?? "(none)");
+    // A trailing thinking-only row falls back to the previous run; the run
+    // then counts two thinking blocks in its header.
+    const thinkMsg2 = { role: "assistant", content: [{ type: "thinking", thinking: "trailing thought" }], stopReason: "stop" };
+    const rowThink2 = { lastMessage: thinkMsg2, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    chat.children.push(rowThink2);
+    const r2 = detach.detachPass(piN);
+    check("trailing thinking falls back to prev", r2.detached === 1 && !chat.children.includes(rowThink2), JSON.stringify(r2));
+    const ownerHdr = bash.renderCall({ command: "echo B" }, theme, mk("n2", { command: "echo B" })).render(90).map(plainText);
+    check("header counts both thinking", ownerHdr.length === 1 && ownerHdr[0].includes("2 thinking"), JSON.stringify(ownerHdr));
     detach.resetDetachState?.();
   }
 
@@ -1537,8 +1694,9 @@ function textResult(chars) {
     await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
     widgets[0]({ children: [fakeParent] }, {});
     detach.detachPass(piL, { getEntries: () => [{ id: "ef1", type: "message", message: msg }] });
-    const out2 = bash.renderCall({ command: "echo one" }, theme, mk(bash, "f1", { command: "echo one" }));
-    const lines2 = out2.render(100);
+    const out2comp = () => bash.renderCall({ command: "echo one" }, theme, mk(bash, "f1", { command: "echo one" }));
+    openRun(out2comp());
+    const lines2 = out2comp().render(100);
     check("preview appears after confirmed detach", lines2.some((l) => l.includes("plan for one")), lines2.join("|").slice(0, 160));
     delete process.env.COLLAPSE_HIDE_THINKING;
     detach.resetDetachState?.();
@@ -1639,7 +1797,9 @@ function textResult(chars) {
     chat.children.push(row2);
     read.renderCall({ path: "/g" }, theme, mk(read, "rr1", { path: "/g" }));
     await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: sm });
-    const out = read.renderCall({ path: "/g" }, theme, mk(read, "rr1", { path: "/g" }));
+    const outComp = () => read.renderCall({ path: "/g" }, theme, mk(read, "rr1", { path: "/g" }));
+    openRun(outComp());
+    const out = outComp();
     const lines = out.render(100).join("\n");
     check("reload detaches fresh row", !chat.children.includes(row2), chat.children.length);
     check("preview keys the final run", lines.includes("reloadable plan"), lines.slice(0, 160));
@@ -2193,7 +2353,8 @@ function textResult(chars) {
     edit.renderCall(args, realTheme, ctx);
     edit.renderResult(result, { expanded: false, isPartial: false }, realTheme, { ...ctx, lastComponent: undefined });
     const rest = edit.renderCall(args, realTheme, ctx).render(100);
-    check("edit rest is one row", rest.length === 1, JSON.stringify(rest));
+    check("edit rest is header", rest.length === 1 && rest[0].includes(">"), JSON.stringify(rest));
+    openRun(edit.renderCall(args, realTheme, ctx));
     const row = edit.renderCall(args, realTheme, ctx).children[0];
     row.onMouse({ type: "click", button: "left" });
     const opened = edit.renderCall(args, realTheme, ctx).render(100);
@@ -2211,12 +2372,13 @@ function textResult(chars) {
     const joined = opened.join("\n");
     check("edit expanded shows the change", /beta/.test(joined), joined.slice(0, 200));
     const firstDiff = opened.findIndex((line, i) => line !== stock[i]);
-    check("edit expanded matches stock", JSON.stringify(opened) === JSON.stringify(stock), `line ${firstDiff}: ${JSON.stringify(opened[firstDiff])} VS ${JSON.stringify(stock[firstDiff])}`);
+    check("edit expanded matches stock", JSON.stringify(opened.slice(0, stock.length)) === JSON.stringify(stock), `line ${firstDiff}: ${JSON.stringify(opened[firstDiff])} VS ${JSON.stringify(stock[firstDiff])}`);
 
     // ctrl+o (Pi expanded) must hold the same line, at the deeper cell.
     const ctxX = { ...callContext({ args, toolCallId: "t-edit-x", expanded: true }).ctx };
     edit.renderCall(args, realTheme, ctxX);
     edit.renderResult(result, { expanded: true, isPartial: false }, realTheme, { ...ctxX, lastComponent: undefined });
+    openRun(edit.renderCall(args, realTheme, ctxX));
     edit.renderCall(args, realTheme, ctxX).children[0].onMouse({ type: "click", button: "left" });
     const openedX = edit.renderCall(args, realTheme, ctxX).render(100);
     const stockX = (() => {
@@ -2231,7 +2393,7 @@ function textResult(chars) {
       return c.render(100).slice(1);
     })();
     check("edit deep cell shows the change", /beta/.test(openedX.join("\n")), openedX.join("\n").slice(0, 200));
-    check("edit deep cell matches stock", JSON.stringify(openedX) === JSON.stringify(stockX), `line ${openedX.findIndex((l, i) => l !== stockX[i])}`);
+    check("edit deep cell matches stock", JSON.stringify(openedX.slice(0, stockX.length)) === JSON.stringify(stockX), `line ${openedX.findIndex((l, i) => l !== stockX[i])}`);
   }
 
   // 61. generalization matrix: EVERY builtin opens byte-identical to stock
@@ -2275,7 +2437,8 @@ function textResult(chars) {
           check(`${name} matrix row exists (${expanded ? "deep" : "shallow"})`, false, "no clickable row");
           continue;
         }
-        rest.children[0].onMouse({ type: "click", button: "left" });
+        openRun(rest);
+        tool.renderCall(args, realTheme, ctx).children[0].onMouse({ type: "click", button: "left" });
         const ours = tool.renderCall(args, realTheme, ctx).render(100);
         const stockComp = new agent.ToolExecutionComponent(
           name, `stock-${name}-${expanded}`, args, { showImages: true, imageWidthCells: 60 },
@@ -2289,7 +2452,7 @@ function textResult(chars) {
         const at = ours.findIndex((line, i) => line !== stock[i]);
         check(
           `${name} opens like stock (${expanded ? "deep" : "shallow"})`,
-          JSON.stringify(ours) === JSON.stringify(stock),
+          ours.length === stock.length + 1 && JSON.stringify(ours.slice(0, stock.length)) === JSON.stringify(stock),
           `line ${at}: ${JSON.stringify(ours[at])} VS ${JSON.stringify(stock[at])}`,
         );
       }
@@ -2335,8 +2498,9 @@ function textResult(chars) {
     wrapped.renderCall(args, theme, ctx);
     wrapped.renderResult(result, { expanded: false, isPartial: false }, theme, { ...ctx, lastComponent: undefined });
     const rest = wrapped.renderCall(args, theme, ctx);
-    check("custom row rests as one line", rest.render(100).length === 1, JSON.stringify(rest.render(100)));
-    rest.children[0].onMouse({ type: "click", button: "left" });
+    check("custom row rests as header", rest.render(100).length === 1, JSON.stringify(rest.render(100)));
+    openRun(rest);
+    wrapped.renderCall(args, theme, ctx).children[0].onMouse({ type: "click", button: "left" });
     const opened = wrapped.renderCall(args, theme, ctx).render(100).join("\n");
     check("custom opened shows header", /custom header/.test(opened), opened.slice(0, 160));
     check("custom opened shows result-injected body", /PAYLOAD/.test(opened), opened.slice(0, 160));
@@ -2358,6 +2522,7 @@ function textResult(chars) {
         { ...ctx, lastComponent: undefined },
       );
     partial(120, true);
+    openRun(bash.renderCall(ctx.args, theme, ctx));
     const during = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("partial output shows a count", /0\.1k ch/.test(during), during);
     const spinning = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80).join("");
@@ -2371,7 +2536,8 @@ function textResult(chars) {
     const settled = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("final count lands", /4\.2k ch/.test(settled), settled);
     check("settled row parks the wheel", !/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(settled), settled.slice(0, 120));
-    check("row stays one line", bash.renderCall(ctx.args, theme, ctx).render(80).length === 1, "multi-line");
+    const restLines = bash.renderCall(ctx.args, theme, ctx).render(80);
+    check("row stays one line", restLines.length === 2 && /4\.2k ch/.test(restLines[0]), JSON.stringify(restLines));
   }
 
   // 64. formatting hierarchy: BOLD = identity (tool / command), PLAIN = the
@@ -2382,7 +2548,9 @@ function textResult(chars) {
       resetTrace();
       const tool = piW.tools.get(name);
       const { ctx } = callContext({ args, toolCallId: `fmt-${name}`, state });
-      return tool.renderCall(ctx.args, theme, { ...ctx, state }).render(100)[0];
+      const c = { ...ctx, state };
+      openRun(tool.renderCall(ctx.args, theme, c));
+      return tool.renderCall(ctx.args, theme, c).render(100)[0];
     };
     // dim prefix on every row
     for (const [name, args] of [
@@ -2414,10 +2582,14 @@ function textResult(chars) {
     const custom = globalThis.__collapseWrapTool;
     const wrapped = custom({ name: "mcp_thing", parameters: {}, async execute() {} });
     const { ctx: cctx } = callContext({ args: { query: "find the thing" }, toolCallId: "fmt-custom" });
-    const customRow = wrapped.renderCall(cctx.args, theme, { ...cctx, args: { query: "find the thing" } }).render(100)[0];
+    const cargs = { ...cctx, args: { query: "find the thing" } };
+    openRun(wrapped.renderCall(cctx.args, theme, cargs));
+    const customRow = wrapped.renderCall(cctx.args, theme, cargs).render(100)[0];
     check("generic primary plain", customRow.includes("find the thing") && !customRow.includes("<dim>find the thing"), customRow);
     const { ctx: pctx } = callContext({ args: { query: "find the thing", limit: 5 }, toolCallId: "fmt-pair" });
-    const pairRow = wrapped.renderCall(pctx.args, theme, { ...pctx, args: { query: "find the thing", limit: 5 } }).render(100)[0];
+    const pargs = { ...pctx, args: { query: "find the thing", limit: 5 } };
+    openRun(wrapped.renderCall(pctx.args, theme, pargs));
+    const pairRow = wrapped.renderCall(pctx.args, theme, pargs).render(100)[0];
     check("generic pairs dim", pairRow.includes("<dim>limit=5</>"), pairRow);
   }
 
@@ -2428,7 +2600,9 @@ function textResult(chars) {
       resetTrace();
       const tool = piW.tools.get(name);
       const { ctx } = callContext({ args, toolCallId: `bash-${name}-${args.command ?? ""}` });
-      return tool.renderCall(ctx.args, theme, { ...ctx, args }).render(400)[0];
+      const c = { ...ctx, args };
+      openRun(tool.renderCall(ctx.args, theme, c));
+      return tool.renderCall(ctx.args, theme, c).render(400)[0];
     };
     const A = "<dim>▏</><b:accent>$</b>";
     const PS = "<dim>▏</><b:accent>PS></b>";
@@ -2544,7 +2718,9 @@ function textResult(chars) {
         resetE();
         const tool = piE.tools.get("bash");
         const { ctx } = callContext({ args: { command: "ls" }, toolCallId: `edge-${cols}-${renderWidth}-${pad}`, state: { count: 5300 } });
-        const line = tool.renderCall(ctx.args, ansiTheme, { ...ctx, args: { command: "ls" } }).render(renderWidth)[0];
+        const c = { ...ctx, args: { command: "ls" } };
+        openRun(tool.renderCall(ctx.args, ansiTheme, c));
+        const line = tool.renderCall(ctx.args, ansiTheme, c).render(renderWidth)[0];
         const expected = labelEnd(cols, pad);
         check(
           `count column matches thinking at cols=${cols} render=${renderWidth} pad=${pad}`,
@@ -2927,6 +3103,7 @@ function textResult(chars) {
   mk("send_to_subagent").renderCall(sendArgs, theme, ctx("s3", sendArgs));
   mk("cancel_subagent").renderCall(cancelArgs, theme, ctx("s4", cancelArgs));
   // Every call above joined the spawn's run; the owner renders all four rows.
+  openRun(spawn.renderCall(spawnArgs, theme, ctx("s1", spawnArgs)));
   const lines = spawn
     .renderCall(spawnArgs, theme, ctx("s1", spawnArgs))
     .render(120)
@@ -2990,14 +3167,23 @@ function textResult(chars) {
     const ours = cell(wrapped, "w1");
     const stock = cell(bare, "s1");
     const rest = ours.render(100);
-    check("bare rest is one row", rest.length === 2 && isRow(rest[1]), JSON.stringify(rest.map(plainText)));
-    check("bare row keeps the other args", plainText(rest[1]).includes("check_subagents review wait=true"), plainText(rest[1]));
+    check("bare rest is header", rest.length === 2 && rest[1].includes(">"), JSON.stringify(rest.map(plainText)));
+    check("bare header names the tool", plainText(rest[1]).includes("check_subagents"), plainText(rest[1]));
     ours.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
     ours.invalidate();
-    same("bare opened cell is stock (collapsed)", ours, stock);
+    const openView = ours.render(100);
+    check("bare row keeps the other args", openView.some((l) => plainText(l).includes("check_subagents review wait=true")), JSON.stringify(openView.map(plainText)));
+    ours.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
+    ours.invalidate();
+    // The open run appends its Collapse footer after the stock cell.
+    const openedRender = ours.render(100);
+    check("bare opened cell is stock (collapsed)", JSON.stringify(openedRender.slice(0, -1)) === JSON.stringify(stock.render(100)),
+      `\nours:\n${plainText(openedRender.slice(0, -1).join("\n"))}\nstock:\n${plainText(stock.render(100).join("\n"))}`);
     stock.setExpanded(true);
     ours.setExpanded(true);
-    same("bare opened cell is stock (expanded)", ours, stock);
+    const openedXRender = ours.render(100);
+    check("bare opened cell is stock (expanded)", JSON.stringify(openedXRender.slice(0, -1)) === JSON.stringify(stock.render(100)),
+      `\nours:\n${plainText(openedXRender.slice(0, -1).join("\n"))}\nstock:\n${plainText(stock.render(100).join("\n"))}`);
   }
 
   // Visible thinking: collapse is inactive, so the cell must be stock too.
@@ -3028,6 +3214,8 @@ function textResult(chars) {
     wrapped.renderResult(big, { expanded: false, isPartial: false }, realTheme, ctx(false));
     const rest = wrapped.renderCall(longArgs, realTheme, ctx(false));
     rest.handleMouse({ type: "click", x: 1, y: 0, width: 100, height: 1 });
+    // First click opens the run; second opens the row's result preview.
+    wrapped.renderCall(longArgs, realTheme, ctx(false)).handleMouse({ type: "click", x: 1, y: 0, width: 100, height: 1 });
     const shown = plainText(wrapped.renderCall(longArgs, realTheme, ctx(false)).render(100).join("\n"))
       .split("\n").map((line) => line.trim());
     check("huge result previews ten lines", shown.includes("line 9") && !shown.includes("line 10") && shown.some((l) => l.includes("4990 more lines")), JSON.stringify(shown.slice(-3)));
@@ -3070,6 +3258,8 @@ function textResult(chars) {
     const c = ctx("row-" + name, args);
     tool.renderCall(args, realTheme, c);
     if (result) tool.renderResult({ content: [{ type: "text", text: result }], details: {} }, { expanded: false, isPartial: false }, realTheme, c);
+    const comp = tool.renderCall(args, realTheme, c);
+    openRun(comp);
     return tool.renderCall(args, realTheme, c).render(width)[0] ?? "";
   };
   const spawnArgs = { task: "Review the collapse extension for performance regressions", name: "review", model: "anthropic/claude-sonnet-4", thinking: "high", tools: ["read", "bash", "grep"], maxDepth: 2 };
@@ -3180,7 +3370,10 @@ function textResult(chars) {
   const cases = [["write", wArgs], ["edit", eArgs], ["bash", bArgs], ["grep", gArgs], ["read", rArgs], ["write", {}], ["write", xArgs], ["write", sArgs]];
   const comps = cases.map(([name, args], i) => new agent.ToolExecutionComponent(name, `live-${i}`, args, opts, mk(name), ui, "/repo"));
   const owner = comps[0];
-  const rows = () => owner.render(120).map(plainText).filter(isRow);
+  // Live runs rest closed; open the run so the streaming rows are visible.
+  owner.render(120);
+  owner.callRendererComponent.children[0]?.onMouse?.({ type: "click", button: "left" });
+  const rows = () => owner.render(120).map(plainText).filter(isRow).filter((l) => !l.includes("Collapse"));
 
   check("every live tool has a row", rows().length === cases.length, `${rows().length}`);
   check("live write row streams the body", rows()[0].includes('content="export function f()'), rows()[0]);
@@ -3373,6 +3566,8 @@ function textResult(chars) {
     const res = { content: [{ type: "text", text: "slept 14" }] };
     bashD.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-live", { isPartial: false }));
     liveEntries.get("dur-live").rowOpen = true;
+    const durComp = bashD.renderCall({ command: "sleep 14" }, theme, mkCtx("dur-live", { isPartial: false }));
+    openRun(durComp);
     const expanded = bashD.renderCall({ command: "sleep 14" }, theme, mkCtx("dur-live", { isPartial: false })).render(120).join("");
     check("expanded row shows the true duration", expanded.includes("Took 14.0s"), expanded.slice(-160));
     // Integration: a late-observed completion shows no duration line rather
@@ -3381,6 +3576,7 @@ function textResult(chars) {
     syncMod.resetTraceState();
     bashD.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-done", { isPartial: false }));
     liveEntries.get("dur-done").rowOpen = true;
+    openRun(bashD.renderCall({ command: "sleep 14" }, theme, mkCtx("dur-done", { isPartial: false })));
     const lateOut = bashD.renderCall({ command: "sleep 14" }, theme, mkCtx("dur-done", { isPartial: false })).render(120).join("");
     check("late-observed row shows no duration", !lateOut.includes("Took"), lateOut.slice(-160));
   } finally {
@@ -3505,6 +3701,7 @@ function textResult(chars) {
   bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-hist", {}));
   bashH.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-hist", {}));
   syncMod.traceEntries.get("dur-hist").rowOpen = true;
+  openRun(bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-hist", {})));
   const histOut = bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-hist", {})).render(120).join("");
   check("history row expands with its true duration", histOut.includes("Took 14.0s"), histOut.slice(-160));
   // Prod order: rebuild renders run BEFORE session_start fills the map, so
@@ -3521,6 +3718,7 @@ function textResult(chars) {
     ] },
   });
   syncMod.traceEntries.get("dur-poison").rowOpen = true;
+  openRun(bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-poison", {})));
   const poisonOut = bashH.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-poison", {})).render(120).join("");
   check("late history upgrades fallback stamps", poisonOut.includes("Took 14.0s"), poisonOut.slice(-160));
   // Units: a fallback start upgrades when history arrives; an exact Pi

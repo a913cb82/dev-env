@@ -145,7 +145,11 @@ are touched and no prototype is modified. `/collapse` reports
 tree navigation re-render history. During a rebuild each historical tool gets
 its own run, so old rows never move; live turns below resume merging.
 
-**Click depth.** Rows always rest as one-liners. Clicking a row opens its stock
+**Click depth.** Every run rests as one header line, live or settled
+(`>4 read · 1 thinking`, duration right). A live run keeps its spinning
+wheel in column 1 and the argument text written so far on the right
+instead of expanding while it streams. Clicking the header opens the
+per-row view plus a `▏Collapse` footer; each row still opens its stock
 cell at the depth Pi currently asks for:
 
 | Pi (ctrl+o) | At rest | After click |
@@ -164,16 +168,18 @@ across the pair — `edit` writes its diff into the call component stashed in
 empty. Skipping the result renderer would leave an expanded `edit` row as a
 bare header with no diff.
 
-**Thinking-row detach (opt-in experiment, default off).** Pi's thinking row is
+**Thinking-row detach (on by default).** Pi's thinking row is
 unconditional given visible thinking, so the only way to merge thinking into
 the gapless tool block is to detach the whole assistant component via the
-public `removeChild` — no message edits, no patching. Enable with
-`COLLAPSE_HIDE_THINKING=1`. Two rules keep it safe: the SAFE predicate
+public `removeChild` — no message edits, no patching. Opt out with
+`COLLAPSE_HIDE_THINKING=0`. Three rules keep it safe: the SAFE predicate
 (`isSafeToDetach`, a mirror of Pi's own renderer — no text, all runs hidden,
 clean stop, has tools) means a detach never hides anything but hidden-label
-rows; and the replacement preview row (first row of the trace, click to
-expand the full stashed text) renders iff the detach is confirmed — a miss
-degrades to the stock Pi row, never a duplicate. Detach runs on
+rows; a lone thinking row with no host tool attaches to the nearest tool
+run in transcript order (next preferred, else previous) so its preview
+still has a home; and the replacement preview row (one per hosted thinking
+block, click to expand the full stashed text) renders iff the detach is
+confirmed — a miss degrades to the stock Pi row, never a duplicate. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
 are never edited, so history, replay, compaction, and reload backfill keep
@@ -269,8 +275,8 @@ the row, so a collapsed row is never emptier than stock. Definitions with
 their own renderers keep them, wrapped in the shared chrome. `/collapse` lists
 any tool that never opted in.
 
-**Live rows.** Until a call has a result, a built-in row also streams the
-arguments its summary hides — the `write` body, both sides of an `edit`, the
+**Live rows.** Until a call has a result, an open run's row also streams
+the arguments its summary hides — the `write` body, both sides of an `edit`, the
 `bash` description, `grep`/`find` flags — as the same dim `key=value` pairs,
 in declared order, filling the row. When they do not all fit and the row
 hides text, the right column reports the argument text written so far
