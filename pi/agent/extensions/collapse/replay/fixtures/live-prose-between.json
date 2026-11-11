@@ -1,0 +1,22 @@
+{
+  "name": "live-prose-between",
+  "note": "Mid-stream, the prose is mounted but not yet persisted: entries cannot see it, so only the tree-order gate blocks the backward attach. After both messages end, the settled pass stands the thinking alone.",
+  "liveMid": [
+    { "op": "start", "id": "m1" },
+    { "op": "tool", "id": "m1", "toolId": "k1", "name": "bash", "args": { "command": "echo first" } },
+    { "op": "end", "id": "m1", "stop": "toolUse" },
+    { "op": "result", "toolId": "k1", "text": "first" },
+    { "op": "turn" },
+    { "op": "start", "id": "m2" },
+    { "op": "text", "id": "m2", "text": "A quick note before I think." },
+    { "op": "start", "id": "m3" },
+    { "op": "thinking", "id": "m3", "text": "Hmm, what next" },
+    { "op": "tick" }
+  ],
+  "liveRest": [
+    { "op": "end", "id": "m2", "stop": "stop" },
+    { "op": "end", "id": "m3", "stop": "stop" },
+    { "op": "turn" },
+    { "op": "tick" }
+  ]
+}

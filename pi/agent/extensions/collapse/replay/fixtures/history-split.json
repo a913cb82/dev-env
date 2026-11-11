@@ -1,0 +1,17 @@
+{
+  "name": "history-split",
+  "note": "Persisted history across a user boundary restores to one header per segment, identically across reload.",
+  "restore": [
+    { "id": "e1", "type": "message", "message": { "role": "user", "content": [{ "type": "text", "text": "first task" }] } },
+    { "id": "e2", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "thinking", "thinking": "plan one" },
+      { "type": "toolCall", "id": "h1", "name": "bash", "arguments": { "command": "echo a" } }
+    ], "stopReason": "toolUse" } },
+    { "id": "e3", "type": "message", "message": { "role": "toolResult", "toolCallId": "h1", "content": [{ "type": "text", "text": "a" }] } },
+    { "id": "e4", "type": "message", "message": { "role": "user", "content": [{ "type": "text", "text": "second task" }] } },
+    { "id": "e5", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "toolCall", "id": "h2", "name": "bash", "arguments": { "command": "echo b" } }
+    ], "stopReason": "toolUse" } },
+    { "id": "e6", "type": "message", "message": { "role": "toolResult", "toolCallId": "h2", "content": [{ "type": "text", "text": "b" }] } }
+  ]
+}

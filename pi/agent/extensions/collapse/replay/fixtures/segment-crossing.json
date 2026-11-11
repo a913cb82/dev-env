@@ -1,0 +1,23 @@
+{
+  "name": "segment-crossing",
+  "note": "The reported shape: thinking-only messages, then agent prose, then the tools. The thinkings must stand alone before the prose, never teleport into the tools' block after it.",
+  "live": [
+    { "op": "start", "id": "m1" },
+    { "op": "thinking", "id": "m1", "text": "Designing T1/T2 test cases for entry persistence" },
+    { "op": "end", "id": "m1", "stop": "stop" },
+    { "op": "start", "id": "m2" },
+    { "op": "thinking", "id": "m2", "text": "Evaluating a structural split using a foreign tool event" },
+    { "op": "end", "id": "m2", "stop": "stop" },
+    { "op": "start", "id": "m3" },
+    { "op": "text", "id": "m3", "text": "Rule confirmed: attach within the segment. Working on it." },
+    { "op": "end", "id": "m3", "stop": "stop" },
+    { "op": "start", "id": "m4" },
+    { "op": "tool", "id": "m4", "toolId": "k1", "name": "bash", "args": { "command": "echo one" } },
+    { "op": "tool", "id": "m4", "toolId": "k2", "name": "bash", "args": { "command": "echo two" } },
+    { "op": "end", "id": "m4", "stop": "toolUse" },
+    { "op": "result", "toolId": "k1", "text": "one" },
+    { "op": "result", "toolId": "k2", "text": "two" },
+    { "op": "turn" },
+    { "op": "tick" }
+  ]
+}

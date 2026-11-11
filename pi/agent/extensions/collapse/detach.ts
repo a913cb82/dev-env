@@ -193,6 +193,21 @@ function collectOrdered(
     out.push({ kind: "thinking", parent, row: node });
     return;
   }
+  // The extension's own run containers: tagged with the run's toolCallIds
+  // (they expose no toolCallId of their own). Every id shares the
+  // container's index — neighbors and anchors only need the position.
+  const traceIds = (node as { traceToolIds?: unknown }).traceToolIds;
+  if (Array.isArray(traceIds)) {
+    const at = out.length;
+    for (const id of traceIds) {
+      if (typeof id !== "string") continue;
+      const runId = traceEntries.get(id)?.runId;
+      if (runId === undefined) continue;
+      toolPos?.set(id, at);
+      out.push({ kind: "tool", runId, toolCallId: id });
+    }
+    return;
+  }
   const toolCallId = (node as { toolCallId?: unknown }).toolCallId;
   if (typeof toolCallId === "string") {
     const runId = traceEntries.get(toolCallId)?.runId;

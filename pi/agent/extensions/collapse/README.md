@@ -358,7 +358,31 @@ still on screen. Size is proportional to the transcript.
 ```
 node logic.test.cjs      # pure helpers
 node collapse.test.cjs   # renderers, trace behaviour, click depth, diagnostics
+node replay.test.cjs     # headless Pi: real components, scripted transcripts
 ```
 
-Both run on plain Node via `jiti`, with the installed Pi bundle aliased; no
-network and no real terminal required.
+Both unit suites run on plain Node via `jiti`, with the installed Pi bundle
+aliased; no network and no real terminal required.
+
+## Replay harness (`replay/`)
+
+Fake rows lie: they cannot reproduce unmounted settled rows, persistence
+timing, or the extension's own components hiding tools from the walk.
+The replay driver mounts the REAL `AssistantMessageComponent` /
+`UserMessageComponent` classes and the extension's own wrapped tools,
+feeds them a scripted transcript, and screenshots the chat with
+`component.render(width)` — no terminal, no mocks.
+
+```
+node replay/record.cjs <session.jsonl> [--from N] [--to N] [--out <name>]
+# sessions live in ~/.pi/agent/sessions/--<cwd-with---as->--/
+```
+
+Phases mirror a real session: `restore` (entries load before
+`session_start`, then mount oldest-first, then converge over poll ticks),
+live ops (`start`/`thinking`/`text`/`tool`/`end`/`result`/`turn`/`tick`),
+and `reload` (rebuild from the same entries — the dump must be
+identical). Fixtures live in `replay/fixtures/`; sanitize recorded ones
+before committing (thinking blocks can carry secrets). The driver takes
+the REAL production poll tick (`collapseTick`: settle plan, detach, wrap,
+relabel) so order bugs surface here, not in production.

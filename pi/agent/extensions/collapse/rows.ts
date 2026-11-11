@@ -383,6 +383,10 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
   const trace = new Container();
   const piExpanded = !!ownerCtx?.expanded;
   const ids = traceRuns.get(runId) ?? [];
+  // Walk-visible ownership: the walk matches tools by toolCallId, but this
+  // container is the extension's own component — tag it with the run's ids
+  // so the detach walk (neighbors, anchors, segment gate) sees the tools.
+  (trace as { traceToolIds?: string[] }).traceToolIds = [...ids];
   const duration = formatRunDuration(runDuration(runId));
   // Run-level header: every run rests as one line. Click opens the per-row
   // view below. While entries stream the header carries the live wheel

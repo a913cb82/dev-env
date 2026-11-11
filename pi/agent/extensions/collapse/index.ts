@@ -84,6 +84,10 @@ import {
 } from "./labels.js";
 import { resetWrapState, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus } from "./wrap.js";
 export { captureWalkerTui, reconcileStreamingLabel, reconcileThinkingLabels, resetLabelsState, resetWrapState, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus };
+/** Test/replay hook: one production poll tick (settle plan, detach,
+ *  wrap, relabel). The live loop calls this every second; the headless
+ *  driver calls it directly instead of reimplementing the order. */
+export { collapseTick };
 import {
   planToolRuns,
   toolTimings,
@@ -126,7 +130,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 79;
+const COLLAPSE_REVISION = 80;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
