@@ -151,6 +151,7 @@ let hardBoundarySeq = 0;
 /** Newest-tool stamp per run: the turn a run's tools rendered in. */
 const runTurnSeq = new Map<number, number>();
 export function traceBoundary(reason = "?") {
+  traceBump();
   traceRunId++;
   hardBoundarySeq++;
   boundaryReasons.push(`${reason}#${traceRunId}`);
@@ -159,6 +160,7 @@ export function traceBoundary(reason = "?") {
 }
 /** Same-turn split (leading/trailing prose): new run, same turn. */
 export function traceSoftBoundary(reason = "?") {
+  traceBump();
   traceRunId++;
   boundaryReasons.push(`${reason}#${traceRunId}`);
   if (boundaryReasons.length > 8) boundaryReasons.shift();
@@ -252,6 +254,7 @@ export function runDuration(runId: number): number | undefined {
 const plannedRunById = new Map<string, number>();
 
 export function applyPlannedRuns(groups: string[][]): void {
+  traceBump();
   plannedRunById.clear();
   const byId = new Map(traceEntries);
   const planned = new Set<string>();
@@ -279,6 +282,19 @@ export function applyPlannedRuns(groups: string[][]): void {
   // traceRunId always names the run the next tool joins: leave it on a fresh
   // run, or the first live tool would collide into the last history run.
   traceRunId++;
+}
+
+/** Bumped on every observable change to run state (new/updated entry, run
+ *  re-plan, boundary). The row view repaints when it moves, so a click or a
+ *  streaming delta is never masked by a cached container. */
+let traceRevision = 0;
+
+export function traceBump(): void {
+  traceRevision++;
+}
+
+export function traceRevisionCount(): number {
+  return traceRevision;
 }
 
 export function traceOwnerId(runId: number): string | undefined {
@@ -318,6 +334,7 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
       turnSeq: hardBoundarySeq,
     };
     traceEntries.set(toolCallId, entry);
+    traceBump();
     const run = traceRuns.get(entry.runId) ?? [];
     run.push(toolCallId);
     traceRuns.set(entry.runId, run);
@@ -478,6 +495,7 @@ export function traceSync(
       }
     }
   }
+  if (changed) traceBump();
   return changed;
 }
 

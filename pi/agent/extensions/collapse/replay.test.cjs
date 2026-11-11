@@ -88,6 +88,25 @@ const loadFixture = (name) =>
       shot.lines.join("\n"));
   }
 
+  // R4. both resume orders converge: `pi` (start, then mount) and
+  // `pi -r` (mount, then start) must produce the SAME screenshot, with
+  // thinking preserved and one run per user boundary. A divergence here
+  // means one real startup path silently loses counts or merges runs.
+  {
+    const entries = loadFixture("history-split").restore;
+    const shots = {};
+    for (const variant of ["restore", "restoreLate"]) {
+      const world = driver.createWorld(PI, { width: 100 });
+      await driver[variant](world, entries);
+      shots[variant] = driver.dump(world).lines.join("\n");
+    }
+    check("resume orders converge", shots.restore === shots.restoreLate,
+      `--- start then mount ---\n${shots.restore}\n--- mount then start ---\n${shots.restoreLate}`);
+    check("resume keeps the thinking count",
+      shots.restore.includes("1 thinking") && shots.restoreLate.includes("1 thinking"),
+      JSON.stringify([shots.restore, shots.restoreLate]));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

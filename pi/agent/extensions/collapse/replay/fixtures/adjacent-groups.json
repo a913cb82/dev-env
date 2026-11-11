@@ -1,0 +1,23 @@
+{
+  "name": "adjacent-groups",
+  "note": "Two tool groups separated only by a thinking-only message, same turn. They must merge into one run: no visible message means no breakpoint.",
+  "live": [
+    { "op": "start", "id": "m1" },
+    { "op": "tool", "id": "m1", "toolId": "a1", "name": "bash", "args": { "command": "echo a1" } },
+    { "op": "tool", "id": "m1", "toolId": "a2", "name": "bash", "args": { "command": "echo a2" } },
+    { "op": "end", "id": "m1", "stop": "toolUse" },
+    { "op": "result", "toolId": "a1", "text": "a1" },
+    { "op": "result", "toolId": "a2", "text": "a2" },
+    { "op": "start", "id": "m2" },
+    { "op": "thinking", "id": "m2", "text": "The first batch worked, now the second batch" },
+    { "op": "end", "id": "m2", "stop": "stop" },
+    { "op": "start", "id": "m3" },
+    { "op": "tool", "id": "m3", "toolId": "b1", "name": "bash", "args": { "command": "echo b1" } },
+    { "op": "tool", "id": "m3", "toolId": "b2", "name": "bash", "args": { "command": "echo b2" } },
+    { "op": "end", "id": "m3", "stop": "toolUse" },
+    { "op": "result", "toolId": "b1", "text": "b1" },
+    { "op": "result", "toolId": "b2", "text": "b2" },
+    { "op": "turn" },
+    { "op": "tick" }
+  ]
+}

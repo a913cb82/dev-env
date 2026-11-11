@@ -164,10 +164,10 @@ function mountAssistant(world, message, entryId) {
 function mountTool(world, name, toolCallId, args, partial) {
   const tool = world.tools.get(name);
   if (!tool) throw new Error(`unknown tool: ${name}`);
-  // Production re-invokes renderCall on invalidate and swaps the mounted
-  // component; without this the screenshot goes stale after polls, clicks,
-  // and toggles (the row is gone from the chat but the header never learns
-  // its thinking count, elapsed time freezes, clicks never open).
+  // Production fidelity: ToolExecutionComponent.invalidate() calls
+  // updateDisplay(), which re-invokes renderCall (remount) and repaints.
+  // A stale screenshot after a poll/click would hide real bugs, so the
+  // driver must do the same.
   const ctx = ctxFor(toolCallId, args, partial);
   ctx.invalidate = () => refreshTool(world, toolCallId);
   const comp = tool.renderCall(args, world.PI.theme, ctx);
@@ -177,8 +177,8 @@ function mountTool(world, name, toolCallId, args, partial) {
 }
 
 function refreshTool(world, toolCallId) {
-  // Production re-invokes renderCall on invalidate and swaps the mounted
-  // component; the mounted snapshot never updates in place.
+  // What Pi does inside invalidate() -> updateDisplay(): re-invoke
+  // renderCall and swap the mounted component.
   const slot = world.toolComps.get(toolCallId);
   if (!slot) return;
   const tool = world.tools.get(slot.name);
@@ -186,14 +186,13 @@ function refreshTool(world, toolCallId) {
   const at = world.chat.children.indexOf(slot.comp);
   if (at >= 0) world.chat.children[at] = comp;
   slot.comp = comp;
+  return comp;
 }
 
 // Restore: entries load BEFORE session_start (production order — the
 // manager already holds them), then mount every entry oldest-first,
 // then converge over several poll ticks.
-async function restore(world, entries) {
-  for (const entry of entries) world.entries.push(entry);
-  await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
+function mountEntries(world, entries) {
   for (const entry of entries) {
     const message = entry?.message;
     if (!message || typeof message !== "object") continue;
@@ -223,6 +222,22 @@ async function restore(world, entries) {
     // custom/system entries: no mounted row in v1 (entries still gate
     // segments); compaction/usage/branch rows mount nothing either.
   }
+}
+
+async function restore(world, entries) {
+  for (const entry of entries) world.entries.push(entry);
+  await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
+  mountEntries(world, entries);
+  ticks(world);
+}
+
+// Restore variant for `pi -r`: history mounts BEFORE session_start (the
+// registry is non-empty when the event lands, so the start seals instead
+// of arming). Same converge after.
+async function restoreLate(world, entries) {
+  for (const entry of entries) world.entries.push(entry);
+  mountEntries(world, entries);
+  await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
   ticks(world);
 }
 
@@ -336,4 +351,4 @@ function openRun(world, toolCallId) {
   return comp;
 }
 
-module.exports = { loadPi, createWorld, restore, runLive, reload, dump, openRun };
+module.exports = { loadPi, createWorld, restore, restoreLate, runLive, reload, dump, openRun };

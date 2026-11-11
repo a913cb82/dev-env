@@ -25,6 +25,7 @@ import {
   traceOwnerId,
   traceOwnerPoke,
   tracePokeOwner,
+  traceRevisionCount,
   traceRuns,
   traceSync,
   traceUpsert,
@@ -379,8 +380,10 @@ export function liveCountSuffix(theme: Theme, chars: number): string {
   return chars > 0 ? theme.fg("dim", formatCharCount(chars)) : "";
 }
 
-function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI): Component {
-  const trace = new Container();
+/** Paint one run into `trace`: header or rows + footer. Re-runs whenever
+ *  the owner or the run changes (see buildTrace). */
+function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI): void {
+  trace.clear();
   const piExpanded = !!ownerCtx?.expanded;
   const ids = traceRuns.get(runId) ?? [];
   // Walk-visible ownership: the walk matches tools by toolCallId, but this
@@ -414,7 +417,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
         return { handled: true };
       }),
     );
-    return trace;
+    return;
   }
   // Replacement for detached Pi thinking rows (fail-open: renders only
   // when the detach pass confirmed this run's rows are gone — a missed
@@ -508,6 +511,58 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
       }),
     );
   }
+}
+
+/** Self-healing run view for one tool component. The run a tool belongs to
+ *  can CHANGE after mount (a history re-plan at session_start, a rebuild),
+ *  and the mounted component is a snapshot — so resolve the owner and the
+ *  run on every render and repaint when either moved. Without this, rows
+ *  mounted before the re-plan keep a stale grouping (two runs merged across
+ *  a user message, thinking counts dropped) until something pokes them.
+ *
+ *  `hintId` is the tool this component was created for; its entry names the
+ *  current run even after the provider re-assigns run ids. */
+function buildTraceFor(
+  toolCallId: string,
+  runId: number,
+  theme: Theme,
+  ownerCtx: any,
+  pi: ExtensionAPI,
+): Component {
+  const trace = new Container();
+  let painted = "";
+  const sync = (): boolean => {
+    const current = traceEntries.get(toolCallId)?.runId ?? runId;
+    const ids = traceRuns.get(current) ?? [];
+    // Which component of the run paints it? The owner is the run's first
+    // tool; every other mounted member renders nothing.
+    const isOwner = ids[0] === toolCallId || (ids.length === 0 && traceOwnerId(current) === toolCallId);
+    // Everything the paint reads: a repaint is needed whenever any of it
+    // moves (click, delta, re-plan, a whole second for the live clock).
+    const signature = [
+      current, isOwner, traceRevisionCount(), isRunOpen(current),
+      runThinkingCount(current), runHasLive(current), Math.floor(Date.now() / 1000),
+    ].join("|");
+    if (signature === painted) return false;
+    painted = signature;
+    if (!isOwner) {
+      trace.clear();
+      return true;
+    }
+    paintTrace(trace, current, theme, ownerCtx, pi);
+    return true;
+  };
+  const paintRender = trace.render.bind(trace);
+  trace.render = (width: number): string[] => {
+    try {
+      sync();
+    } catch {
+      // A failed repaint must never blank the transcript: keep the last
+      // good paint (fail-open, same rule as detach).
+    }
+    return paintRender(width);
+  };
+  sync();
   return trace;
 }
 
@@ -616,10 +671,12 @@ export function collapseTool(
       backfillRendererTiming(context?.state, entry);
       if (traceOwnerId(entry.runId) !== entry.id) {
         if (changed) tracePokeOwner(entry.runId);
-        return new Container();
       }
       if (typeof context?.invalidate === "function") traceOwnerPoke.set(entry.runId, context.invalidate);
-      return buildTrace(entry.runId, theme, context, pi);
+      // Every member of a run gets a self-healing view: the owner paints,
+      // the others render nothing — and the roles can swap after a re-plan
+      // without a remount.
+      return buildTraceFor(entry.id, entry.runId, theme, context, pi);
     },
     renderResult(result: any, options: any, theme: Theme, context: any): Component {
       trackCollapse((context?.state ?? {}) as CollapseSlots, context);

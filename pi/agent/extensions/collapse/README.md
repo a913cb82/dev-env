@@ -207,7 +207,13 @@ only within its own segment (nearest in-segment tool run, next preferred),
 and a thinking past prose from every tool stands alone as `N thinking`
 instead of teleporting into a later block. Mounted tree order and entry
 order each veto a crossing: trees hold the live rows entries have not
-landed yet, entries hold the settled rows no longer mounted. A thinking row means a row
+landed yet, entries hold the settled rows no longer mounted.
+
+Every mounted member of a run gets a self-healing view: it resolves its
+run and owner on each render and repaints when they move, so a history
+re-plan (session_start) can never leave a stale grouping on screen. That
+is what makes both resume orders (`pi` and `pi -r`) converge on the same
+transcript. A thinking row means a row
 with thinking content — prose-only rows are never walked as thinking rows,
 so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
