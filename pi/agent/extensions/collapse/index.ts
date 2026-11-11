@@ -70,13 +70,14 @@ import {
   captureWalkerTui,
   reconcileStreamingLabel,
   reconcileThinkingLabels,
+  resetLabelsState,
   streamStatus,
   walkerStatus,
   walkerWidget,
   WALKER_KEY,
 } from "./labels.js";
-import { scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus } from "./wrap.js";
-export { captureWalkerTui, reconcileStreamingLabel, reconcileThinkingLabels, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus };
+import { resetWrapState, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus } from "./wrap.js";
+export { captureWalkerTui, reconcileStreamingLabel, reconcileThinkingLabels, resetLabelsState, resetWrapState, scheduleWrappingPass, unwrapAll, wrappingPass, wrapStatus };
 import {
   planToolRuns,
   toolTimings,
@@ -90,8 +91,10 @@ import {
   collapseTool,
   makeLeftByName,
   pokeAllCollapse,
+  resetRowsState,
   wrappedToolNames,
 } from "./rows.js";
+export { resetRowsState };
 import { isHiddenThinking } from "./settings.js";
 import {
   applyPlannedRuns,
@@ -109,6 +112,7 @@ import {
   traceSummary,
   timingStatus,
 } from "./trace.js";
+export { armHistoryPhase };
 
 /** Tests reset the registry through this; production never calls it. */
 export { resetTraceState, traceEntries } from "./trace.js";

@@ -22,7 +22,7 @@ import { traceEntries, tracePokeOwner } from "./trace.js";
 const hiddenEntryIds = new Set<string>();
 
 /** Live messages detached before persistence assigned an entry id. */
-const liveHidden = new WeakSet<object>();
+let liveHidden = new WeakSet<object>();
 
 /** Full thinking text by entry id (history) for the replacement row. */
 const entryThinking = new Map<string, string>();
@@ -41,6 +41,7 @@ let lastSessionManager: any = undefined;
 
 export function resetDetachState(): void {
   hiddenEntryIds.clear();
+  liveHidden = new WeakSet<object>();
   entryThinking.clear();
   runThinking.clear();
   hiddenRuns.clear();

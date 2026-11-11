@@ -81,6 +81,18 @@ let scheduledPass: { pi: ExtensionAPI } | undefined;
  *  zeros, so the diagnostic shows both. */
 const wrapTotals = { wrapped: 0, spacers: 0, synced: 0 };
 
+/** Test-only reset: clear wrap totals, outcome and pending pass so a
+ *  render test starts from a known world. Production never calls it.
+ *  Installed shadows live on their components (WeakMaps) and die with
+ *  them; totals are the shared state that must reset. */
+export function resetWrapState(): void {
+  wrapTotals.wrapped = 0;
+  wrapTotals.spacers = 0;
+  wrapTotals.synced = 0;
+  wrapOutcome = "idle (no pass yet)";
+  scheduledPass = undefined;
+}
+
 /** Sync an assistant row's `updateContent`: after Pi rebuilds the children
  *  (streaming delta, click-toggle), re-drop the leading spacer when the
  *  live gate still holds. The gate re-evaluates per call, so a toggle to

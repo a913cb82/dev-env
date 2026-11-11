@@ -300,6 +300,8 @@ function buildOpenedRow(
   const needsBox = (entry.original.renderShell ?? "default") !== "self";
   const fake = {
     ...ownerCtx,
+    outputPad: ownerCtx?.outputPad ?? 1,
+    cwd: ownerCtx?.cwd ?? process.cwd(),
     args: entry.args,
     state: entry,
     lastComponent: entry.collapseCall,
@@ -576,6 +578,14 @@ export function collapseTool(
  *  session must not be poked. */
 export function clearCollapsePokes(): void {
   collapsePoke.clear();
+}
+
+/** Test-only reset: clear poke registrations and visibility-toggle
+ *  baselines so a render test starts from a known world. */
+export function resetRowsState(): void {
+  collapsePoke.clear();
+  collapseSawUI = false;
+  collapseLastHidden = undefined;
 }
 
 /** Invalidate every known tool: the visibility toggle changes the render mode

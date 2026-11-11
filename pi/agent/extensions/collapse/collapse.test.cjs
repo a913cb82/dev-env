@@ -32,7 +32,7 @@ const { createJiti } = require(path.join(PIN, "jiti"));
 const HERE = __dirname;
 const jiti = createJiti(__filename, {
   interopDefault: true,
-  fsCache: false,
+  fsCache: true,
   moduleCache: false,
   alias: {
     "@earendil-works/pi-coding-agent": path.join(PI, "dist", "bundle", "index.js"),
@@ -138,6 +138,16 @@ function textResult(chars) {
 (async () => {
   const mod = await jiti.import(path.join(HERE, "index.ts"));
   resetTrace = mod.resetTraceState ?? resetTrace;
+  const canonicalMod = mod;
+  const resetAll = () => {
+    try { canonicalMod.resetTraceState?.(); } catch {}
+    try { canonicalMod.resetDetachState?.(); } catch {}
+    try { canonicalMod.resetLabelsState?.(); } catch {}
+    try { canonicalMod.resetWrapState?.(); } catch {}
+    try { canonicalMod.resetRowsState?.(); } catch {}
+    try { canonicalMod.captureWalkerTui?.({ children: [] }); } catch {}
+  };
+  const reuseIndex = async () => { resetAll(); return canonicalMod; };
   const factory = mod.default ?? mod;
   const pi = createMockPi();
   factory(pi);
@@ -373,7 +383,7 @@ function textResult(chars) {
     await pi.commands.get("collapse").handler("", { ui: { notify: (msg) => notes2.push(msg) } });
     check("collapse reports compact mode", notes2.join("").includes("compact rows"), JSON.stringify(notes2));
     check("collapse reports breathe", notes2.join("").includes("breathe:"), JSON.stringify(notes2));
-    const indexMod = await jiti.import(path.join(HERE, "index.ts"));
+    const indexMod = await reuseIndex();
     check("breathe matches Pi Loader cadence (80ms)", indexMod.BREATHE_MS === 80, String(indexMod.BREATHE_MS));
   }
 
@@ -587,7 +597,7 @@ function textResult(chars) {
   // 14. cross-turn merging: no line gaps between tool rows in consecutive turns
   // (Requires importing the module fresh for each scenario: trace state is
   // module-global, and these tests drive renderCall directly without events.)
-    const mod2 = await jiti.import(path.join(HERE, "index.ts"));
+    const mod2 = await reuseIndex();
     resetTrace = mod2.resetTraceState ?? resetTrace;
     const factory2 = mod2.default ?? mod2;
     const agent = await jiti.import("@earendil-works/pi-coding-agent");
@@ -675,9 +685,10 @@ function textResult(chars) {
       getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
     };
     // Fresh module = fresh activation state (history phase armed), like a start.
-    const mod3 = await jiti.import(path.join(HERE, "index.ts"));
+    const mod3 = await reuseIndex();
     resetTrace = mod3.resetTraceState ?? resetTrace;
     (mod3.default ?? mod3)(pi3);
+    try { mod3.armHistoryPhase?.("test-history"); } catch {}
     const hist = tools.get("bash");
     const ctxFor = (id, cmd) => ({
       args: { command: cmd }, toolCallId: id, invalidate: () => {}, lastComponent: undefined,
@@ -717,7 +728,7 @@ function textResult(chars) {
       "truecolor",
     );
     const fresh = async () => {
-      const mod = await jiti.import(path.join(HERE, "index.ts"));
+      const mod = await reuseIndex();
       const tools = new Map();
       const handlers = new Map();
       const piX = {
@@ -848,7 +859,7 @@ function textResult(chars) {
   // 18. switching/forking sessions rebuilds the transcript: history from the
   // NEW branch must not stack into one row slot (each tool gets its own run).
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -889,7 +900,7 @@ function textResult(chars) {
 
   // 18b. tree navigation arms the history phase too
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -922,7 +933,7 @@ function textResult(chars) {
   // 18c. a transcript rebuild re-registers the SAME ids: rows must keep their
   // existing runs instead of being merged into one (settings changes rebuild).
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -953,7 +964,7 @@ function textResult(chars) {
   // 19. sync must not re-serialize args on every render pass (same object
   // comes back each pass; a different object with equal content is no change)
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -995,7 +1006,7 @@ function textResult(chars) {
   // 15d. an open row re-depths live when Pi's expansion flag flips
   //      (ctrl+o) — no second click needed
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -1028,7 +1039,7 @@ function textResult(chars) {
   // 21. ANY tool collapses: extension/MCP tools register through
   // collapseDefinition and get a generic row (name + best argument).
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const rows = mod;
     const tools = new Map();
@@ -1078,7 +1089,7 @@ function textResult(chars) {
   // 21b. The opt-in slot: collapse publishes a wrapper other extensions can
   // apply to their own definition, preserving execute and idempotent.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const handlers = new Map();
     const piE = {
@@ -1100,7 +1111,7 @@ function textResult(chars) {
     await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
     let said = "";
     const reportPi = { ...piE, getAllTools: () => [{ name: "spawn_agent" }, { name: "read" }, { name: "mcp_weird" }] };
-    const mod2 = await jiti.import(path.join(HERE, "index.ts"));
+    const mod2 = await reuseIndex();
     const handlers2 = new Map();
     mod2.default({ ...reportPi, registerTool: () => {}, registerCommand: (n, o) => handlers2.set("cmd", o),
       on: (e, h) => { if (!handlers2.has(e)) handlers2.set(e, []); handlers2.get(e).push(h); } });
@@ -1114,7 +1125,7 @@ function textResult(chars) {
   // 23. wrapped foreign tools merge: opting in through the slot makes them
   // own rows, so tool_execution_start must not split the run for them.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -1155,7 +1166,7 @@ function textResult(chars) {
   // 24. A wrapped tool with no summarizable args shows just its name:
   // no "…" placeholder, collapsed or opened.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const piW = {
@@ -1184,7 +1195,7 @@ function textResult(chars) {
   // one run per tool, then session_start merges each group so repaints cost
   // one blank line per group instead of per tool. Positions never move.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -1196,6 +1207,7 @@ function textResult(chars) {
     };
     (mod.default ?? mod)(piH);
     // History pass: phase armed, one run per tool (the pre-reload layout).
+    try { mod.armHistoryPhase?.("test-history-pass"); } catch {}
     const read = tools.get("read");
     const bash = tools.get("bash");
     const ctxFor = (id, args) => ({
@@ -1236,7 +1248,7 @@ function textResult(chars) {
   // slots render empty, thinking rows glue to invisible tools). History
   // keeps one run per tool through the render; the poll settles the plan.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -1291,7 +1303,7 @@ function textResult(chars) {
   // the non-owner must go empty — otherwise the stale single row keeps its
   // leading blank and every tool call gains a spacer line.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -1331,7 +1343,7 @@ function textResult(chars) {
 
   // 26. tree-walk per-row labels: each thinking row shows its own message.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map();
     const handlers = new Map();
@@ -1369,7 +1381,7 @@ function textResult(chars) {
 
   // 27. walker ignores rows without thinking, junk nodes, and missing handle.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const handlers = new Map();
     const piL = {
@@ -1399,7 +1411,7 @@ function textResult(chars) {
 
   // 28. labels converge after finalize: partial streaming message, then final.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const handlers = new Map();
     const piL = {
@@ -1429,7 +1441,7 @@ function textResult(chars) {
 
   // 29. detach pass hides only SAFE+hosted thinking rows (flag-gated, default off).
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map(), handlers = new Map(), commands = new Map();
     const piL = {
@@ -1491,7 +1503,7 @@ function textResult(chars) {
 
   // 30. fail-open coupling: replacement preview renders iff detach confirmed.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map(), handlers = new Map();
     const piL = {
@@ -1534,7 +1546,7 @@ function textResult(chars) {
 
   // 31. session_start backfills history rows and stashes text for reload.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map(), handlers = new Map(), commands = new Map();
     const piL = {
@@ -1582,7 +1594,7 @@ function textResult(chars) {
   // Same container cleared+rebuilt (production reload shape), so the
   // session_start detach sees the fresh rows directly.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const tools = new Map(), handlers = new Map();
     const piL = {
@@ -1638,7 +1650,7 @@ function textResult(chars) {
   // 33. event handlers leak no return values Pi validates (user_bash
   // rejected traceBoundary's string: "Invalid user_bash handler result").
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const handlers = new Map();
     const piL = {
@@ -1664,7 +1676,7 @@ function textResult(chars) {
   // a later import (block 33 reassigns it), so the outer registry keeps
   // stale runs that fresh ids would join (block 17 hit the same quirk).
   // A private instance keeps ownership assertions deterministic.
-  const modW = await jiti.import(path.join(HERE, "index.ts"));
+  const modW = await reuseIndex();
   const piW = createMockPi();
   (modW.default ?? modW)(piW);
   resetTrace = modW.resetTraceState ?? resetTrace;
@@ -2465,7 +2477,7 @@ function textResult(chars) {
   // 66. resize relabels: a label built for a wider terminal must be rebuilt
   // when the terminal narrows, otherwise Text word-wraps the count.
   {
-    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
     const handlers = new Map();
     const piL = {
@@ -2512,7 +2524,7 @@ function textResult(chars) {
     // Own activation per pad: the shared-trace owner decides which instance
     // renders, and the row's pad comes from the same settings the label uses.
     const activation = async (pad) => {
-      const mod = await jiti.import(path.join(HERE, "index.ts"));
+      const mod = await reuseIndex();
       const pi = { registerTool: (t) => pi.tools.set(t.name, t), tools: new Map(), registerCommand: () => {}, on: () => {},
         getSettings: () => ({ outputPad: pad, hideThinkingBlock: true }) };
       (mod.default ?? mod)(pi);
@@ -2883,7 +2895,7 @@ function textResult(chars) {
 //     that name what they act on (target/targets/task), not a grey blob.
 // ---------------------------------------------------------------------------
 {
-  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const mod = await reuseIndex();
   const handlers = new Map();
   const piS = {
     registerTool: () => {},
@@ -2932,7 +2944,7 @@ function textResult(chars) {
 //     args line, the result preview, and the expanded shapes, byte-identical.
 // ---------------------------------------------------------------------------
 {
-  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const mod = await reuseIndex();
   const agent = await jiti.import("@earendil-works/pi-coding-agent");
   const themeMod = await jiti.import(path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"));
   agent.initTheme("light");
@@ -3027,7 +3039,7 @@ function textResult(chars) {
 //     dim key=value pair, cut at the end of the last value that fits.
 // ---------------------------------------------------------------------------
 {
-  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const mod = await reuseIndex();
   const tui = await jiti.import("@earendil-works/pi-tui");
   const agent = await jiti.import("@earendil-works/pi-coding-agent");
   const themeMod = await jiti.import(path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"));
@@ -3134,7 +3146,7 @@ function textResult(chars) {
 //     the moment the result lands.
 // ---------------------------------------------------------------------------
 {
-  const mod = await jiti.import(path.join(HERE, "index.ts"));
+  const mod = await reuseIndex();
   const logic = await jiti.import(path.join(HERE, "logic.ts"));
   const agent = await jiti.import("@earendil-works/pi-coding-agent");
   const themeMod = await jiti.import(path.join(PI, "dist", "modes", "interactive", "theme", "theme.js"));
@@ -3263,7 +3275,7 @@ function textResult(chars) {
 // rows, timer ticks) for eyeballing the animation.
 // ---------------------------------------------------------------------------
 {
-  const syncMod3 = await jiti.import(path.join(HERE, "index.ts"));
+  const syncMod3 = await reuseIndex();
   const pi3 = createMockPi();
   (syncMod3.default ?? syncMod3)(pi3);
   const readStatus = async () => {
@@ -3285,7 +3297,7 @@ function textResult(chars) {
 // turning, whether or not Pi's own cycle repaints them.
 // ---------------------------------------------------------------------------
 {
-  const syncMod2 = await jiti.import(path.join(HERE, "index.ts"));
+  const syncMod2 = await reuseIndex();
   const pi2 = createMockPi();
   (syncMod2.default ?? syncMod2)(pi2);
   const bash2 = pi2.tools.get("bash");
@@ -3338,7 +3350,7 @@ function textResult(chars) {
   check("late-observed completion leaves startedAt unset", late.startedAt === undefined && late.endedAt > 0, `${late.startedAt} ${late.endedAt}`);
   // Integration: a live-observed 14s execution shows its true duration when
   // expanded (wall-clock stubbed so the span is exact).
-  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  const syncMod = await reuseIndex();
   syncMod.resetTraceState();
   const piD = createMockPi();
   (syncMod.default ?? syncMod)(piD);
@@ -3383,7 +3395,7 @@ function textResult(chars) {
 // directions — and never overwrites exact stamps with approximate ones.
 // ---------------------------------------------------------------------------
 {
-  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  const syncMod = await reuseIndex();
   syncMod.resetTraceState();
   const pi6 = createMockPi();
   (syncMod.default ?? syncMod)(pi6);
@@ -3468,7 +3480,7 @@ function textResult(chars) {
   traceLib.traceSync(live, { command: "sleep 5" }, { executionStarted: true, isPartial: true, state: { startedAt: T0 + 7000 } });
   check("live Pi stamps beat history", live.startedAt === T0 + 7000, String(live.startedAt));
   // Full path: session_start with timestamped history, then expand.
-  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  const syncMod = await reuseIndex();
   syncMod.resetTraceState();
   const piH = createMockPi();
   (syncMod.default ?? syncMod)(piH);
@@ -3579,7 +3591,7 @@ function textResult(chars) {
 // ---------------------------------------------------------------------------
 {
   const T0 = 1700000000000, SPAN = 5000, R_STALE = T0 + 9999999;
-  const syncMod = await jiti.import(path.join(HERE, "index.ts"));
+  const syncMod = await reuseIndex();
   syncMod.resetTraceState();
   const piB = createMockPi();
   (syncMod.default ?? syncMod)(piB);

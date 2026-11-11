@@ -158,6 +158,14 @@ export function resetTraceState(): void {
   historyTimings.clear();
   plannedRunById.clear();
   boundaryReasons.length = 0;
+  try {
+    if (historyTimer !== undefined) clearTimeout(historyTimer);
+  } catch {
+    // No timers: nothing to clear.
+  }
+  historyTimer = undefined;
+  messageSeq = 0;
+  visibleBumpSeq = -1;
   traceRunId++;
   traceHistoryPhase = false;
 }

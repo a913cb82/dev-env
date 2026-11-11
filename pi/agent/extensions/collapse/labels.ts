@@ -35,7 +35,18 @@ interface LabeledFor {
   width: number | undefined;
   pad: number;
 }
-const labeledFor = new WeakMap<object, LabeledFor>();
+let labeledFor = new WeakMap<object, LabeledFor>();
+
+/** Test-only reset: clear walker handle, caches and counters so a
+ *  render test starts from a known world. Production never calls it. */
+export function resetLabelsState(): void {
+  capturedTui = undefined;
+  walkStatus = "inactive (no TUI handle)";
+  labeledFor = new WeakMap<object, LabeledFor>();
+  rowColumns = new WeakMap<object, number>();
+  streamLabelAt = new WeakMap<object, number>();
+  streamWrites = 0;
+}
 
 export function walkerStatus(): string {
   return walkStatus;
@@ -200,7 +211,7 @@ function writeLabel(row: any, label: string): boolean {
 /** Columns each row's label was last built for. A render is the only place
  *  that learns about a resize (Pi has no resize event), so the row's own
  *  render relabels for the new width before the frame is drawn. */
-const rowColumns = new WeakMap<object, number>();
+let rowColumns = new WeakMap<object, number>();
 
 /** Relabel one row in place when the terminal width changed since its last
  *  render. Runs before the row renders, so the resize frame is already
@@ -318,7 +329,7 @@ const STREAM_LABEL_MS = 100;
 
 /** Last live relabel per row, so a brand-new row writes immediately (no
  *  stock "Thinking..." frame) and later deltas coalesce. */
-const streamLabelAt = new WeakMap<object, number>();
+let streamLabelAt = new WeakMap<object, number>();
 
 /** Live-preview writes since activation, for `/collapse`. A number that
  *  stays at 0 while a model thinks means the streaming path is not firing. */
