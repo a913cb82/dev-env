@@ -550,7 +550,7 @@ function openRun(comp) {
   }
 
 
-  // 13. adjacent tools share one trace component at the NEWEST tool's slot
+  // 13. adjacent same-turn tools share one trace component (no gaps between)
   {
     const read = pi.tools.get("read");
     const bash = pi.tools.get("bash");
@@ -559,27 +559,15 @@ function openRun(comp) {
     const bashState = {};
     const bctx = { ...rctx, args: { command: "echo hi" }, state: bashState, toolCallId: "t-bash" };
     read.renderCall(rctx.args, theme, { ...rctx, state: readState });
-    const bashComp = () => bash.renderCall(bctx.args, theme, bctx);
-    const header = bashComp().render(80);
-    check("newest tool shows header", header.length === 1 && header[0].includes(">") && header[0].includes("1 bash"), JSON.stringify(header));
-    openRun(bashComp());
-    const trace = bashComp().render(80);
+    const hidden = bash.renderCall(bctx.args, theme, bctx).render(80);
+    openRun(read.renderCall(rctx.args, theme, { ...rctx, state: readState }));
+    const trace = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
     check("trace has both rows", trace.length === 3, JSON.stringify(trace));
     check("trace keeps read row", trace[0].includes("file"), JSON.stringify(trace[0]));
     check("trace keeps bash row", trace[1].includes("echo"), JSON.stringify(trace[1]));
     check("trace has collapse footer", trace[2].includes("Collapse"), JSON.stringify(trace[2]));
-    // The older member renders empty: the block lives at the live edge.
-    const readLines = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
-    check("older member renders empty", readLines.length === 0, JSON.stringify(readLines));
-    check("trace itself has no blanks", !trace.some((l) => l.trim() === ""), JSON.stringify(trace));
-    // result counts flow into the shared trace via the owner
-    const st = { ...bctx, state: bashState };
-    bash.renderResult(textResult(5300), { expanded: false, isPartial: false }, theme, st);
-    const trace2 = bash.renderCall(bctx.args, theme, bctx).render(80);
-    check("trace shows shared counts", trace2[1].includes("5.3k ch"), JSON.stringify(trace2[1]));
-    // Run-level header: settled multi-row runs rest closed. Isolate from
-    // the run above: user messages merge now, so split structurally.
-    resetTrace();
+    // Run-level header: settled multi-row runs rest closed. Unique ids so
+    // this probe never disturbs the outer test's run.
     {
       await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
       const mkHdr = (id, args) => ({
@@ -588,9 +576,10 @@ function openRun(comp) {
         expanded: false, showImages: true, isError: false,
       });
       read.renderCall({ path: "/ha" }, theme, mkHdr("t-hdr1", { path: "/ha" }));
-      // Same-turn second tool joins the run (tool-only turns merge), so render directly.
+      // Same-turn second tool joins the run: need a message boundary that
+      // does NOT split (tool-only turns merge), so render directly.
       pi.tools.get("bash").renderCall({ command: "echo hdr" }, theme, mkHdr("t-hdr2", { command: "echo hdr" }));
-      const hdrComp = () => pi.tools.get("bash").renderCall({ command: "echo hdr" }, theme, mkHdr("t-hdr2", { command: "echo hdr" }));
+      const hdrComp = () => read.renderCall({ path: "/ha" }, theme, mkHdr("t-hdr1", { path: "/ha" }));
       const header = hdrComp().render(90);
       check("run rests as header", header.length === 1 && header[0].includes(">") && header[0].includes("1 read"), JSON.stringify(header));
       openRun(hdrComp());
@@ -601,7 +590,6 @@ function openRun(comp) {
       const closed = hdrComp().render(90);
       check("footer click closes to header", closed.length === 1 && closed[0].includes(">"), JSON.stringify(closed));
       // Singleton runs also rest as a header (`>1 read`).
-      resetTrace();
       await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
       const soloComp = () => read.renderCall({ path: "/solo-hdr" }, theme, mkHdr("t-hdr-solo", { path: "/solo-hdr" }));
       const soloHdr = soloComp().render(90);
@@ -611,10 +599,16 @@ function openRun(comp) {
       check("singleton opens to row+footer", soloOpen.length === 2 && soloOpen[1].includes("Collapse") && plainText(soloOpen[1]).startsWith("▏"), JSON.stringify(soloOpen));
       await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
     }
-    const olderEmpty = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
+    check("non-owner renders nothing", hidden.join("") === "", JSON.stringify(hidden));
+    check("trace itself has no blanks", !trace.some((l) => l.trim() === ""), JSON.stringify(trace));
+    // result counts flow into the shared trace via the owner
+    const st = { ...bctx, state: bashState };
+    bash.renderResult(textResult(5300), { expanded: false, isPartial: false }, theme, st);
+    const trace2 = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
+    check("trace shows shared counts", trace2[1].includes("5.3k ch"), JSON.stringify(trace2[1]));
   }
 
-  // 13b. user messages merge runs; clicking a row opens just that row
+  // 13b. a user message splits runs; clicking a row opens just that row
   {
     const read = pi.tools.get("read");
     const bash = pi.tools.get("bash");
@@ -622,28 +616,24 @@ function openRun(comp) {
     const a1 = read.renderCall(actx.args, theme, actx).render(80);
     check("first run renders", a1.length === 1, JSON.stringify(a1));
     await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
-    // Same registry (no callContext: it resets): the user turn joins the run.
-    const bctx = { ...actx, args: { command: "echo hi" }, state: {}, toolCallId: "t-b2" };
+    const { ctx: bctx } = callContext({ args: { command: "echo hi" }, state: {} });
     const b1comp = () => bash.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-b2" });
-    const b1hdr = b1comp().render(80);
-    check("user turn joins the run", b1hdr.length === 1 && b1hdr[0].includes("1 read") && b1hdr[0].includes("1 bash"), JSON.stringify(b1hdr));
     openRun(b1comp());
     const b1 = b1comp().render(80);
-    check("merged run shows both rows", b1.length === 3 && b1[2].includes("Collapse"), JSON.stringify(b1));
-    // click the bash row inside the newest-owned trace: fresh run:
+    check("user turn renders alone", b1.length === 2 && b1[0].includes("echo"), JSON.stringify(b1));
+    // click the bash row inside the read-owned trace from test 13's run? fresh run:
     resetTrace();
     const { ctx: rctx } = callContext({ args: { path: "/p" }, state: {} });
     read.renderCall(rctx.args, theme, rctx);
     const bState = {};
-    const clickComp = () => bash.renderCall({ command: "ls" }, theme, { ...rctx, args: { command: "ls" }, state: bState, toolCallId: "t-click" });
-    clickComp();
-    openRun(clickComp());
-    const traceComp = clickComp();
+    bash.renderCall({ command: "ls" }, theme, { ...rctx, args: { command: "ls" }, state: bState, toolCallId: "t-click" });
+    openRun(read.renderCall(rctx.args, theme, rctx));
+    const traceComp = read.renderCall(rctx.args, theme, rctx);
     const row2 = traceComp.children[1];
     check("row region clickable", !!row2?.onMouse, typeof row2?.onMouse);
     const res = row2.onMouse({ type: "click", button: "left" });
     check("click handled", !!res?.handled, JSON.stringify(res));
-    const opened = clickComp().render(80);
+    const opened = read.renderCall(rctx.args, theme, rctx).render(80);
     check("clicked row shows stock cell", opened.some((l) => l.includes("toolSuccessBg")), JSON.stringify(opened[0]));
     check("sibling stays collapsed", opened.some((l) => isRow(l) && l.includes("read") && !l.includes("toolSuccessBg")), JSON.stringify(opened).slice(0, 200));
   }
@@ -655,12 +645,11 @@ function openRun(comp) {
     const bash = pi.tools.get("bash");
     const { ctx: rctx } = callContext({ args: { path: "/p" }, state: {}, expanded: true });
     read.renderCall(rctx.args, theme, rctx);
-    const allComp = () => bash.renderCall({ command: "ls" }, theme, { ...rctx, args: { command: "ls" }, state: {}, toolCallId: "t-all", expanded: true });
-    allComp();
-    const lines = allComp().render(100);
+    bash.renderCall({ command: "ls" }, theme, { ...rctx, args: { command: "ls" }, state: {}, toolCallId: "t-all", expanded: true });
+    const lines = read.renderCall(rctx.args, theme, rctx).render(100);
     check("pi-expand run rests as header", lines.length === 1 && lines[0].includes("read"), JSON.stringify(lines));
-    openRun(allComp());
-    const openLines = allComp().render(100);
+    openRun(read.renderCall(rctx.args, theme, rctx));
+    const openLines = read.renderCall(rctx.args, theme, rctx).render(100);
     check("pi-expand rows stay one-line", openLines.length === 3, JSON.stringify(openLines));
     check("pi-expand rows unboxed", !openLines.some((l) => l.includes("toolSuccessBg")), JSON.stringify(openLines[0]));
     check("pi-expand keeps both", openLines[0].includes("read") && openLines[1].includes("ls"), JSON.stringify(openLines).slice(0, 200));
@@ -717,17 +706,13 @@ function openRun(comp) {
     // 14a. two turns that each contain only tool calls merge into one run
     render("x1", "echo one");
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
-    const xComp = () => render("x2", "echo two");
-    xComp();
-    openRun(xComp());
-    const merged = xComp().render(90);
+    render("x2", "echo two");
+    openRun(render("x1", "echo one"));
+    const merged = render("x1", "echo one").render(90);
     check("cross-turn tool-only rows merge", merged.length === 3, JSON.stringify(merged));
     check("merged keeps both rows", merged[0].includes("one") && merged[1].includes("two"), JSON.stringify(merged));
-    // The older member renders empty: the block lives at the live edge.
-    check("older member empty", render("x1", "echo one").render(90).length === 0, "structural");
 
-    // 14b. visible text between turns merges too (newest-owner is
-    // position-safe: rows only move down to the live edge)
+    // 14b. visible text between turns still splits the run
     resetTrace();
     render("y1", "echo one");
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
@@ -736,10 +721,9 @@ function openRun(comp) {
       {},
     );
     const splitComp = () => render("y2", "echo two");
-    splitComp();
     openRun(splitComp());
     const split = splitComp().render(90);
-    check("visible text merges runs", split.length === 3 && split[0].includes("one") && split[1].includes("two"), JSON.stringify(split));
+    check("visible text splits runs", split.length === 2 && split[0].includes("two"), JSON.stringify(split));
 
     // 14c. a leading-content turn (text before its tool call) also splits
     resetTrace();
@@ -753,10 +737,9 @@ function openRun(comp) {
       {},
     );
     const leadComp = () => render("z2", "echo two");
-    leadComp();
     openRun(leadComp());
     const lead = leadComp().render(90);
-    check("leading content merges runs", lead.length === 3 && lead[0].includes("one") && lead[1].includes("two"), JSON.stringify(lead));
+    check("leading content splits runs", lead.length === 2 && lead[0].includes("two"), JSON.stringify(lead));
 
     // 14d. empty/whitespace-only thinking is not visible content
     resetTrace();
@@ -767,9 +750,8 @@ function openRun(comp) {
       {},
     );
     render("w2", "echo two");
-    const wComp = () => render("w2", "echo two");
-    openRun(wComp());
-    const emptyThinking = wComp().render(90);
+    openRun(render("w1", "echo one"));
+    const emptyThinking = render("w1", "echo one").render(90);
     check("empty thinking still merges", emptyThinking.length === 3, JSON.stringify(emptyThinking));
 
 
@@ -807,14 +789,13 @@ function openRun(comp) {
     );
     const l1 = hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1"));
     const l2 = hist.renderCall({ command: "echo live2" }, theme, ctxFor("live2", "echo live2"));
-    // The newest live tool owns the merged run (the block lives at the
-    // live edge); the older member renders empty.
-    const l2b = hist.renderCall({ command: "echo live2" }, theme, ctxFor("live2", "echo live2"));
-    openRun(l2b);
-    const l2open = hist.renderCall({ command: "echo live2" }, theme, ctxFor("live2", "echo live2"));
-    check("live rows merge after start", l2open.render(90).length === 3, `${l2open.render(90).length}`);
-    check("merged row keeps order", l2open.render(90)[0].includes("live1") && l2open.render(90)[1].includes("live2"), JSON.stringify(l2open.render(90)));
-    check("non-owner after merge renders empty", hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1")).render(90).length === 0, "structural");
+    // The owner rebuilds on its next render pass (the poke path in production).
+    const l1b = hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1"));
+    openRun(l1b);
+    const l1open = hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1"));
+    check("live rows merge after start", l1open.render(90).length === 3, `${l1open.render(90).length}`);
+    check("merged row keeps order", l1open.render(90)[0].includes("live1") && l1open.render(90)[1].includes("live2"), JSON.stringify(l1open.render(90)));
+    check("non-owner after merge renders empty", l2.render(90).length === 0, `${l2.render(90).length}`);
   }
 
   // 15. click-depth spec: rest is always a one-liner; a click opens the
@@ -912,13 +893,14 @@ function openRun(comp) {
     const ctx = { hasUI: true, ui: { notify: (m) => report.push(m) } };
     await pi.commands.get("collapse").handler("", ctx);
     check("collapse reports boundaries", /boundar/i.test(report.at(-1) ?? ""), report.at(-1));
-    // A foreign tool must record that reason (prose and user turns merge now).
+    // A turn with leading prose must record that reason.
     await pi.handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
-    for (const h of pi.handlers.get("tool_execution_start") ?? []) {
-      await h({ toolName: "custom-thing", toolCallId: "fx", args: {} }, {});
-    }
+    await pi.handlers.get("message_update")[0](
+      { message: { role: "assistant", content: [{ type: "text", text: "prose" }] } },
+      {},
+    );
     await pi.commands.get("collapse").handler("", ctx);
-    check("boundary reason recorded", /foreign-tool/.test(report.at(-1) ?? ""), report.at(-1));
+    check("boundary reason recorded", /leading-content/.test(report.at(-1) ?? ""), report.at(-1));
   }
 
   // 16b. /collapse reports the newest run's row count (gap forensics)
@@ -951,17 +933,15 @@ function openRun(comp) {
     await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
     mk("tr1", "echo one");
     await pi.handlers.get("message_start")[0]({ message: { role: "toolResult", content: [] } }, {});
-    const trComp = () => mk("tr2", "echo two");
-    trComp();
-    openRun(trComp());
-    const merged = trComp().render(90);
+    mk("tr2", "echo two");
+    openRun(mk("tr1", "echo one"));
+    const merged = mk("tr1", "echo one").render(90);
     check("toolResult does not split", merged.length === 3, JSON.stringify(merged));
-    // A real user turn merges too now (newest-owner keeps the block live).
-    // The run is still open from above, so the joined view shows all rows.
+    // A real user turn still splits.
     await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
-    const tr3Comp = () => mk("tr3", "echo three");
-    const joined = tr3Comp().render(90);
-    check("user merges after toolResult", joined.length === 4 && joined[2].includes("three"), JSON.stringify(joined));
+    mk("tr3", "echo three");
+    const split = mk("tr3", "echo three").render(90);
+    check("user still splits after toolResult", split.length === 1, JSON.stringify(split));
   }
 
   // 18. switching/forking sessions rebuilds the transcript: history from the
@@ -990,10 +970,9 @@ function openRun(comp) {
     await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
     // live turns merge
     mk("s1", "echo one");
-    const sComp = () => mk("s2", "echo two");
-    sComp();
-    openRun(sComp());
-    check("switch: baseline merges", sComp().render(90).length === 3, JSON.stringify(sComp().render(90)));
+    mk("s2", "echo two");
+    openRun(mk("s1", "echo one"));
+    check("switch: baseline merges", mk("s1", "echo one").render(90).length === 3, JSON.stringify(mk("s1", "echo one").render(90)));
     // resume another session: its history renders before session_start
     await handlers.get("session_before_switch")[0]({ reason: "resume" }, {});
     const h1 = mk("other1", "echo old one");
@@ -1004,10 +983,9 @@ function openRun(comp) {
     // after the switch settles, live turns merge again
     await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
     mk("n1", "echo new one");
-    const nComp = () => mk("n2", "echo new two");
-    nComp();
-    openRun(nComp());
-    const merged = nComp().render(90);
+    mk("n2", "echo new two");
+    openRun(mk("n1", "echo new one"));
+    const merged = mk("n1", "echo new one").render(90);
     check("switch: live turns merge after settle", merged.length === 3, JSON.stringify(merged));
   }
 
@@ -1038,10 +1016,9 @@ function openRun(comp) {
     await handlers.get("session_tree")[0]({}, {});
     mk("tree3", "echo live one");
     const live = mk("tree3", "echo live one").render(90);
-    const treeComp = () => mk("tree4", "echo live two");
-    treeComp();
-    openRun(treeComp());
-    const live2 = treeComp().render(90);
+    mk("tree4", "echo live two");
+    openRun(mk("tree3", "echo live one"));
+    const live2 = mk("tree3", "echo live one").render(90);
     check("tree: live merges after settle", live.length === 1 && live2.length === 3, `${live.length}/${live2.length}`);
   }
 
@@ -1067,14 +1044,13 @@ function openRun(comp) {
     });
     await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
     mk("rb1", "echo one");
-    const rbComp = () => mk("rb2", "echo two");
-    rbComp();
-    openRun(rbComp());
-    check("rebuild: baseline merged", rbComp().render(90).length === 3, "");
+    mk("rb2", "echo two");
+    openRun(mk("rb1", "echo one"));
+    check("rebuild: baseline merged", mk("rb1", "echo one").render(90).length === 3, "");
     // Simulate outputPad/cache-notice rebuild: same ids rendered again.
     mk("rb1", "echo one");
     mk("rb2", "echo two");
-    const again = rbComp().render(90);
+    const again = mk("rb1", "echo one").render(90);
     check("rebuild: rows keep their own runs", again.length === 3, JSON.stringify(again));
   }
 
@@ -1196,14 +1172,13 @@ function openRun(comp) {
     const other = rows.collapseDefinition({ ...bare, name: "check_subagents" }, piE);
     const oargs = { target: "api-check" };
     other.renderCall(oargs, theme, ctx("e2", oargs));
-    const otherComp = () => other.renderCall(oargs, theme, ctx("e2", oargs));
-    openRun(otherComp());
-    const merged = otherComp().render(90);
+    openRun(wrapped.renderCall(args, theme, ctx("e1", args)));
+    const merged = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
     check("generic tools share a run", merged.length === 3, JSON.stringify(merged));
     // Result count flows into the row.
     wrapped.renderResult({ content: [{ type: "text", text: "x".repeat(2400) }], details: {} },
       { expanded: false, isPartial: false }, theme, ctx("e1", args));
-    const withCount = otherComp().render(90);
+    const withCount = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
     check("generic row shows count", withCount[0].includes("2.4k ch"), JSON.stringify(withCount[0]));
   }
 
@@ -1277,10 +1252,8 @@ function openRun(comp) {
       { name: "check_subagents", description: "d", parameters: {}, async execute() { return {}; } }, piW);
     await handlers.get("tool_execution_start")[0]({ toolName: "check_subagents", toolCallId: "t-cs", args: {} }, {});
     mk(checker, "t-cs", { target: "demo" });
-    const lastComp = () => mk(checker, "t-cs", { target: "demo" });
-    lastComp();
-    openRun(lastComp());
-    const lines = lastComp().render(80);
+    openRun(mk(read, "r1", { path: "/a" }));
+    const lines = mk(read, "r1", { path: "/a" }).render(80);
     check("wrapped foreign tools share the run", lines.length === 4, JSON.stringify(lines));
     let said = "";
     await commands.get("collapse").handler("", { ui: { notify: (m) => { said = m; } } });
@@ -1360,10 +1333,9 @@ function openRun(comp) {
     ];
     await handlers.get("session_start")[0](
       {}, { hasUI: false, sessionManager: { getEntries: () => entries } });
-    const h2Comp = () => read.renderCall({ path: "/b" }, theme, ctxFor("h2", { path: "/b" }));
-    const merged = h2Comp().render(80);
-    openRun(h2Comp());
-    const mergedOpen = h2Comp().render(80);
+    const merged = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
+    openRun(read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })));
+    const mergedOpen = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
     check("contiguous history merges", mergedOpen.length === 3, JSON.stringify(mergedOpen));
     check("merged history keeps order",
       plainText(mergedOpen[0]).endsWith("/a") && plainText(mergedOpen[1]).endsWith("/b"), JSON.stringify(mergedOpen));
@@ -1423,10 +1395,8 @@ function openRun(comp) {
     await handlers.get("message_start")[0]({ message: { role: "assistant", content: [] } }, {});
     bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1"));
     bash.renderCall({ command: "echo live2" }, theme, ctxFor("n2", "echo live2"));
-    const nComp = () => bash.renderCall({ command: "echo live2" }, theme, ctxFor("n2", "echo live2"));
-    nComp();
-    openRun(nComp());
-    const live = nComp().render(80);
+    openRun(bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1")));
+    const live = bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1")).render(80);
     check("live turns merge after restore", live.length === 3, JSON.stringify(live));
   }
 
@@ -1467,9 +1437,9 @@ function openRun(comp) {
     pokes = 0;
     await globalThis.__collapsePollTick.tick();
     check("settle repaints merged history", pokes > 0, String(pokes));
-    openRun(bash.renderCall({ command: "echo two" }, theme, ctxFor("m2", "echo two")));
-    const owner = bash.renderCall({ command: "echo two" }, theme, ctxFor("m2", "echo two")).render(80);
-    const nonOwner = bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")).render(80);
+    openRun(bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")));
+    const owner = bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")).render(80);
+    const nonOwner = bash.renderCall({ command: "echo two" }, theme, ctxFor("m2", "echo two")).render(80);
     check("merged owner shows both rows", owner.length === 3, JSON.stringify(owner));
     check("merged non-owner renders empty", nonOwner.length === 0, JSON.stringify(nonOwner));
   }
@@ -1673,25 +1643,25 @@ function openRun(comp) {
     widgets[0]({ children: [chat] }, {});
     const r = detach.detachPass(piN);
     check("thinking-only attaches (default on)", r.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r));
-    check("attached to the shared run", (detach.runThinkingForTool("n2") ?? "").includes("bridge thought"), detach.runThinkingForTool("n2") ?? "(none)");
-    // User messages merge now: n1 shares the run, so it sees the thinking too.
-    check("earlier tool shares the run", (detach.runThinkingForTool("n1") ?? "").includes("bridge thought"), detach.runThinkingForTool("n1") ?? "(none)");
-    // A trailing thinking-only row joins the same shared run; the run
+    check("attached to next run", (detach.runThinkingForTool("n2") ?? "").includes("bridge thought"), detach.runThinkingForTool("n2") ?? "(none)");
+    check("previous run keeps nothing", (detach.runThinkingForTool("n1") ?? "") === "", detach.runThinkingForTool("n1") ?? "(none)");
+    // A trailing thinking-only row falls back to the previous run; the run
     // then counts two thinking blocks in its header.
     const thinkMsg2 = { role: "assistant", content: [{ type: "thinking", thinking: "trailing thought" }], stopReason: "stop" };
     const rowThink2 = { lastMessage: thinkMsg2, hiddenThinkingLabel: "Thinking...",
       updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
     chat.children.push(rowThink2);
     const r2 = detach.detachPass(piN);
-    check("trailing thinking joins the shared run", r2.detached === 1 && !chat.children.includes(rowThink2), JSON.stringify(r2));
+    check("trailing thinking falls back to prev", r2.detached === 1 && !chat.children.includes(rowThink2), JSON.stringify(r2));
     const ownerHdr = bash.renderCall({ command: "echo B" }, theme, mk("n2", { command: "echo B" })).render(90).map(plainText);
     check("header counts both thinking", ownerHdr.length === 1 && ownerHdr[0].includes("2 thinking"), JSON.stringify(ownerHdr));
     detach.resetDetachState?.();
   }
 
-  // 29c. live thinking joins across user messages: turns merge now
-  // (newest-owner keeps the block at the live edge), so a thinking-only
-  // message attaches to the shared run immediately instead of deferring.
+  // 29c. live thinking before its tools must NOT attach to the previous
+  // run: a thinking-only message that ends before its tools render defers
+  // (row stays) until the turn's tools land, instead of teleporting into
+  // the run across the user-message boundary.
   {
     const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
@@ -1717,7 +1687,7 @@ function openRun(comp) {
     widgets[0]({ children: [{ children: [] }] }, {});
     bash.renderCall({ command: "echo prev" }, theme, mk("p0", { command: "echo prev" }));
     const prevRun = mod.traceEntries.get("p0").runId;
-    // A user message merges the runs; the thinking attaches right away.
+    // A user message splits the run; the next turn starts with thinking.
     await handlers.get("message_start")[0]({ message: { role: "user", content: "hi" } }, {});
     const thinkMsg = { role: "assistant",
       content: [{ type: "thinking", thinking: "new turn thought" }], stopReason: "toolUse" };
@@ -1727,21 +1697,20 @@ function openRun(comp) {
       removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
     mod.captureWalkerTui({ children: [chat] });
     const r1 = detach.detachPass(piD);
-    check("live thinking joins across user messages", r1.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r1));
-    check("shared run hosts it", detach.runThinkingCount(prevRun) === 1, String(detach.runThinkingCount(prevRun)));
-    // The turn's tools land in the same shared run; nothing left to attach.
+    check("live thinking defers across a boundary", r1.detached === 0 && chat.children.includes(rowThink), JSON.stringify(r1));
+    check("prev run takes nothing", detach.runThinkingCount(prevRun) === 0, String(detach.runThinkingCount(prevRun)));
+    // The turn's tools land in the fresh run; the retry attaches there.
     bash.renderCall({ command: "echo new" }, theme, mk("n1", { command: "echo new" }));
     chat.children.push({ toolCallId: "n1" });
     const r2 = detach.detachPass(piD);
-    check("shared run already hosts it", r2.detached === 0, JSON.stringify(r2));
-    check("own tool sees it", (detach.runThinkingForTool("n1") ?? "").includes("new turn thought"), detach.runThinkingForTool("n1") ?? "(none)");
-    check("run still hosts exactly one", detach.runThinkingCount(prevRun) === 1, String(detach.runThinkingCount(prevRun)));
+    check("deferred thinking joins its own run", r2.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r2));
+    check("own run hosts it", (detach.runThinkingForTool("n1") ?? "").includes("new turn thought"), detach.runThinkingForTool("n1") ?? "(none)");
+    check("prev run still takes nothing", detach.runThinkingCount(prevRun) === 0, String(detach.runThinkingCount(prevRun)));
     detach.resetDetachState?.();
   }
 
-  // 29d. a re-detached thinking never duplicates: Pi rebuilds re-add
-  // removed rows, and user messages merge now, so the second detach lands
-  // in the same shared run (latest placement wins across different runs).
+  // 29d. a re-detached thinking moves (latest placement wins): Pi rebuilds
+  // re-add removed rows, so the same text must never accumulate in two runs.
   {
     const mod = await reuseIndex();
     resetTrace = mod.resetTraceState ?? resetTrace;
@@ -1777,16 +1746,15 @@ function openRun(comp) {
     mod.captureWalkerTui({ children: [chat] });
     const r1 = detach.detachPass(piM);
     check("first detach hosts run A", r1.detached === 1 && detach.runThinkingCount(runA) === 1, JSON.stringify(r1));
-    // Pi's rebuild re-adds the removed row; the next turn merges into the
-    // same shared run, so the re-detach lands there without duplicating.
+    // Pi's rebuild re-adds the removed row; a later turn detaches it again.
     await handlers.get("message_start")[0]({ message: { role: "user", content: "next" } }, {});
     bash.renderCall({ command: "echo B" }, theme, mk("m2", { command: "echo B" }));
     const runB = mod.traceEntries.get("m2").runId;
-    check("turns share one run", runB === runA, `${runA}/${runB}`);
     chat.children.push(rowThink, { toolCallId: "m2" });
     const r2 = detach.detachPass(piM);
-    check("second detach lands again", r2.detached === 1, JSON.stringify(r2));
-    check("shared run keeps exactly one", detach.runThinkingCount(runA) === 1, String(detach.runThinkingCount(runA)));
+    check("second detach moves it", r2.detached === 1, JSON.stringify(r2));
+    check("old run releases it", detach.runThinkingCount(runA) === 0, String(detach.runThinkingCount(runA)));
+    check("new run hosts it once", detach.runThinkingCount(runB) === 1, String(detach.runThinkingCount(runB)));
     detach.resetDetachState?.();
   }
 
@@ -2002,6 +1970,77 @@ function openRun(comp) {
     const long = labelsLib.standaloneThinkingLabel(1, 114000, 100);
     check("standalone shows 1m54s", long.startsWith("1 thinking") && long.includes("1m54s") && !long.includes(">"), long);
     check("standalone fits its width", long.length === 100, `${long.length}`);
+  }
+
+  // 29f. partial detach: a MIXED message (prose + thinking + tools) keeps
+  // its prose row mounted but loses only the thinking children; the run
+  // still counts the thinking. Streaming, stock-labeled, and
+  // click-opened runs never partial-detach.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piX = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piX);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const think = (t) => ({ type: "thinking", thinking: t });
+    const text = (t) => ({ type: "text", text: t });
+    const tool = (id) => ({ type: "toolCall", id, name: "bash", arguments: {} });
+    const mouseKid = (labelText) => ({ onMouse() {}, child: { text: labelText } });
+    const mkMixedRow = (message, label, overrides) => {
+      const prose = { markdown: "prose" };
+      const kid = mouseKid(label);
+      const container = { children: [prose, kid],
+        removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+      return { row: { lastMessage: message, hiddenThinkingLabel: label,
+        updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+        thinkingVisibilityOverrides: overrides, contentContainer: container }, container, kid, prose };
+    };
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    bash.renderCall({ command: "echo hp" }, theme, mk("hp", { command: "echo hp" }));
+    // P1: completed mixed message with our label: kid goes, prose stays.
+    const msgP1 = { role: "assistant", content: [think("plan p1"), text("hello"), tool("hp")], stopReason: "toolUse" };
+    const m1 = mkMixedRow(msgP1, "\u2026plan p1 0.1k ch");
+    const chat = { children: [{ toolCallId: "hp" }, m1.row],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r1 = detach.detachPass(piX);
+    check("partial removes only the thinking kid", r1.detached === 1 && !m1.container.children.includes(m1.kid) && m1.container.children.includes(m1.prose), JSON.stringify(r1));
+    check("partial keeps the prose row mounted", chat.children.includes(m1.row), "");
+    check("partial still counts the thinking", (detach.runThinkingForTool("hp") ?? "").includes("plan p1"), detach.runThinkingForTool("hp") ?? "(none)");
+    // P2: streaming mixed message never partial-detaches (no flicker).
+    const msgP2 = { role: "assistant", content: [think("plan p2"), text("hello"), tool("hp")] };
+    const m2 = mkMixedRow(msgP2, "\u2026plan p2 0.1k ch");
+    chat.children.push(m2.row);
+    const r2 = detach.detachPass(piX);
+    check("streaming mixed stays whole", r2.detached === 0 && m2.container.children.includes(m2.kid), JSON.stringify(r2));
+    // P3: stock-labeled mixed row stays whole (conservative).
+    const msgP3 = { role: "assistant", content: [think("plan p3"), text("hello"), tool("hp")], stopReason: "toolUse" };
+    const m3 = mkMixedRow(msgP3, "Thinking...");
+    chat.children.push(m3.row);
+    const r3 = detach.detachPass(piX);
+    check("stock-labeled mixed stays whole", r3.detached === 0 && m3.container.children.includes(m3.kid), JSON.stringify(r3));
+    // P4: click-opened thinking run vetoes the partial.
+    const msgP4 = { role: "assistant", content: [think("plan p4"), text("hello"), tool("hp")], stopReason: "toolUse" };
+    const m4 = mkMixedRow(msgP4, "\u2026plan p4 0.1k ch", new Map([[0, false]]));
+    chat.children.push(m4.row);
+    const r4 = detach.detachPass(piX);
+    check("click-opened mixed stays whole", r4.detached === 0 && m4.container.children.includes(m4.kid), JSON.stringify(r4));
+    detach.resetDetachState?.();
   }
 
   // 30. fail-open coupling: replacement preview renders iff detach confirmed.
@@ -2264,16 +2303,15 @@ function openRun(comp) {
     modW.captureWalkerTui({ children: [thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]), owner, nonOwner, foreign, stock] });
     const res = modW.wrappingPass(piW);
     check("only owner wrapped", res.wrapped === 1, JSON.stringify(res));
-    // Newest tool owns the run: t-next is stripped, t-own stays untouched.
-    check("owner stripped", nonOwner.render(100)[0] === "› t-next", JSON.stringify(nonOwner.render(100)));
-    check("non-owner untouched", owner.render(100)[0] === "", JSON.stringify(owner.render(100)));
+    check("owner stripped", owner.render(100)[0] === "› t-own", JSON.stringify(owner.render(100)));
+    check("non-owner untouched", nonOwner.render(100)[0] === "", JSON.stringify(nonOwner.render(100)));
     check("foreign untouched", foreign.render(100)[0] === "", JSON.stringify(foreign.render(100)));
     check("default-shell untouched", stock.render(100)[0] === "", JSON.stringify(stock.render(100)));
     // Visible mode: previously wrapped instances self-bypass, nothing new wraps.
     piW._hidden = false;
     const resV = modW.wrappingPass(piW);
     check("visible mode wraps nothing", resV.wrapped === 0, JSON.stringify(resV));
-    check("visible mode restores blank", nonOwner.render(100)[0] === "", JSON.stringify(nonOwner.render(100)));
+    check("visible mode restores blank", owner.render(100)[0] === "", JSON.stringify(owner.render(100)));
     piW._hidden = true;
   }
 
@@ -3451,10 +3489,12 @@ function openRun(comp) {
   mk("check_subagents").renderCall(checkArgs, theme, ctx("s2", checkArgs));
   mk("send_to_subagent").renderCall(sendArgs, theme, ctx("s3", sendArgs));
   mk("cancel_subagent").renderCall(cancelArgs, theme, ctx("s4", cancelArgs));
-  // Every call above joined one run; the newest tool renders all four rows.
-  const lastSpawn = () => mk("cancel_subagent").renderCall(cancelArgs, theme, ctx("s4", cancelArgs));
-  openRun(lastSpawn());
-  const lines = lastSpawn().render(120).map(plainText);
+  // Every call above joined the spawn's run; the owner renders all four rows.
+  openRun(spawn.renderCall(spawnArgs, theme, ctx("s1", spawnArgs)));
+  const lines = spawn
+    .renderCall(spawnArgs, theme, ctx("s1", spawnArgs))
+    .render(120)
+    .map(plainText);
   check("spawn row names the agent", lines[0]?.includes("spawn_agent review"), lines[0]);
   check("spawn row shows the task as a dim pair", lines[0]?.includes("spawn_agent review ") && lines[0]?.includes('task="Review the collapse extension'), lines[0]);
   check("check row lists targets", lines[1]?.includes("check_subagents review, tester"), lines[1]);
@@ -3660,19 +3700,19 @@ function openRun(comp) {
   const a = owner("a");
   traceLib.traceOnMessageStart({ message: { role: "custom", customType: "subagent-results", display: false } });
   const b = owner("b");
-  check("hidden custom message keeps the run", b.runId === a.runId && traceLib.traceOwnerId(a.runId) === "b", `${a.runId}/${b.runId}`);
+  check("hidden custom message keeps the run", b.runId === a.runId && traceLib.traceOwnerId(a.runId) === "a", `${a.runId}/${b.runId}`);
   traceLib.traceOnMessageStart({ message: { role: "system", content: "sys" } });
   const c = owner("c");
   check("system message keeps the run", c.runId === a.runId, `${a.runId}/${c.runId}`);
   traceLib.traceOnMessageStart({ message: { role: "custom", customType: "note", display: true } });
   const d = owner("d");
-  check("visible custom message merges", d.runId === a.runId, `${a.runId}/${d.runId}`);
+  check("visible custom message splits", d.runId !== a.runId, `${a.runId}/${d.runId}`);
   traceLib.traceOnMessageStart({ message: { role: "user", content: "hi" } });
   const e = owner("e");
-  check("user message merges", e.runId === a.runId, `${d.runId}/${e.runId}`);
+  check("user message splits", e.runId !== d.runId, `${d.runId}/${e.runId}`);
   traceLib.traceOnMessageStart({ message: { role: "custom", customType: "x" } });
   const f = owner("f");
-  check("custom message without display merges", f.runId === a.runId, `${e.runId}/${f.runId}`);
+  check("custom message without display splits", f.runId !== e.runId, `${e.runId}/${f.runId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -3705,7 +3745,7 @@ function openRun(comp) {
   const ui = { requestRender() {} };
   const chars = (args) => logic.formatCharCount(logic.argsTextChars(args));
 
-  // One run, one owner at the live edge: rows render in transcript order.
+  // One run, one owner: rows render in transcript order (block 72's rule).
   const body = "export function f() {\n  return 1;\n}\n" + "x".repeat(1200);
   const wArgs = { path: "/repo/src/mod.ts", content: body };
   const eArgs = { path: "/repo/src/mod.ts", oldText: "const a = 1;", newText: "const a = 2;" };
@@ -3716,7 +3756,7 @@ function openRun(comp) {
   const sArgs = { path: "/repo/short.ts", content: "hi" };
   const cases = [["write", wArgs], ["edit", eArgs], ["bash", bArgs], ["grep", gArgs], ["read", rArgs], ["write", {}], ["write", xArgs], ["write", sArgs]];
   const comps = cases.map(([name, args], i) => new agent.ToolExecutionComponent(name, `live-${i}`, args, opts, mk(name), ui, "/repo"));
-  const owner = comps[comps.length - 1];
+  const owner = comps[0];
   // Live runs rest closed; open the run so the streaming rows are visible.
   owner.render(120);
   owner.callRendererComponent.children[0]?.onMouse?.({ type: "click", button: "left" });

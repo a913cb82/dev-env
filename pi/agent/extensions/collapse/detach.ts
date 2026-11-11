@@ -3,8 +3,10 @@
  *
  * Pi's thinking row (spacer + label) is unconditional given visible thinking,
  * so the only way to merge thinking into our gapless tool block is to
- * detach the whole AssistantMessageComponent from the transcript tree via
- * the public removeChild — no message edits, no patching, nothing persisted.
+ * detach the thinking from the transcript tree via the public removeChild
+ * — no message edits, no patching, nothing persisted. Text-free messages
+ * detach whole; mixed messages (visible prose plus hidden thinking) lose
+ * only their thinking children while the prose row stays mounted.
  *
  * Safety comes from two rules. First, the SAFE predicate (isSafeToDetach in
  * logic.ts, a mirror of Pi's own updateContent): detach only when the
@@ -14,7 +16,7 @@
  * degrades to the stock Pi row, never a duplicate.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { extractThinkingText, isSafeToDetach, thinkingPreview } from "./logic.js";
+import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { isThinkingRow, setStandaloneThinking, walkerTui } from "./labels.js";
 import { traceEntries, tracePokeOwner, isTurnCurrent } from "./trace.js";
@@ -37,6 +39,35 @@ const hiddenRuns = new Set<number>();
 
 /** Expanded (full-text) state per hidden run for the replacement row. */
 const runThinkingOpen = new Set<number>();
+
+/** Skip reasons for the last pass (see detachDiag): pinpoints why rows
+ *  stay mounted instead of guessing. */
+type SkipReasons = { role: number; nohome: number; unsafe: number; empty: number; parent: number; remove: number };
+const newSkipReasons = (): SkipReasons => ({ role: 0, nohome: 0, unsafe: 0, empty: 0, parent: 0, remove: 0 });
+
+/** Thinking-toggle children (Pi wraps each hidden-thinking label in a
+ *  MouseRegion) whose inner text carries our label: exactly the children
+ *  a partial detach may remove. Structural match only — no Pi imports. */
+function hiddenLabelKids(row: unknown, label: string): unknown[] {
+  const kids: unknown[] = [];
+  try {
+    const container = (row as { contentContainer?: { children?: unknown[] } })?.contentContainer;
+    if (!container || !Array.isArray(container.children)) return kids;
+    const head = label.slice(0, 30);
+    if (!head) return kids;
+    for (const node of container.children) {
+      const mouse = node as { onMouse?: unknown; child?: { text?: unknown } } | null | undefined;
+      if (!mouse || typeof mouse.onMouse !== "function" || mouse.child == null) continue;
+      const inner = mouse.child as { text?: unknown };
+      if (typeof inner.text !== "string") continue;
+      if (!stripAnsi(inner.text).includes(head)) continue;
+      kids.push(node);
+    }
+  } catch {
+    // Structural miss: no kids, caller skips.
+  }
+  return kids;
+}
 
 /** Last session manager seen (session_start); the poller has no ctx. */
 let lastSessionManager: any = undefined;
@@ -180,8 +211,9 @@ function hostRunFor(message: {
 export function detachPass(
   pi: ExtensionAPI,
   sessionManager?: unknown,
-): { detached: number; skipped: number } {
-  const result = { detached: 0, skipped: 0 };
+): { detached: number; skipped: number; reasons: SkipReasons } {
+  const result = { detached: 0, skipped: 0, reasons: newSkipReasons() };
+  const skip = (reason: keyof SkipReasons): void => { result.skipped++; result.reasons[reason]++; };
   let noHome = 0;
   let walkedTotal = 0;
   let walkedThinking = 0;
@@ -248,7 +280,7 @@ export function detachPass(
         content?: Array<{ type?: string; thinking?: string; id?: unknown }>;
       } | undefined;
       if (!message || message.role !== "assistant") {
-        result.skipped++;
+        skip("role");
         continue;
       }
       let runId = hostRunFor(message);
@@ -289,28 +321,64 @@ export function detachPass(
         if (text && message.stopReason != null && isSafeToDetach(message, true, overrides)) {
           setStandaloneThinking(message, true);
         }
-        result.skipped++;
+        skip("nohome");
         noHome++;
         continue;
       }
-      if (!isSafeToDetach(message, true, overrides)) {
-        result.skipped++;
-        continue;
+      const wholeSafe = isSafeToDetach(message, true, overrides);
+      // Mixed message: prose stays, only the thinking children go.
+      // Requires our label (proves the row is managed, never stock) so a
+      // visible-thinking run can never match by label text.
+      let partialKids: unknown[] = [];
+      if (!wholeSafe) {
+        const label = (row as { hiddenThinkingLabel?: unknown }).hiddenThinkingLabel;
+        if (!isPartialSafeToDetach(message, true, overrides) ||
+            typeof label !== "string" || !label.includes("\u2026")) {
+          skip("unsafe");
+          continue;
+        }
+        partialKids = hiddenLabelKids(row, label);
+        if (partialKids.length === 0) {
+          skip("parent");
+          continue;
+        }
       }
       const text = extractThinkingText(message);
       if (!text) {
-        result.skipped++;
+        skip("empty");
         continue;
       }
-      try {
-        if (!parent || typeof parent.removeChild !== "function") {
-          result.skipped++;
+      if (wholeSafe) {
+        try {
+          if (!parent || typeof parent.removeChild !== "function") {
+            skip("parent");
+            continue;
+          }
+          parent.removeChild(row);
+        } catch {
+          skip("remove");
           continue;
         }
-        parent.removeChild(row);
-      } catch {
-        result.skipped++;
-        continue;
+      } else {
+        const container = (row as { contentContainer?: { removeChild?: (c: unknown) => void } })?.contentContainer;
+        if (!container || typeof container.removeChild !== "function") {
+          skip("parent");
+          continue;
+        }
+        let removed = 0;
+        try {
+          for (const kid of partialKids) {
+            container.removeChild(kid);
+            removed++;
+          }
+        } catch {
+          // Non-atomic: a later kid threw. Stash when at least one went
+          // (fail-visible: counted and still shown) rather than lose text.
+          if (removed === 0) {
+            skip("remove");
+            continue;
+          }
+        }
       }
       const entryId = byMessage.get(message)?.id;
       if (typeof entryId === "string") {
@@ -346,7 +414,9 @@ export function detachPass(
   }
   lastDetachDiag =
     `walked ${walkedTotal} (${walkedThinking} thinking, ${walkedTotal - walkedThinking} tools); ` +
-    `attached ${result.detached}; homeless ${noHome}; skipped ${result.skipped}`;
+    `attached ${result.detached}; homeless ${noHome}; skipped ${result.skipped} ` +
+    `(role=${result.reasons.role} nohome=${result.reasons.nohome} unsafe=${result.reasons.unsafe} ` +
+    `empty=${result.reasons.empty} parent=${result.reasons.parent} remove=${result.reasons.remove})`;
   return result;
 }
 

@@ -522,6 +522,36 @@ function check(name, cond, extra) {
       safe({}, true) === false, "");
   }
 
+  // isPartialSafeToDetach: same vetoes as whole-row detach, except visible
+  // text is allowed (it stays mounted; only the thinking children go).
+  // Requires a completed message so streaming labels never flicker.
+  {
+    const think = (t) => ({ type: "thinking", thinking: t });
+    const text = (t) => ({ type: "text", text: t });
+    const tool = (id) => ({ type: "toolCall", id, name: "read", arguments: {} });
+    const partial = logic.isPartialSafeToDetach;
+    check("partial: text+thinking+tools detaches",
+      partial({ content: [think("plan"), text("hello"), tool("a")], stopReason: "toolUse" }, true) === true, "");
+    check("partial: streaming never detaches",
+      partial({ content: [think("plan"), text("hello"), tool("a")] }, true) === false, "");
+    check("partial: visible thinking run vetoes",
+      partial({ content: [think("plan"), text("hello")], stopReason: "stop" }, true, new Map([[0, false]])) === false, "");
+    check("partial: text-only has nothing to hide",
+      partial({ content: [text("hello")], stopReason: "stop" }, true) === false, "");
+    check("partial: length stop keeps its line",
+      partial({ content: [think("plan"), text("hello")], stopReason: "length" }, true) === false, "");
+    check("partial: aborted without tools keeps its line",
+      partial({ content: [think("plan")], stopReason: "aborted" }, true) === false, "");
+  }
+
+  // stripAnsi: SGR plus OSC (rows carry both).
+  {
+    check("stripAnsi strips SGR", logic.stripAnsi("\x1b[38;2;1;2;3mhi\x1b[39m") === "hi", "");
+    check("stripAnsi strips OSC",
+      logic.stripAnsi("\x1b]8;;http://x\x07link\x1b]8;;\x07") === "link", "");
+    check("stripAnsi leaves text", logic.stripAnsi("plain") === "plain", "");
+  }
+
   // toolTimings: execution windows recovered from persisted history.
   {
     const T0 = 1700000000000;

@@ -763,6 +763,61 @@ export function isSafeToDetach(
   return true;
 }
 
+/** Strip SGR color codes plus OSC hyperlink sequences. Rows carry both. */
+export function stripAnsi(line: string): string {
+  return String(line ?? "")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+}
+
+/** Partial-detach predicate: the thinking children of a MIXED message
+ *  (visible prose plus hidden thinking) may be removed while the prose
+ *  stays mounted. Same vetoes as whole-row detach except the visible-text
+ *  veto — and the message must be completed, so streaming labels never
+ *  flicker between the row and the run. Requires every thinking run
+ *  hidden (all-or-nothing keeps the stashed text exact). */
+export function isPartialSafeToDetach(
+  message: {
+    content?: Array<{ type?: string; text?: string; thinking?: string }>;
+    stopReason?: string;
+  } | null | undefined,
+  hideThinkingBlock: boolean,
+  thinkingVisibilityOverrides?: Map<number, boolean> | Record<number, boolean> | null,
+): boolean {
+  const content = message?.content;
+  if (!Array.isArray(content)) return false;
+  if (message?.stopReason == null) return false;
+  let hasToolCalls = false;
+  let runIndex = 0;
+  let hiddenRuns = 0;
+  for (let i = 0; i < content.length; i++) {
+    const block = content[i];
+    if (block?.type === "toolCall") {
+      hasToolCalls = true;
+    } else if (block?.type === "thinking") {
+      let nonBlank = false;
+      for (; i < content.length; i++) {
+        const peer = content[i];
+        if (peer?.type !== "thinking") break;
+        if ((peer.thinking ?? "").trim() !== "") nonBlank = true;
+      }
+      i--;
+      if (!nonBlank) continue;
+      const override =
+        thinkingVisibilityOverrides instanceof Map
+          ? thinkingVisibilityOverrides.get(runIndex)
+          : thinkingVisibilityOverrides?.[runIndex];
+      if ((override ?? hideThinkingBlock) !== true) return false;
+      runIndex++;
+      hiddenRuns++;
+    }
+  }
+  if (hiddenRuns === 0) return false;
+  if (message?.stopReason === "length") return false;
+  if (!hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
+  return true;
+}
+
 /** Run-level header: `4 read · 1 thinking`. Groups tool names in first-seen
  *  order, thinking appended last. Empty run renders nothing. */
 export function summarizeRun(names: readonly string[], thinkingCount = 0): string {

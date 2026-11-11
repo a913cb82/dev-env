@@ -23,7 +23,7 @@ import {
   toggleRunOpen,
   traceEntries,
   traceOwnerId,
-  tracePokeByEntry,
+  traceOwnerPoke,
   tracePokeOwner,
   traceRuns,
   traceSync,
@@ -590,7 +590,7 @@ export function collapseTool(
         if (changed) tracePokeOwner(entry.runId);
         return new Container();
       }
-      if (typeof context?.invalidate === "function") tracePokeByEntry.set(entry.id, context.invalidate);
+      if (typeof context?.invalidate === "function") traceOwnerPoke.set(entry.runId, context.invalidate);
       return buildTrace(entry.runId, theme, context, pi);
     },
     renderResult(result: any, options: any, theme: Theme, context: any): Component {
