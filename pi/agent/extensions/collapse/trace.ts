@@ -260,6 +260,12 @@ export function traceOwnerId(runId: number): string | undefined {
   return traceRuns.get(runId)?.[0];
 }
 
+/** The run the next rendered tool joins. Thinking that has not settled yet
+ *  may only attach to this run — anything older sits across a boundary. */
+export function traceCurrentRunId(): number {
+  return traceRunId;
+}
+
 export function tracePokeOwner(runId: number): void {
   try {
     traceOwnerPoke.get(runId)?.();

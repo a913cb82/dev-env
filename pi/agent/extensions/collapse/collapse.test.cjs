@@ -1627,6 +1627,9 @@ function openRun(comp) {
     const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
       state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
       expanded: false, showImages: true, isError: false });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
     bash.renderCall({ command: "echo A" }, theme, mk("n1", { command: "echo A" }));
     await handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
     bash.renderCall({ command: "echo B" }, theme, mk("n2", { command: "echo B" }));
@@ -1637,9 +1640,6 @@ function openRun(comp) {
     const toolB = { toolCallId: "n2" };
     const chat = { children: [toolA, rowThink, toolB],
       removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
-    const widgets = [];
-    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
-    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
     widgets[0]({ children: [chat] }, {});
     const r = detach.detachPass(piN);
     check("thinking-only attaches (default on)", r.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r));
@@ -1655,6 +1655,153 @@ function openRun(comp) {
     check("trailing thinking falls back to prev", r2.detached === 1 && !chat.children.includes(rowThink2), JSON.stringify(r2));
     const ownerHdr = bash.renderCall({ command: "echo B" }, theme, mk("n2", { command: "echo B" })).render(90).map(plainText);
     check("header counts both thinking", ownerHdr.length === 1 && ownerHdr[0].includes("2 thinking"), JSON.stringify(ownerHdr));
+    detach.resetDetachState?.();
+  }
+
+  // 29c. live thinking before its tools must NOT attach to the previous
+  // run: a thinking-only message that ends before its tools render defers
+  // (row stays) until the turn's tools land, instead of teleporting into
+  // the run across the user-message boundary.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piD = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piD);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [{ children: [] }] }, {});
+    bash.renderCall({ command: "echo prev" }, theme, mk("p0", { command: "echo prev" }));
+    const prevRun = mod.traceEntries.get("p0").runId;
+    // A user message splits the run; the next turn starts with thinking.
+    await handlers.get("message_start")[0]({ message: { role: "user", content: "hi" } }, {});
+    const thinkMsg = { role: "assistant",
+      content: [{ type: "thinking", thinking: "new turn thought" }], stopReason: "toolUse" };
+    const rowThink = { lastMessage: thinkMsg, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const chat = { children: [{ toolCallId: "p0" }, rowThink],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r1 = detach.detachPass(piD);
+    check("live thinking defers across a boundary", r1.detached === 0 && chat.children.includes(rowThink), JSON.stringify(r1));
+    check("prev run takes nothing", detach.runThinkingCount(prevRun) === 0, String(detach.runThinkingCount(prevRun)));
+    // The turn's tools land in the fresh run; the retry attaches there.
+    bash.renderCall({ command: "echo new" }, theme, mk("n1", { command: "echo new" }));
+    chat.children.push({ toolCallId: "n1" });
+    const r2 = detach.detachPass(piD);
+    check("deferred thinking joins its own run", r2.detached === 1 && !chat.children.includes(rowThink), JSON.stringify(r2));
+    check("own run hosts it", (detach.runThinkingForTool("n1") ?? "").includes("new turn thought"), detach.runThinkingForTool("n1") ?? "(none)");
+    check("prev run still takes nothing", detach.runThinkingCount(prevRun) === 0, String(detach.runThinkingCount(prevRun)));
+    detach.resetDetachState?.();
+  }
+
+  // 29d. a re-detached thinking moves (latest placement wins): Pi rebuilds
+  // re-add removed rows, so the same text must never accumulate in two runs.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piM = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piM);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [{ children: [] }] }, {});
+    bash.renderCall({ command: "echo A" }, theme, mk("m1", { command: "echo A" }));
+    const runA = mod.traceEntries.get("m1").runId;
+    const thinkMsg = { role: "assistant",
+      content: [{ type: "thinking", thinking: "moving thought" }], stopReason: "toolUse" };
+    const chat = { children: [],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    const rowThink = { lastMessage: thinkMsg, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    chat.children.push({ toolCallId: "m1" }, rowThink);
+    mod.captureWalkerTui({ children: [chat] });
+    const r1 = detach.detachPass(piM);
+    check("first detach hosts run A", r1.detached === 1 && detach.runThinkingCount(runA) === 1, JSON.stringify(r1));
+    // Pi's rebuild re-adds the removed row; a later turn detaches it again.
+    await handlers.get("message_start")[0]({ message: { role: "user", content: "next" } }, {});
+    bash.renderCall({ command: "echo B" }, theme, mk("m2", { command: "echo B" }));
+    const runB = mod.traceEntries.get("m2").runId;
+    chat.children.push(rowThink, { toolCallId: "m2" });
+    const r2 = detach.detachPass(piM);
+    check("second detach moves it", r2.detached === 1, JSON.stringify(r2));
+    check("old run releases it", detach.runThinkingCount(runA) === 0, String(detach.runThinkingCount(runA)));
+    check("new run hosts it once", detach.runThinkingCount(runB) === 1, String(detach.runThinkingCount(runB)));
+    detach.resetDetachState?.();
+  }
+
+  // 29e. preview rows use the row width (middle-truncated by the row, not
+  // pre-chopped to 64 chars) and carry the thinking size on the right.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piP = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piP);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, bold: (t) => t, italic: (t) => t, style: (t) => t };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    widgets[0]({ children: [{ children: [] }] }, {});
+    bash.renderCall({ command: "echo w" }, theme, mk("w1", { command: "echo w" }));
+    const long = "word ".repeat(60);
+    const thinkMsg = { role: "assistant", content: [
+      { type: "thinking", thinking: long },
+      { type: "toolCall", id: "w1", name: "bash", arguments: { command: "echo w" } },
+    ], stopReason: "toolUse" };
+    const rowThink = { lastMessage: thinkMsg, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const chat = { children: [{ toolCallId: "w1" }, rowThink],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piP);
+    check("long thinking detaches to its host", r.detached === 1, JSON.stringify(r));
+    const comp = bash.renderCall({ command: "echo w" }, theme, mk("w1", { command: "echo w" }));
+    openRun(comp);
+    const prevLine = bash.renderCall({ command: "echo w" }, theme, mk("w1", { command: "echo w" }))
+      .render(100).map(plainText).find((l) => l.includes("word")) ?? "";
+    check("preview fills the row width", (prevLine.match(/word/g) ?? []).length > 13, JSON.stringify(prevLine.slice(0, 80)));
+    check("preview ends with its count", prevLine.trimEnd().endsWith("0.3k ch"), JSON.stringify(prevLine.slice(-24)));
     detach.resetDetachState?.();
   }
 
@@ -1698,6 +1845,8 @@ function openRun(comp) {
     openRun(out2comp());
     const lines2 = out2comp().render(100);
     check("preview appears after confirmed detach", lines2.some((l) => l.includes("plan for one")), lines2.join("|").slice(0, 160));
+    const prevLine2 = lines2.map(plainText).find((l) => l.includes("plan for one")) ?? "";
+    check("preview row carries its count", /0\.0k ch\s*$/.test(prevLine2.trimEnd()), JSON.stringify(prevLine2));
     delete process.env.COLLAPSE_HIDE_THINKING;
     detach.resetDetachState?.();
   }

@@ -177,8 +177,16 @@ public `removeChild` — no message edits, no patching. Opt out with
 clean stop, has tools) means a detach never hides anything but hidden-label
 rows; a lone thinking row with no host tool attaches to the nearest tool
 run in transcript order (next preferred, else previous) so its preview
-still has a home; and the replacement preview row (one per hosted thinking
-block, click to expand the full stashed text) renders iff the detach is
+still has a home — except at the live edge: a thinking row whose message
+is not yet persisted never attaches to an older run (its tools have not
+rendered yet; the poll would otherwise teleport it into the previous
+turn). The pass defers and retries once the turn's tools land. A host
+toolCall in the same message is direct evidence and always counts, and
+settled history keeps the old behavior. A re-detach moves the text
+(latest placement wins — Pi rebuilds re-add removed rows) instead of
+stacking duplicates across runs; and the replacement preview row (one per
+hosted thinking block, middle-truncated to the row width with its size on
+the right, click to expand the full stashed text) renders iff the detach is
 confirmed — a miss degrades to the stock Pi row, never a duplicate. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages

@@ -419,7 +419,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
   for (const thinkingText of hiddenThinkings) {
     const thinkingRow = thinkOpen
       ? new Text(thinkingText, liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, thinkingText), "", liveOutputPad(pi), theme);
+      : new CollapsedLine(thinkingRowPreview(theme, thinkingText), theme.fg("dim", formatCharCount(thinkingText.length)), liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;

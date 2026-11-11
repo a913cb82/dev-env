@@ -17,7 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractThinkingText, isSafeToDetach, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { isThinkingRow, walkerTui } from "./labels.js";
-import { traceEntries, tracePokeOwner } from "./trace.js";
+import { traceCurrentRunId, traceEntries, tracePokeOwner } from "./trace.js";
 
 /** Entry ids whose thinking row is confirmed detached (history + adopted). */
 const hiddenEntryIds = new Set<string>();
@@ -239,8 +239,23 @@ export function detachPass(
         result.skipped++;
         continue;
       }
-      let runId = hostRunFor(message) ?? nextRun[i] ?? prev;
-      if (runId === undefined) runId = entryNeighborRun(message, true) ?? entryNeighborRun(message, false);
+      let runId = hostRunFor(message);
+      if (runId === undefined) {
+        // Live-edge guard: a thinking row whose message is not yet persisted
+        // has no settled home — its tools may not have rendered (the poll
+        // beats them). Falling back across a boundary would teleport the
+        // thinking into the previous turn's run, so a guessed neighbor only
+        // counts when it is the run the next tool joins; otherwise defer —
+        // the poll retries once the tools land. A host toolCall in the same
+        // message is direct evidence and always counts. Persisted (history)
+        // messages keep the old behavior: their runs are final.
+        const settled = byMessage.has(message);
+        const current = traceCurrentRunId();
+        const guessOk = (candidate: number | undefined): number | undefined =>
+          candidate !== undefined && (settled || candidate === current) ? candidate : undefined;
+        runId = guessOk(nextRun[i]) ?? guessOk(prev) ??
+          guessOk(entryNeighborRun(message, true)) ?? guessOk(entryNeighborRun(message, false));
+      }
       if (runId === undefined) {
         result.skipped++;
         continue;
@@ -274,6 +289,20 @@ export function detachPass(
         liveHidden.add(message);
       }
       const texts = runThinking.get(runId) ?? [];
+      // Latest placement wins: Pi rebuilds re-add removed rows, so a second
+      // detach of the same text moves it instead of duplicating it across
+      // runs (which reads as one thinking per group and inflates counts).
+      for (const [other, otherTexts] of runThinking) {
+        if (other === runId) continue;
+        const at = otherTexts.indexOf(text);
+        if (at >= 0) {
+          otherTexts.splice(at, 1);
+          if (otherTexts.length === 0) {
+            runThinking.delete(other);
+            hiddenRuns.delete(other);
+          }
+        }
+      }
       if (!texts.includes(text)) texts.push(text);
       runThinking.set(runId, texts);
       hiddenRuns.add(runId);
@@ -286,9 +315,11 @@ export function detachPass(
   return result;
 }
 
-/** One-line preview for the replacement row (Pi's own label styling). */
+/** One-line preview for the replacement row (Pi's own label styling). The
+ *  budget is generous on purpose: the row itself middle-truncates to the
+ *  terminal width, so the preview function must not pre-chop the text. */
 export function thinkingRowPreview(theme: any, text: string): string {
-  const preview = thinkingPreview(text, 64);
+  const preview = thinkingPreview(text, 240);
   try {
     return theme.italic(theme.fg("thinkingText", `… ${preview}`));
   } catch {
