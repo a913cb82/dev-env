@@ -113,8 +113,8 @@ import {
   traceOnMessageStart,
   traceOnMessageUpdate,
   traceOnToolExecutionStart,
-  traceOwnerPoke,
   tracePokeOwner,
+  traceRunHasPoke,
   traceSummary,
   timingStatus,
 } from "./trace.js";
@@ -160,7 +160,7 @@ function breatheTick(pi: ExtensionAPI): void {
     breatheTicks++;
     let poked = 0;
     for (const runId of runs) {
-      if (traceOwnerPoke.has(runId)) {
+      if (traceRunHasPoke(runId)) {
         tracePokeOwner(runId);
         poked++;
       }
@@ -178,7 +178,7 @@ function breatheTick(pi: ExtensionAPI): void {
 }
 function breatheStatus(): string {
   const runs = liveRunIds();
-  const pokes = runs.filter((runId) => traceOwnerPoke.has(runId)).length;
+  const pokes = runs.filter((runId) => traceRunHasPoke(runId)).length;
   const base = `breathe: frame=${breatheFrame()} wheel=${breatheWheel()} live=${runs.length} ticks=${breatheTicks} pokes=${pokes} fallbacks=${breatheFallbacks}`;
   return breatheLastError ? `${base} err=${breatheLastError}` : base;
 }
@@ -486,11 +486,6 @@ export default function (pi: ExtensionAPI) {
     !!makeLeftByName[name] || wrappedToolNames().includes(name);
   pi.on("tool_execution_start", (event) => {
     traceOnToolExecutionStart(event, isOwnTool);
-  });
-  // Pi validates user_bash results (undefined or a valid result object):
-  // never leak traceBoundary's return value through the arrow body.
-  pi.on("user_bash", () => {
-    traceBoundary("user-bash");
   });
   // Anything that rebuilds the transcript from history arms the history pass.
   pi.on("session_compact", () => armHistoryPhase("session-compact"));

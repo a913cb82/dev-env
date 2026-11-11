@@ -1,7 +1,6 @@
 // Tool-run registry: which adjacent tool calls share one rendered component,
 // and where runs are split. See index.ts for the behaviour this implements.
 import type { Box, Component } from "@earendil-works/pi-tui";
-import { hasLeadingVisibleContent, isVisibleMessage } from "./logic.js";
 
 export interface CollapseState {
   count?: number;
@@ -53,10 +52,12 @@ export interface TraceEntry extends CollapseSlots {
 
 export type TimingSrc = "pi" | "history" | "fallback";
 
-/** Adjacent same-turn tool calls, rendered as one component so Pi emits a
- *  single leading blank line for the whole run instead of one per tool.
- *  The FIRST tool of each run owns the trace (stable position); later tools
- *  render nothing. Keyed by toolCallId; only live-observed tools join, so
+/** Adjacent tool calls, rendered as one component at the NEWEST tool's
+ *  slot so the block chases the live edge instead of pinning to the top
+ *  of the transcript. The newest tool owns the trace; older members render
+ *  empty. Rows only ever move DOWN to the live edge, never above content —
+ *  so runs merge freely across prose and user messages. Keyed by
+ *  toolCallId; only live-observed tools join, so
  *  history can never teleport (unregistered tools fall back to single rows). */
 // Nothing here is ever pruned, by design: buildTrace reads this registry at
 // render time and the TUI re-renders every component on resize/zoom, so a
@@ -64,7 +65,19 @@ export type TimingSrc = "pi" | "history" | "fallback";
 // proportional to the transcript, not to elapsed time.
 export const traceEntries = new Map<string, TraceEntry>();
 export const traceRuns = new Map<number, string[]>();
-export const traceOwnerPoke = new Map<number, () => void>();
+export const tracePokeByEntry = new Map<string, () => void>();
+
+/** True when any member of the run registered a repaint handle. */
+export function traceRunHasPoke(runId: number): boolean {
+  try {
+    for (const id of traceRuns.get(runId) ?? []) {
+      if (tracePokeByEntry.has(id)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 /** Execution windows recovered from persisted history (see toolTimings in
  *  logic): keyed by toolCallId, filled at session_start. Entries adopt
  *  them below Pi's live stamps but above wall-clock fallbacks. */
@@ -126,10 +139,6 @@ export function armHistoryPhase(reason: string): void {
   }
 }
 
-/** Message sequence for the "visible content already split this turn" guard. */
-let messageSeq = 0;
-let visibleBumpSeq = -1;
-
 /** Row/runs summary for `/collapse`: how many rows the newest run holds, and
  *  how many runs are live. A gap between rows means two runs, so this says
  *  whether the rows you are looking at were ever merged. */
@@ -144,22 +153,15 @@ export function traceSummary(): string {
  *  The reason is kept for `/collapse`: when rows show an unexpected gap,
  *  the report says exactly which boundary split them. */
 export const boundaryReasons: string[] = [];
-/** Turn-resetting boundary counter. Same-turn content splits (trailing
- *  prose) reposition runs but never close a turn: only hard boundaries
- *  (user messages, session starts, foreign tools) strand thinking. */
+/** Turn-resetting boundary counter. Only structural boundaries
+ *  (session events, foreign tools) strand thinking now — prose and user
+ *  messages merge. */
 let hardBoundarySeq = 0;
 /** Newest-tool stamp per run: the turn a run's tools rendered in. */
 const runTurnSeq = new Map<number, number>();
 export function traceBoundary(reason = "?") {
   traceRunId++;
   hardBoundarySeq++;
-  boundaryReasons.push(`${reason}#${traceRunId}`);
-  if (boundaryReasons.length > 8) boundaryReasons.shift();
-  return reason;
-}
-/** Same-turn split (leading/trailing prose): new run, same turn. */
-export function traceSoftBoundary(reason = "?") {
-  traceRunId++;
   boundaryReasons.push(`${reason}#${traceRunId}`);
   if (boundaryReasons.length > 8) boundaryReasons.shift();
   return reason;
@@ -176,7 +178,7 @@ export function isTurnCurrent(runId: number): boolean {
 export function resetTraceState(): void {
   traceEntries.clear();
   traceRuns.clear();
-  traceOwnerPoke.clear();
+  tracePokeByEntry.clear();
   historyTimings.clear();
   plannedRunById.clear();
   runOpen.clear();
@@ -189,8 +191,6 @@ export function resetTraceState(): void {
     // No timers: nothing to clear.
   }
   historyTimer = undefined;
-  messageSeq = 0;
-  visibleBumpSeq = -1;
   traceRunId++;
   traceHistoryPhase = false;
 }
@@ -256,7 +256,7 @@ export function applyPlannedRuns(groups: string[][]): void {
   const byId = new Map(traceEntries);
   const planned = new Set<string>();
   traceRuns.clear();
-  traceOwnerPoke.clear();
+  tracePokeByEntry.clear();
   runTurnSeq.clear();
   for (const group of groups) {
     const ids = group.filter((id) => byId.has(id));
@@ -282,12 +282,19 @@ export function applyPlannedRuns(groups: string[][]): void {
 }
 
 export function traceOwnerId(runId: number): string | undefined {
-  return traceRuns.get(runId)?.[0];
+  const ids = traceRuns.get(runId);
+  return ids?.[ids.length - 1];
 }
 
 export function tracePokeOwner(runId: number): void {
   try {
-    traceOwnerPoke.get(runId)?.();
+    for (const id of traceRuns.get(runId) ?? []) {
+      try {
+        tracePokeByEntry.get(id)?.();
+      } catch {
+        // One dead component must not block the rest.
+      }
+    }
   } catch {
     // Cosmetic only.
   }
@@ -487,43 +494,26 @@ export function traceSync(
 export function endHistoryPhase(reason: string): void {
   traceHistoryPhase = false;
   traceBoundary(reason);
-  messageSeq++;
-  visibleBumpSeq = -1;
 }
 
-/** A message began. `isKnownTool` tells foreign tool calls (custom/MCP) from
- *  ours; those render outside the trace and therefore split it. */
+/** A message began. Lifecycle events end the history rebuild; runs now
+ *  merge freely across prose and user messages (newest-owner keeps the
+ *  block at the live edge, so rows never lift above content). Only foreign
+ *  tools and session events split. */
 export function traceOnMessageStart(event: unknown): void {
   try {
     // Any lifecycle event means the transcript is no longer being rebuilt.
     traceHistoryPhase = false;
-    const message = (event as { message?: { role?: string; display?: unknown } })?.message;
-    const role = message?.role;
-    if (role === "assistant") {
-      messageSeq++;
-    } else if (role !== "toolResult" && isVisibleMessage(role, message?.display)) {
-      // toolResult messages are not transcript blocks: they render inside the
-      // tool component that produced them, so they never split a run. Neither
-      // do messages that render nothing at all.
-      traceBoundary(`message:${role ?? "?"}`);
-    }
   } catch {
     // Cosmetic only.
   }
 }
 
-/** Streaming update: a turn whose visible content (prose or a thinking block)
- *  renders ABOVE its tool calls must start its own run, or merging would lift
- *  those rows above the content. Tool-only turns never split. Content that
- *  only follows the tools renders below the rows and changes nothing. */
+/** Streaming update: runs merge across visible content now (newest-owner
+ *  keeps every block at the live edge), so updates only end the rebuild. */
 export function traceOnMessageUpdate(event: unknown): void {
   try {
-    // Guard first: this fires per streaming delta.
-    if (visibleBumpSeq === messageSeq) return;
-    const message = (event as { message?: unknown })?.message;
-    if (!hasLeadingVisibleContent(message as { role?: unknown; content?: unknown })) return;
-    visibleBumpSeq = messageSeq;
-    traceSoftBoundary("leading-content");
+    traceHistoryPhase = false;
   } catch {
     // Cosmetic only.
   }

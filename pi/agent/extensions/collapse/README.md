@@ -104,14 +104,20 @@ proportional to the transcript (~2.3KB per tool row), not to elapsed time.
 ## Behaviour
 
 **One component per run.** Adjacent tool calls share a single component, so Pi
-emits one blank line per run instead of one per tool. A run continues across
-turn boundaries; only a turn whose *visible* content (prose or a thinking
-block) renders above its tools starts a new one. Rows therefore stay adjacent
-to whatever is actually on screen, and consecutive tool-only turns are
-gapless. A message that renders nothing — a custom message with
-`display: false` (extension notifications) or a system message — never starts
-a run: splitting there would leave a blank line with no content between the
-rows.
+emits one blank line per run instead of one per tool. A run keeps merging
+across prose and user messages — one session is one block. That is safe
+because the block lives at the NEWEST tool's slot: rows only ever move
+DOWN to the live edge, never above content, so merging never lifts rows
+above anything on screen. Older members render empty; the newest member
+paints the whole run (header, rows, footer) and every member repaints when
+ownership moves, so the block visibly chases the newest tool while it
+streams and rests there when settled. New rows therefore always appear
+where you are looking. Only structural boundaries split a run: foreign
+tools (their components render outside the trace) and transcript rebuilds
+(history keeps one run per tool through the render, then the plan merges
+contiguous groups just above the live edge). A message that renders
+nothing — a custom message with `display: false` or a system message —
+never splits either.
 
 **Render wrap.** The run owner's component still carries Pi's hardcoded
 leading blank line, which no renderer can suppress — so the extension shadows
@@ -146,9 +152,9 @@ tree navigation re-render history. During a rebuild each historical tool gets
 its own run, so old rows never move; live turns below resume merging.
 
 **Click depth.** Every run rests as one header line, live or settled
-(`>4 read · 1 thinking`, duration right). A live run keeps its spinning
-wheel in column 1 and the argument text written so far on the right
-instead of expanding while it streams. Clicking the header opens the
+(`>15 bash · 5 thinking · 1 write · 3 edit`, duration right). A live run keeps its spinning
+wheel in column 1 and the elapsed time on the right — the right column is
+always time, never arg chars. Clicking the header opens the
 per-row view plus a `▏Collapse` footer; each row still opens its stock
 cell at the depth Pi currently asks for:
 
@@ -178,11 +184,11 @@ clean stop, has tools) means a detach never hides anything but hidden-label
 rows; a lone thinking row with no host tool attaches to the nearest tool
 run in transcript order (next preferred, else previous) so its preview
 still has a home — except at the live edge: a thinking row whose message
-is not yet persisted never attaches across a turn-resetting boundary
-(user message, session switch, foreign tool — its tools have not rendered
-yet; the poll would otherwise teleport it into the previous turn).
-Same-turn content splits (trailing prose) never strand: the pass defers
-only across hard boundaries and retries once the turn's tools land. A host
+is not yet persisted never attaches across a structural boundary
+(session switch, foreign tool — its tools have not rendered yet; the poll
+would otherwise teleport it into the previous turn). User messages and
+prose merge, so the deferral almost never triggers; the poll retries once
+the turn's tools land. A host
 toolCall in the same message is direct evidence and always counts, and
 settled history keeps the old behavior. A re-detach moves the text
 (latest placement wins — Pi rebuilds re-add removed rows) instead of
@@ -191,7 +197,7 @@ hosted thinking block, middle-truncated to the row width with its size on
 the right, click to expand the full stashed text) renders iff the detach is
 confirmed — a miss degrades to the stock Pi row, never a duplicate.
 A completed thinking with nowhere to go (no tools in any reachable run)
-collapses in place as `>1 thinking  1m54s` instead of lingering — same
+collapses in place as `1 thinking  1m54s` instead of lingering — same
 header shape, frozen at completion. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
@@ -325,7 +331,7 @@ If rows show an unexpected gap, the boundary list names what split them.
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
 | `labels.ts` | tree-walk per-row thinking labels (settle + live preview), walker widget, reconcile |
-| `detach.ts` | opt-in thinking-row detach (env-gated experiment, default off) |
+| `detach.ts` | thinking-row detach (env-gated, default on) |
 | `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
 | `logic.ts` | pure helpers (summaries, truncation, label sizing) |
 
