@@ -128,7 +128,7 @@ function ticks(world, n = 3) {
 
 const msgId = (() => { let n = 0; return (p) => `${p ?? "m"}-${++n}`; })();
 
-function ctxFor(toolCallId, args) {
+function ctxFor(toolCallId, args, partial) {
   return {
     args, toolCallId,
     invalidate: () => {},
@@ -136,8 +136,8 @@ function ctxFor(toolCallId, args) {
     state: {},
     cwd: "/repo",
     executionStarted: true,
-    argsComplete: true,
-    isPartial: false,
+    argsComplete: !partial,
+    isPartial: !!partial,
     expanded: false,
     showImages: true,
     isError: false,
@@ -161,10 +161,15 @@ function mountAssistant(world, message, entryId) {
   return comp;
 }
 
-function mountTool(world, name, toolCallId, args) {
+function mountTool(world, name, toolCallId, args, partial) {
   const tool = world.tools.get(name);
   if (!tool) throw new Error(`unknown tool: ${name}`);
-  const ctx = ctxFor(toolCallId, args);
+  // Production re-invokes renderCall on invalidate and swaps the mounted
+  // component; without this the screenshot goes stale after polls, clicks,
+  // and toggles (the row is gone from the chat but the header never learns
+  // its thinking count, elapsed time freezes, clicks never open).
+  const ctx = ctxFor(toolCallId, args, partial);
+  ctx.invalidate = () => refreshTool(world, toolCallId);
   const comp = tool.renderCall(args, world.PI.theme, ctx);
   world.chat.addChild(comp);
   world.toolComps.set(toolCallId, { comp, ctx, name });
@@ -238,7 +243,14 @@ async function runLive(world, ops) {
       world.assistantComps.set(op.id, comp);
     } else if (op.op === "thinking" || op.op === "text") {
       const message = world.messages.get(op.id);
-      message.content.push(op.op === "thinking"
+      // Pi streams deltas into the same block; a new block starts only
+      // after another kind intervened. Stacking a block per delta would
+      // double the label text (the label joins a run's blocks).
+      const blocks = message.content;
+      const last = blocks[blocks.length - 1];
+      if (op.op === "thinking" && last?.type === "thinking") last.thinking += op.text;
+      else if (op.op === "text" && last?.type === "text") last.text += op.text;
+      else blocks.push(op.op === "thinking"
         ? { type: "thinking", thinking: op.text }
         : { type: "text", text: op.text });
       await world.fire("message_update", { message }, {});
@@ -248,7 +260,7 @@ async function runLive(world, ops) {
       message.content.push({ type: "toolCall", id: op.toolId, name: op.name, arguments: op.args ?? {} });
       await world.fire("message_update", { message }, {});
       world.assistantComps.get(op.id)?.updateContent(message, true);
-      mountTool(world, op.name, op.toolId, op.args ?? {});
+      mountTool(world, op.name, op.toolId, op.args ?? {}, op.partial);
       await world.fire("tool_execution_start", { toolName: op.name, toolCallId: op.toolId, args: op.args ?? {} }, {});
     } else if (op.op === "end") {
       const message = world.messages.get(op.id);
