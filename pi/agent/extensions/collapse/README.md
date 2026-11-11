@@ -202,8 +202,12 @@ stashed text) renders iff the detach is
 confirmed — a miss degrades to the stock Pi row, never a duplicate.
 Previews interleave with the tool rows in transcript order (each thinking
 anchors to its neighboring tool); walk-blind thinkings keep the legacy top
-position. A thinking row means a row with thinking content — prose-only
-rows are never walked as thinking rows, so skip counts stay honest.
+position. Placement never crosses a visible message: a thinking attaches
+only within its own segment (nearest in-segment tool run, next preferred),
+and a thinking past prose from every tool stands alone as `N thinking`
+instead of teleporting into a later block. A thinking row means a row
+with thinking content — prose-only rows are never walked as thinking rows,
+so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
 collapses in place as `1 thinking  1m54s` instead of lingering — same
 header shape, frozen at completion. Detach runs on

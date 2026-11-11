@@ -126,7 +126,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 77;
+const COLLAPSE_REVISION = 78;
 
 
 const WRAP_SLOT = "__collapseWrapTool";

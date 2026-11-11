@@ -2171,6 +2171,108 @@ function openRun(comp) {
     detach.resetDetachState?.();
   }
 
+  // 29i. thinking never attaches across a visible message: it joins the
+  // nearest in-segment tool run (backward here), not the run past prose.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piV = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piV);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const base = { invalidate() {}, lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: false, expanded: false,
+      showImages: true, isError: false };
+    const mk = (id, cmd) => ({ ...base, args: { command: cmd }, toolCallId: id });
+    const msgP = { role: "assistant", content: [{ type: "toolCall", id: "p1", name: "bash", arguments: {} }] };
+    const msgB = { role: "assistant", content: [{ type: "thinking", thinking: "mid thought" }], stopReason: "stop" };
+    const msgU = { role: "user", content: [{ type: "text", text: "hey" }] };
+    const msgC = { role: "assistant", content: [{ type: "toolCall", id: "n1", name: "bash", arguments: {} }] };
+    const entries = [
+      { id: "e1", type: "message", message: msgP },
+      { id: "e2", type: "message", message: msgB },
+      { id: "e3", type: "message", message: msgU },
+      { id: "e4", type: "message", message: msgC },
+    ];
+    const sm = { getEntries: () => entries };
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: sm });
+    // History phase: one run per tool (positions unknown yet).
+    bash.renderCall({ command: "echo prev" }, theme, mk("p1", "echo prev"));
+    bash.renderCall({ command: "echo next" }, theme, mk("n1", "echo next"));
+    const prevRun = mod.traceEntries.get("p1").runId;
+    const nextRun = mod.traceEntries.get("n1").runId;
+    const rowThink = { lastMessage: msgB, hiddenThinkingLabel: "\u2026mid thought 0.1k ch",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const chat = { children: [{ toolCallId: "p1" }, rowThink, { toolCallId: "n1" }],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piV, sm);
+    check("thinking crosses no visible message", r.detached === 1, JSON.stringify(r));
+    check("thinking joins the pre-prose run", (detach.runThinkingForTool("p1") ?? "").includes("mid thought"), detach.runThinkingForTool("p1") ?? "(none)");
+    check("post-prose run takes nothing", detach.runThinkingCount(nextRun) === 0, String(detach.runThinkingCount(nextRun)));
+    check("pre-prose run hosts it", detach.runThinkingCount(prevRun) === 1, String(detach.runThinkingCount(prevRun)));
+    detach.resetDetachState?.();
+  }
+
+  // 29j. thinking with tools only past a visible message stands alone
+  // (`N thinking` in place) instead of teleporting across the prose.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piW2 = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piW2);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const base = { invalidate() {}, lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: false, expanded: false,
+      showImages: true, isError: false };
+    const mk = (id, cmd) => ({ ...base, args: { command: cmd }, toolCallId: id });
+    const msgB = { role: "assistant", content: [{ type: "thinking", thinking: "lone thought" }], stopReason: "stop" };
+    const msgT = { role: "assistant", content: [{ type: "text", text: "a note" }], stopReason: "stop" };
+    const msgC = { role: "assistant", content: [{ type: "toolCall", id: "n1", name: "bash", arguments: {} }] };
+    const entries = [
+      { id: "e1", type: "message", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+      { id: "e2", type: "message", message: msgB },
+      { id: "e3", type: "message", message: msgT },
+      { id: "e4", type: "message", message: msgC },
+    ];
+    const sm = { getEntries: () => entries };
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: sm });
+    bash.renderCall({ command: "echo next" }, theme, mk("n1", "echo next"));
+    const rowThink = { lastMessage: msgB, hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const chat = { children: [rowThink, { toolCallId: "n1" }],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piW2, sm);
+    check("nothing past prose is taken", r.detached === 0 && chat.children.includes(rowThink), JSON.stringify(r));
+    await handlers.get("message_end")[0]({ message: msgB }, {});
+    check("lone thinking stands alone", (rowThink.hiddenThinkingLabel ?? "").includes("1 thinking"), rowThink.hiddenThinkingLabel);
+    detach.resetDetachState?.();
+  }
+
   // 30. fail-open coupling: replacement preview renders iff detach confirmed.
   {
     const mod = await reuseIndex();

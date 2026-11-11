@@ -243,10 +243,58 @@ export function detachPass(
         if (!entryIndex.has(message)) entryIndex.set(message, index);
       }
     });
-    /** Nearest run hosting a toolCall in entry order (forward, then back).
+    // toolCall id -> entry index of the message carrying it, for the
+    // segment gate below.
+    const toolEntryIdx = new Map<string, number>();
+    entryList.forEach((entry, index) => {
+      const content = (entry as { message?: { content?: unknown } })?.message?.content;
+      if (!Array.isArray(content)) return;
+      for (const block of content) {
+        const id = (block as { type?: unknown; id?: unknown })?.type === "toolCall"
+          ? (block as { id?: unknown }).id
+          : undefined;
+        if (typeof id === "string") toolEntryIdx.set(id, index);
+      }
+    });
+    /** Whether an entry message is visible to the user: a run boundary.
+     *  Mirrors planToolRuns (user / visible custom break runs) plus
+     *  assistant prose — a thinking-only message never does. */
+    const isEntryVisible = (message: unknown): boolean => {
+      if (!message || typeof message !== "object") return false;
+      const role = (message as { role?: unknown }).role;
+      if (role === "user") return true;
+      if (role === "assistant") {
+        const content = (message as { content?: unknown }).content;
+        return Array.isArray(content) && content.some((block) =>
+          (block as { type?: unknown })?.type === "text" &&
+          typeof (block as { text?: unknown }).text === "string" &&
+          (block as { text: string }).text.trim() !== "");
+      }
+      return false;
+    };
+    const isCustomEntryVisible = (entry: unknown): boolean =>
+      !!entry && typeof entry === "object" &&
+      (entry as { type?: unknown }).type === "custom_message" &&
+      (entry as { display?: unknown }).display !== false;
+    /** Segment gate: a thinking attaches only within its own visible
+     *  segment — never across a user message, agent prose, or visible
+     *  custom block. Unknown positions (live, unpersisted) allow: the
+     *  settled pass enforces the segment once entries land. */
+    const segmentClear = (thinkMsg: unknown, toolCallId: string): boolean => {
+      const ti = entryIndex.get(thinkMsg);
+      const ci = toolEntryIdx.get(toolCallId);
+      if (ti === undefined || ci === undefined) return true;
+      const lo = Math.min(ti, ci), hi = Math.max(ti, ci);
+      for (let k = lo + 1; k < hi; k++) {
+        if (isEntryVisible((entryList[k] as { message?: unknown })?.message) ||
+          isCustomEntryVisible(entryList[k])) return false;
+      }
+      return true;
+    };
+    /** Nearest tool hosting a toolCall in entry order (forward, then back).
      *  Covers trees whose tool components are not mounted (tests, virtual
      *  rows): the transcript order still places the thinking. */
-    const entryNeighborRun = (message: unknown, forward: boolean): number | undefined => {
+    const entryNeighborRun = (message: unknown, forward: boolean): { runId: number; toolCallId: string } | undefined => {
       const at = entryIndex.get(message);
       if (at === undefined) return undefined;
       const step = forward ? 1 : -1;
@@ -259,7 +307,7 @@ export function detachPass(
             : undefined;
           if (typeof id === "string") {
             const runId = traceEntries.get(id)?.runId;
-            if (runId !== undefined) return runId;
+            if (runId !== undefined) return { runId, toolCallId: id };
           }
         }
       }
@@ -279,7 +327,6 @@ export function detachPass(
       const item = ordered[i];
       if (item.kind === "tool") next = { runId: item.runId, toolCallId: item.toolCallId };
     }
-    const nextRun: (number | undefined)[] = nextTool.map((t) => t?.runId);
     /** Transcript anchor for a stashed thinking: the neighboring tool in
      *  the same run (next preferred, else previous). Cross-run neighbors
      *  do not anchor — the render only honors same-run ids. */
@@ -325,16 +372,27 @@ export function detachPass(
         const settled = byMessage.has(message);
         const guessOk = (candidate: number | undefined): number | undefined =>
           candidate !== undefined && (settled || isTurnCurrent(candidate)) ? candidate : undefined;
-        runId = guessOk(nextRun[i]) ?? guessOk(prev?.runId) ??
-          guessOk(entryNeighborRun(message, true)) ?? guessOk(entryNeighborRun(message, false));
+        // Segment gate (spec: no run spans a visible message): a guessed
+        // neighbor counts only with no user message, prose, or visible
+        // custom between the thinking and that tool. Next preferred, else
+        // previous — and a thinking past prose from every tool stands
+        // alone instead of teleporting.
+        const tryTool = (tool: { runId: number; toolCallId: string } | undefined): number | undefined => {
+          if (!tool) return undefined;
+          const g = guessOk(tool.runId);
+          if (g === undefined) return undefined;
+          return segmentClear(message, tool.toolCallId) ? g : undefined;
+        };
+        runId = tryTool(nextTool[i]) ?? tryTool(prev) ??
+          tryTool(entryNeighborRun(message, true)) ?? tryTool(entryNeighborRun(message, false));
         if (runId === undefined && !settled) {
           // Walk-blind trees (no tool components mounted): the most
           // recently rendered tool is the turn's own while its turn is
           // open. Same guard — a stale newest means the tools are still
-          // coming, so defer.
-          let newest: number | undefined;
-          for (const entry of traceEntries.values()) newest = entry.runId;
-          if (newest !== undefined && isTurnCurrent(newest)) runId = newest;
+          // coming, so defer. Same segment gate.
+          let newest: { runId: number; toolCallId: string } | undefined;
+          for (const [id, entry] of traceEntries) newest = { runId: entry.runId, toolCallId: id };
+          runId = tryTool(newest && isTurnCurrent(newest.runId) ? newest : undefined);
         }
       }
       const overrides = (row as { thinkingVisibilityOverrides?: unknown })
