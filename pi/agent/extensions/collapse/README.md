@@ -145,7 +145,9 @@ are touched and no prototype is modified. `/collapse` reports
 
 **Transcript rebuilds are safe.** Startup, compaction, session switch, fork and
 tree navigation re-render history. During a rebuild each historical tool gets
-its own run, so old rows never move; live turns below resume merging.
+its own run, so old rows never move; then the plan merges contiguous groups
+(split only on user and agent-to-user messages — thinking never splits a
+group) and live turns below resume merging.
 
 **Click depth.** Every run rests as one header line, live or settled
 (`>4 read · 1 thinking`, duration right). A live run keeps its spinning

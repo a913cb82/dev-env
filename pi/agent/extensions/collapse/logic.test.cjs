@@ -441,10 +441,10 @@ function check(name, cond, extra) {
       JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("assistant", [call("b", "bash")])])) === '[["a","b"]]');
     check("prose between splits",
       JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("user", [text("hi")]), msg("assistant", [call("b", "bash")])])) === '[["a"],["b"]]');
-    check("leading thinking splits",
-      JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("assistant", [think("hmm"), call("b", "bash")])])) === '[["a"],["b"]]');
-    check("thinking between tools splits",
-      JSON.stringify(plan([msg("assistant", [call("a", "read"), think("hmm"), call("b", "bash")])])) === '[["a"],["b"]]');
+    check("leading thinking never splits (hidden — not a user message)",
+      JSON.stringify(plan([msg("assistant", [call("a", "read")]), msg("assistant", [think("hmm"), call("b", "bash")])])) === '[["a","b"]]');
+    check("thinking between tools never splits",
+      JSON.stringify(plan([msg("assistant", [call("a", "read"), think("hmm"), call("b", "bash")])])) === '[["a","b"]]');
     check("trailing text does not split",
       JSON.stringify(plan([msg("assistant", [call("a", "read"), text("done")]), msg("assistant", [call("b", "bash")])])) === '[["a","b"]]');
     check("tool results do not split",

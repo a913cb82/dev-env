@@ -1338,11 +1338,13 @@ function openRun(comp) {
     check("history pass renders separately",
       h1.render(80).length === 1 && h2.render(80).length === 1 && h3.render(80).length === 1,
       `${h1.render(80).length}/${h2.render(80).length}/${h3.render(80).length}`);
-    // session_start sees the transcript: h1+h2 contiguous, h3 after prose.
+    // session_start sees the transcript: h1+h2 contiguous (thinking before
+    // AND between tools never splits), h3 after prose.
     const entries = [
       { type: "message", message: { role: "assistant", content: [
         { type: "thinking", thinking: "plan" },
         { type: "toolCall", id: "h1", name: "read", arguments: {} },
+        { type: "thinking", thinking: "mid" },
         { type: "toolCall", id: "h2", name: "read", arguments: {} },
       ] } },
       { type: "message", message: { role: "assistant", content: [
@@ -1356,6 +1358,8 @@ function openRun(comp) {
     openRun(read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })));
     const mergedOpen = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
     check("contiguous history merges", mergedOpen.length === 3, JSON.stringify(mergedOpen));
+    check("thinking between tools merges history",
+      plainText(mergedOpen[0]).endsWith("/a") && plainText(mergedOpen[1]).endsWith("/b"), JSON.stringify(mergedOpen));
     check("merged history keeps order",
       plainText(mergedOpen[0]).endsWith("/a") && plainText(mergedOpen[1]).endsWith("/b"), JSON.stringify(mergedOpen));
     openRun(bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })));

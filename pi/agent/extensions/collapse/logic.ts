@@ -644,11 +644,13 @@ export function planToolRuns(
     if (current.length > 0) groups.push(current);
     current = [];
   };
+  // Split ONLY on messages to the user (user messages, agent prose,
+  // visible customs). Hidden thinking is never a breakpoint: it detaches
+  // into the run, so consecutive think→tool turns merge into one block.
   const visible = (part: unknown): boolean => {
     if (!part || typeof part !== "object") return false;
-    const block = part as { type?: unknown; text?: unknown; thinking?: unknown };
+    const block = part as { type?: unknown; text?: unknown };
     if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0;
-    if (block.type === "thinking") return typeof block.thinking === "string" && block.thinking.trim().length > 0;
     return false;
   };
   if (!Array.isArray(entries)) return groups;
