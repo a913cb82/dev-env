@@ -106,11 +106,18 @@ export function isThinkingRow(node: unknown): node is {
 } {
   if (!node || typeof node !== "object") return false;
   const candidate = node as Record<string, unknown>;
-  return (
-    typeof candidate.setHiddenThinkingLabel === "function" &&
-    typeof candidate.updateContent === "function" &&
-    typeof (candidate.lastMessage as Record<string, unknown> | undefined)?.role === "string"
-  );
+  if (
+    typeof candidate.setHiddenThinkingLabel !== "function" ||
+    typeof candidate.updateContent !== "function" ||
+    typeof (candidate.lastMessage as Record<string, unknown> | undefined)?.role !== "string"
+  ) {
+    return false;
+  }
+  // A prose-only assistant row renders no thinking region: it is not a
+  // thinking row (walking it inflates detach skips and heals nothing).
+  const content = (candidate.lastMessage as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => (block as { type?: unknown } | null | undefined)?.type === "thinking");
 }
 
 

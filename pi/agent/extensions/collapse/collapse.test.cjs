@@ -2066,6 +2066,111 @@ function openRun(comp) {
     detach.resetDetachState?.();
   }
 
+  // 29g. previews interleave with tool rows in transcript order: each
+  // thinking renders next to the tools it informs, not clustered at top.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piY = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piY);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    // One registry (no callContext: it resets).
+    const base = { invalidate() {}, lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: false, expanded: false,
+      showImages: true, isError: false };
+    const mk = (id, cmd) => ({ ...base, args: { command: cmd }, toolCallId: id });
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    bash.renderCall({ command: "echo one" }, theme, mk("i1", "echo one"));
+    bash.renderCall({ command: "echo two" }, theme, mk("i2", "echo two"));
+    const mkRow = (text) => ({ lastMessage: { role: "assistant",
+        content: [{ type: "thinking", thinking: text }], stopReason: "stop" },
+      hiddenThinkingLabel: `\u2026${text} 0.1k ch`,
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } });
+    const row1 = mkRow("first thought");
+    const row2 = mkRow("second thought");
+    const chat = { children: [row1, { toolCallId: "i1" }, row2, { toolCallId: "i2" }],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piY);
+    check("both thinkings detach", r.detached === 2, JSON.stringify(r));
+    const comp = () => bash.renderCall({ command: "echo one" }, theme, mk("i1", "echo one"));
+    openRun(comp());
+    const lines = comp().render(90).map(plainText);
+    const at = (s) => lines.findIndex((l) => l.includes(s));
+    check("previews interleave in transcript order",
+      at("first thought") >= 0 && at("first thought") < at("echo one") &&
+      at("echo one") < at("second thought") && at("second thought") < at("echo two"),
+      JSON.stringify(lines));
+    check("preview starts with text, not an ellipsis",
+      lines.some((l) => l.startsWith("\u258ffirst")) && !lines.some((l) => l.startsWith("\u258f\u2026")),
+      JSON.stringify(lines));
+    detach.resetDetachState?.();
+  }
+
+  // 29h. walk-blind thinking (no tool components mounted) keeps the legacy
+  // top position: without neighbors there is nothing to interleave with.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map(), handlers = new Map();
+    const piZ = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piZ);
+    const detach = mod;
+    detach.resetDetachState?.();
+    delete process.env.COLLAPSE_HIDE_THINKING;
+    const bash = tools.get("bash");
+    const theme = { fg: (c, t) => t, style: (t) => t };
+    const base = { invalidate() {}, lastComponent: undefined, state: {}, cwd: "/repo",
+      executionStarted: true, argsComplete: true, isPartial: false, expanded: false,
+      showImages: true, isError: false };
+    const mk = (id, cmd) => ({ ...base, args: { command: cmd }, toolCallId: id });
+    bash.renderCall({ command: "echo one" }, theme, mk("j1", "echo one"));
+    bash.renderCall({ command: "echo two" }, theme, mk("j2", "echo two"));
+    const thinkMsg = { role: "assistant", content: [{ type: "thinking", thinking: "blind thought" }], stopReason: "stop" };
+    const rowBlind = { lastMessage: thinkMsg, hiddenThinkingLabel: "\u2026blind thought 0.1k ch",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+    const entries = [
+      { id: "e1", type: "message", message: { role: "assistant",
+        content: [{ type: "toolCall", id: "j1", name: "bash", arguments: {} }] } },
+      { id: "e2", type: "message", message: thinkMsg },
+      { id: "e3", type: "message", message: { role: "assistant",
+        content: [{ type: "toolCall", id: "j2", name: "bash", arguments: {} }] } },
+    ];
+    const sm = { getEntries: () => entries };
+    const chat = { children: [rowBlind],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+    const widgets = [];
+    const ui = { setWidget: (k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: sm });
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piZ, sm);
+    check("blind thinking attaches", r.detached === 1, JSON.stringify(r));
+    const comp = () => bash.renderCall({ command: "echo one" }, theme, mk("j1", "echo one"));
+    openRun(comp());
+    const lines = comp().render(90).map(plainText);
+    check("blind preview stays on top",
+      lines.findIndex((l) => l.includes("blind thought")) < lines.findIndex((l) => l.includes("echo one")),
+      JSON.stringify(lines));
+    detach.resetDetachState?.();
+  }
+
   // 30. fail-open coupling: replacement preview renders iff detach confirmed.
   {
     const mod = await reuseIndex();
@@ -2266,7 +2371,7 @@ function openRun(comp) {
       },
     };
     return {
-      lastMessage: { role: "assistant", content: [] },
+      lastMessage: { role: "assistant", content: [{ type: "thinking", thinking: "x" }] },
       hiddenThinkingLabel: "T",
       updateContent() {},
       setHiddenThinkingLabel(label) { this.hiddenThinkingLabel = label; },
@@ -2294,6 +2399,26 @@ function openRun(comp) {
     check("owner wrapped", res && res.wrapped === 1, JSON.stringify(res));
     const out = fake.render(100);
     check("leading blank stripped", out.length === 1 && out[0] === "› read /a", JSON.stringify(out));
+  }
+
+  // 34b. prose above the block keeps the blank: the run must not glue to
+  // a visible message (the missing blank the user reported).
+  {
+    resetTrace();
+    const read = piW.tools.get("read");
+    const { ctx } = callContext({ args: { path: "/b" }, toolCallId: "t-wrap2" });
+    read.renderCall(ctx.args, theme, ctx);
+    const prosePrev = {
+      lastMessage: { role: "assistant", content: [{ type: "text", text: "fixing the bug" }] },
+      hiddenThinkingLabel: "T",
+      updateContent() {},
+      setHiddenThinkingLabel() {},
+    };
+    const fake = toolComp("t-wrap2", "self", ["", "› read /b"]);
+    modW.captureWalkerTui({ children: [prosePrev, fake] });
+    modW.wrappingPass(piW);
+    const out = fake.render(100);
+    check("blank kept after prose", out.length === 2 && out[0] === "", JSON.stringify(out));
   }
 
   // 35. clicks re-base by exactly the stripped line (Pi rejects y<=0, delegates y-1)
@@ -2474,7 +2599,7 @@ function openRun(comp) {
     let origCalls = 0;
     const container = { children: [new Spacer(), label], removeChild(c) { const i = container.children.indexOf(c); if (i >= 0) container.children.splice(i, 1); } };
     const row = {
-      lastMessage: { role: "assistant", content: [] },
+      lastMessage: { role: "assistant", content: [{ type: "thinking", thinking: "x" }] },
       hiddenThinkingLabel: "T",
       setHiddenThinkingLabel() {},
       children: [container],

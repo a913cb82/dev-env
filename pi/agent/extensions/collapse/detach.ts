@@ -31,8 +31,13 @@ let liveHidden = new WeakSet<object>();
 const entryThinking = new Map<string, string>();
 
 /** Full thinking texts by trace run id for the replacement rows (a run can
- *  host several thinking-only messages; each keeps its own preview row). */
-const runThinking = new Map<number, string[]>();
+ *  host several thinking-only messages; each keeps its own preview row).
+ *  Each entry carries its transcript anchor: the neighboring tool in the
+ *  same run (before/after by toolCallId), so previews interleave with the
+ *  tool rows instead of clustering at the top. Unanchored entries (blind
+ *  trees, entry-order fallback) keep the legacy top position. */
+type ThinkingItem = { text: string; before?: string; after?: string };
+const runThinking = new Map<number, ThinkingItem[]>();
 
 /** Run ids with a confirmed detach: the ONLY gate for the preview row. */
 const hiddenRuns = new Set<number>();
@@ -105,6 +110,11 @@ export function isRunHidden(runId: number): boolean {
 
 /** Full stashed thinking texts for a hidden run (expansion view). */
 export function runThinkingTexts(runId: number): string[] {
+  return (runThinking.get(runId) ?? []).map((item) => item.text);
+}
+
+/** Stashed thinkings with their transcript anchors (see runThinking). */
+export function runThinkingItems(runId: number): ThinkingItem[] {
   return [...(runThinking.get(runId) ?? [])];
 }
 
@@ -116,7 +126,7 @@ export function runThinkingCount(runId: number): number {
 export function runThinkingText(runId: number): string | undefined {
   const texts = runThinking.get(runId);
   if (!texts || texts.length === 0) return undefined;
-  return texts.join("\n\n");
+  return texts.map((item) => item.text).join("\n\n");
 }
 
 /** Full stashed thinking text for a tool (diagnostics; follows run merges). */
@@ -166,7 +176,7 @@ function entriesOf(sm: unknown): Array<{ id?: string; message?: unknown }> {
  *  nothing and stays stock. */
 type OrderedItem =
   | { kind: "thinking"; parent: { removeChild?(c: unknown): void } | undefined; row: unknown }
-  | { kind: "tool"; runId: number };
+  | { kind: "tool"; runId: number; toolCallId: string };
 
 function collectOrdered(
   node: unknown,
@@ -182,7 +192,7 @@ function collectOrdered(
   if (typeof toolCallId === "string") {
     const runId = traceEntries.get(toolCallId)?.runId;
     if (runId !== undefined) {
-      out.push({ kind: "tool", runId });
+      out.push({ kind: "tool", runId, toolCallId });
       return;
     }
   }
@@ -260,18 +270,34 @@ export function detachPass(
     walkedTotal = ordered.length;
     walkedThinking = ordered.filter((o) => o.kind === "thinking").length;
     // Nearest tool run per position: next preferred (thinking usually
-    // precedes the tools it informs), else previous.
-    const nextRun: (number | undefined)[] = new Array(ordered.length);
-    let next: number | undefined;
+    // precedes the tools it informs), else previous. Tool ids ride along
+    // so stashed thinkings anchor to their transcript neighbors.
+    const nextTool: ({ runId: number; toolCallId: string } | undefined)[] = new Array(ordered.length);
+    let next: { runId: number; toolCallId: string } | undefined;
     for (let i = ordered.length - 1; i >= 0; i--) {
-      nextRun[i] = next;
-      if (ordered[i].kind === "tool") next = ordered[i].runId;
+      nextTool[i] = next;
+      const item = ordered[i];
+      if (item.kind === "tool") next = { runId: item.runId, toolCallId: item.toolCallId };
     }
-    let prev: number | undefined;
+    const nextRun: (number | undefined)[] = nextTool.map((t) => t?.runId);
+    /** Transcript anchor for a stashed thinking: the neighboring tool in
+     *  the same run (next preferred, else previous). Cross-run neighbors
+     *  do not anchor — the render only honors same-run ids. */
+    const anchorFor = (
+      index: number,
+      prevTool: { runId: number; toolCallId: string } | undefined,
+      homeRunId: number,
+    ): { before?: string; after?: string } => {
+      const next = nextTool[index];
+      if (next && next.runId === homeRunId) return { before: next.toolCallId };
+      if (prevTool && prevTool.runId === homeRunId) return { after: prevTool.toolCallId };
+      return {};
+    };
+    let prev: { runId: number; toolCallId: string } | undefined;
     for (let i = 0; i < ordered.length; i++) {
       const item = ordered[i];
       if (item.kind !== "thinking") {
-        if (item.kind === "tool") prev = item.runId;
+        if (item.kind === "tool") prev = { runId: item.runId, toolCallId: item.toolCallId };
         continue;
       }
       const { parent, row } = item;
@@ -299,7 +325,7 @@ export function detachPass(
         const settled = byMessage.has(message);
         const guessOk = (candidate: number | undefined): number | undefined =>
           candidate !== undefined && (settled || isTurnCurrent(candidate)) ? candidate : undefined;
-        runId = guessOk(nextRun[i]) ?? guessOk(prev) ??
+        runId = guessOk(nextRun[i]) ?? guessOk(prev?.runId) ??
           guessOk(entryNeighborRun(message, true)) ?? guessOk(entryNeighborRun(message, false));
         if (runId === undefined && !settled) {
           // Walk-blind trees (no tool components mounted): the most
@@ -392,9 +418,10 @@ export function detachPass(
       // Latest placement wins: Pi rebuilds re-add removed rows, so a second
       // detach of the same text moves it instead of duplicating it across
       // runs (which reads as one thinking per group and inflates counts).
+      // A re-detach in the same run refreshes the anchor instead.
       for (const [other, otherTexts] of runThinking) {
         if (other === runId) continue;
-        const at = otherTexts.indexOf(text);
+        const at = otherTexts.findIndex((item) => item.text === text);
         if (at >= 0) {
           otherTexts.splice(at, 1);
           if (otherTexts.length === 0) {
@@ -403,7 +430,10 @@ export function detachPass(
           }
         }
       }
-      if (!texts.includes(text)) texts.push(text);
+      const anchor = anchorFor(i, prev, runId);
+      const same = texts.findIndex((item) => item.text === text);
+      if (same >= 0) texts[same] = { text, ...anchor };
+      else texts.push({ text, ...anchor });
       runThinking.set(runId, texts);
       hiddenRuns.add(runId);
       tracePokeOwner(runId);
@@ -424,10 +454,12 @@ export function detachPass(
  *  budget is generous on purpose: the row itself middle-truncates to the
  *  terminal width, so the preview function must not pre-chop the text. */
 export function thinkingRowPreview(theme: any, text: string): string {
+  // No leading ellipsis: the row middle-truncates to its width, so the
+  // line always starts with real text and carries exactly one middle cut.
   const preview = thinkingPreview(text, 240);
   try {
-    return theme.italic(theme.fg("thinkingText", `… ${preview}`));
+    return theme.italic(theme.fg("thinkingText", preview));
   } catch {
-    return `… ${preview}`;
+    return preview;
   }
 }

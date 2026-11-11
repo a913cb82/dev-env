@@ -196,9 +196,14 @@ toolCall in the same message is direct evidence and always counts, and
 settled history keeps the old behavior. A re-detach moves the text
 (latest placement wins — Pi rebuilds re-add removed rows) instead of
 stacking duplicates across runs; and the replacement preview row (one per
-hosted thinking block, middle-truncated to the row width with its size on
-the right, click to expand the full stashed text) renders iff the detach is
+hosted thinking block, starting with real text and middle-truncated once by
+the row itself, with its size on the right, click to expand the full
+stashed text) renders iff the detach is
 confirmed — a miss degrades to the stock Pi row, never a duplicate.
+Previews interleave with the tool rows in transcript order (each thinking
+anchors to its neighboring tool); walk-blind thinkings keep the legacy top
+position. A thinking row means a row with thinking content — prose-only
+rows are never walked as thinking rows, so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
 collapses in place as `1 thinking  1m54s` instead of lingering — same
 header shape, frozen at completion. Detach runs on

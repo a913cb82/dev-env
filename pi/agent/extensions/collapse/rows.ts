@@ -11,7 +11,7 @@ import {
   isRunHidden,
   isRunThinkingOpen,
   runThinkingCount,
-  runThinkingTexts,
+  runThinkingItems,
   thinkingRowPreview,
   toggleRunThinking,
 } from "./detach.js";
@@ -415,10 +415,11 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
   // Replacement for detached Pi thinking rows (fail-open: renders only
   // when the detach pass confirmed this run's rows are gone — a missed
   // detach degrades to the stock Pi row, never a duplicate). One preview
-  // row per hosted thinking block, in transcript order.
-  const hiddenThinkings = isRunHidden(runId) ? runThinkingTexts(runId) : [];
+  // row per hosted thinking block, interleaved with the tool rows in
+  // transcript order via each thinking's anchor (before/after a tool of
+  // this run); unanchored entries keep the legacy top position.
   const thinkOpen = isRunThinkingOpen(runId);
-  for (const thinkingText of hiddenThinkings) {
+  const addPreview = (thinkingText: string): void => {
     const thinkingRow = thinkOpen
       ? new Text(thinkingText, liveOutputPad(pi), 0)
       : new CollapsedLine(thinkingRowPreview(theme, thinkingText), theme.fg("dim", formatCharCount(thinkingText.length)), liveOutputPad(pi), theme);
@@ -430,10 +431,32 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
         return { handled: true };
       }),
     );
+  };
+  const toolIds = traceRuns.get(runId) ?? [];
+  const inRun = new Set(toolIds);
+  const beforeMap = new Map<string, string[]>();
+  const afterMap = new Map<string, string[]>();
+  const topThinkings: string[] = [];
+  if (isRunHidden(runId)) {
+    for (const item of runThinkingItems(runId)) {
+      if (item.before !== undefined && inRun.has(item.before)) {
+        const list = beforeMap.get(item.before) ?? [];
+        list.push(item.text);
+        beforeMap.set(item.before, list);
+      } else if (item.after !== undefined && inRun.has(item.after)) {
+        const list = afterMap.get(item.after) ?? [];
+        list.push(item.text);
+        afterMap.set(item.after, list);
+      } else {
+        topThinkings.push(item.text);
+      }
+    }
   }
-  for (const id of traceRuns.get(runId) ?? []) {
+  for (const thinkingText of topThinkings) addPreview(thinkingText);
+  for (const id of toolIds) {
     const entry = traceEntries.get(id);
     if (!entry) continue;
+    for (const thinkingText of beforeMap.get(id) ?? []) addPreview(thinkingText);
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
       : (() => {
@@ -465,6 +488,7 @@ function buildTrace(runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI
         return { handled: true };
       }),
     );
+    for (const thinkingText of afterMap.get(id) ?? []) addPreview(thinkingText);
   }
   // Footer collapses the run back to its header. Row-open state is preserved.
   // The footer keeps the run rail (col 1) so the block margin stays even.
