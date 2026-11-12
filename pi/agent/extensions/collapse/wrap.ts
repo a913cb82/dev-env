@@ -277,13 +277,6 @@ function gluesToPrev(prev: unknown): boolean {
   }
 }
 
-/** Drop the leading spacers of a thinking row that opens directly under a
- *  tool row: after removal the row's first rendered line is its hidden
- *  label, glued to the tools above. Only spacers BEFORE the first
- *  non-spacer child go (a prose-first row keeps everything); the label
- *  itself is never touched. Returns spacers removed. Pi re-adds the
- *  spacer on its next content rebuild (streaming delta, visibility
- *  toggle), so the next pass simply re-applies — self-healing. */
 /** A row rebuilt by Pi can end up with more than one leading spacer (the
  *  resume path mounts rows before the extension repairs them, and Pi's
  *  updateContent appends rather than replaces). One blank belongs there;
@@ -315,6 +308,13 @@ function squeezeLeadingSpacers(row: unknown): number {
   }
 }
 
+/** Drop the leading spacers of a thinking row that opens directly under a
+ *  tool row: after removal the row's first rendered line is its hidden
+ *  label, glued to the tools above. Only spacers BEFORE the first
+ *  non-spacer child go (a prose-first row keeps everything); the label
+ *  itself is never touched. Returns spacers removed. Pi re-adds the
+ *  spacer on its next content rebuild (streaming delta, visibility
+ *  toggle), so the next pass simply re-applies — self-healing. */
 function dropLeadingSpacers(row: unknown, prev: unknown): number {
   try {
     if (!isThinkingRow(row)) return 0;

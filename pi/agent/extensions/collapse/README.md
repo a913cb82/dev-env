@@ -5,7 +5,7 @@ preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 
 ```
 ▏read /home/abrai/dev-env/src/app.ts:10-20          5.3k ch
-▏$ timeout 25 ls some/dist                          0.1k ch
+▏$ timeout 25 ls some/dist                          0.8k ch
 ▏grep flushTimers src/                              1.2k ch
 ```
 
@@ -49,7 +49,9 @@ it never promotes the following word to a command. Styling stops at 192
 tokens / 2048 characters (the row can never show more), so a pathological
 command cannot slow a repaint.
 
-Long rows cut in the middle, so the head and the count survive.
+Long rows cut in the middle, so the head and the count survive. Counts
+below 1000 read as exact characters (`42 ch`); the k-form starts where it
+carries information (`1.2k ch`).
 
 Every row's first glyph lands on column 2 — the same column as Pi's prose
 (`outputPad`), hidden-thinking rows (`Text` pad) and stock tool cells
@@ -147,7 +149,10 @@ are touched and no prototype is modified. `/collapse` reports
 tree navigation re-render history. During a rebuild each historical tool gets
 its own run, so old rows never move; then the plan merges contiguous groups
 (split only on user and agent-to-user messages — thinking never splits a
-group) and live turns below resume merging.
+group) and live turns below resume merging. Stashed thinking state follows
+those run reassignments: a thinking detached between the history render and
+the deferred plan keeps its preview instead of pointing at a run that no
+longer exists.
 
 **Click depth.** Every run rests as one header line, live or settled
 (`>4 read · 1 thinking`, duration right). A live run keeps its spinning
@@ -177,9 +182,9 @@ unconditional given visible thinking, so the only way to merge thinking into
 the gapless tool block is to detach the thinking from the transcript tree
 via the public `removeChild` — no message edits, no patching. Opt out with
 `COLLAPSE_HIDE_THINKING=0`. Three rules keep it safe: the SAFE predicate
-(`isSafeToDetach`, a mirror of Pi's own renderer — no text, all runs hidden,
-clean stop, has tools) means a text-free detach hides nothing but hidden-label
-rows. Mixed messages (visible prose plus hidden thinking — the common turn)
+(`isSafeToDetach`, a mirror of Pi's own renderer — no visible text, every
+thinking run hidden, a completed message, and no length / tool-less abort /
+error line) means a detach hides nothing but hidden-label rows. Mixed messages (visible prose plus hidden thinking — the common turn)
 partial-detach instead: only the thinking toggle children leave the row, the
 prose stays mounted, and the run still counts the thinking. Partial needs a
 completed message (streaming labels never flicker), our own label on the row
@@ -201,7 +206,7 @@ settled history keeps the old behavior. A re-detach moves the text
 stacking duplicates across runs; and the replacement preview row (one per
 hosted thinking block, starting with real text and middle-truncated once by
 the row itself, with its size on the right, click to expand the full
-stashed text) renders iff the detach is
+stashed text, styled like Pi's thinking block) renders iff the detach is
 confirmed — a miss degrades to the stock Pi row, never a duplicate.
 Previews interleave with the tool rows in transcript order (each thinking
 anchors to its neighboring tool); walk-blind thinkings keep the legacy top
@@ -239,10 +244,17 @@ that prose. A thinking that arrives after an earlier block's tools still
 attaches backward into it.
 
 Parity on a real transcript: `node replay/parity.cjs <session.jsonl>
-[--turns N]` replays the last N completed turns three ways (live, quit ->
-resume, /reload) and checks that they render the same collapsed AND opened
-screens, that no two collapsed blocks touch, and that thinking:hidden and
-thinking:visible put prose and tools in the same transcript order. The same
+[--turns N] [--order-turns N]` replays the last N completed turns three ways
+(live, quit -> resume, /reload) and checks that they render the same
+collapsed AND opened screens, that no two run blocks touch, and that
+thinking:hidden and thinking:visible put prose and tools in the same
+transcript order. The whole session can be checked structurally
+(`--turns 200`); order probes are substring matches, so a transcript that
+quotes its own screenshots is only ordered on the newest `--order-turns`
+turns (default 8), where each fragment is unique. A standalone
+`>N thinking` directly under a run is the intended shape for a thinking
+followed by its own message's prose: the standalone line is that message's
+first line, not a second run block. The same
 invariant lives in the replay suite: the two resume orders keep the same
 spacing (Pi appends on rebuild, so a remounted row could carry two leading
 spacers instead of one).
@@ -273,7 +285,7 @@ prose above always keeps its blank line. A thinking row means a row
 with thinking content — prose-only rows are never walked as thinking rows,
 so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
-collapses in place as `1 thinking  1m54s` instead of lingering — same
+collapses in place as `>1 thinking  1m54s` instead of lingering — same
 header shape, frozen at completion. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
@@ -372,10 +384,15 @@ any tool that never opted in.
 
 **Live headers show elapsed time.** A resting header carries the final
 duration on the right; a streaming one carries the time so far (ticking
-with the wheel), never arg chars — the right column is always time.
+with the wheel), never arg chars — the right column is always time. An open
+run shows the same clock in its `Collapse` footer, so the elapsed time never
+vanishes when the header does. **Failures surface at rest:** the header
+appends a red `N error` when any row in the run failed, so a broken tool is
+visible without opening the block.
 `/collapse` reports the last detach pass (`walked N (T thinking, M tools);
-attached A; homeless H; skipped S`): homeless that never drops to zero
-means the poll is not seeing the tools.
+attached A; skipped S`) with one counter per outcome, including `streaming`
+and `ownprose`: a `nohome` that never drops to zero means the poll is not
+seeing the tools.
 
 **Live rows.** Until a call has a result, an open run's row also streams
 the arguments its summary hides — the `write` body, both sides of an `edit`, the
@@ -407,7 +424,7 @@ If rows show an unexpected gap, the boundary list names what split them.
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
 | `labels.ts` | tree-walk per-row thinking labels (settle + live preview), walker widget, reconcile |
-| `detach.ts` | opt-in thinking-row detach (env-gated experiment, default off) |
+| `detach.ts` | thinking-row detach (on by default; `COLLAPSE_HIDE_THINKING=0` opts out) |
 | `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
 | `logic.ts` | pure helpers (summaries, truncation, label sizing) |
 
@@ -423,8 +440,10 @@ node collapse.test.cjs   # renderers, trace behaviour, click depth, diagnostics
 node replay.test.cjs     # headless Pi: real components, scripted transcripts
 ```
 
-Both unit suites run on plain Node via `jiti`, with the installed Pi bundle
-aliased; no network and no real terminal required.
+All three suites run on plain Node via `jiti`, with the installed Pi bundle
+aliased; no network and no real terminal required. The replay driver renders
+with real ANSI (not the marker theme the unit tests use), because marker tags
+count as visible characters and would narrow every row.
 
 ## Replay harness (`replay/`)
 

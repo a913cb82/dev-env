@@ -60,7 +60,6 @@ import {
   resetDetachState,
   runThinkingCount,
   runThinkingForTool,
-  runThinkingTexts,
 } from "./detach.js";
 export {
   detachDiag,
@@ -70,7 +69,6 @@ export {
   resetDetachState,
   runThinkingCount,
   runThinkingForTool,
-  runThinkingTexts,
 };
 import {
   captureWalkerTui,
@@ -125,12 +123,12 @@ import {
 export { armHistoryPhase };
 
 /** Tests reset the registry through this; production never calls it. */
-export { resetTraceState, traceEntries } from "./trace.js";
+export { applyPlannedRuns, resetTraceState, traceEntries } from "./trace.js";
 export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 86;
+const COLLAPSE_REVISION = 87;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -287,8 +285,18 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       detachPass(pi);
       wrappingPass(pi);
+      // Multi-line: the diagnostics are read by humans, and one wrapped
+      // paragraph buried the line that mattered.
       ctx.ui.notify(
-        `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}; ${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}; thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()}); wrap: ${wrapStatus()}; hidden: ${hiddenRunCount()} run(s); detach: ${detachDiag()}; ${breatheStatus()}; ${timingStatus()}${uncollapsedReport(pi)}`,
+        [
+          `collapse r${COLLAPSE_REVISION}: ${isHiddenThinking(pi) ? "compact rows (thinking hidden)" : "stock sections (thinking visible)"}`,
+          `${traceSummary()}; boundaries: ${boundaryReasons.join(" → ") || "none yet"}`,
+          `thinking label: default (Pi stock); thinking walk: ${walkerStatus()} (${streamStatus()})`,
+          `wrap: ${wrapStatus()}`,
+          `hidden: ${hiddenRunCount()} run(s); detach: ${detachDiag()}`,
+          `${breatheStatus()}`,
+          `${timingStatus()}${uncollapsedReport(pi)}`,
+        ].join("\n"),
       );
     },
   });
@@ -318,7 +326,7 @@ export default function (pi: ExtensionAPI) {
   // us their definition (getAllTools exposes metadata, not renderers). Sibling
   // extensions opt in through the global slot below; anything else is listed
   // here so a plain row is never a mystery.
-  const uncollapsedReport = (api: ExtensionAPI): string => {
+  function uncollapsedReport(api: ExtensionAPI): string {
     const own = new Set([...Object.keys(definitions), ...wrappedToolNames()]);
     let all: { name: string }[] = [];
     try {
@@ -328,7 +336,7 @@ export default function (pi: ExtensionAPI) {
     }
     const missing = all.map((tool) => tool.name).filter((name) => !own.has(name));
     return missing.length > 0 ? `; not collapsed (no definition access): ${missing.join(", ")}` : "";
-  };
+  }
 
   // Sibling extensions (for example subagents) cannot be inspected from the
   // outside: getAllTools returns metadata but not the execute function or the
@@ -415,7 +423,6 @@ export default function (pi: ExtensionAPI) {
       } catch {
         // No widget host (RPC/print): rows keep the stock label.
       }
-      reconcileThinkingLabels(pi);
       const sm = ctx.sessionManager as any;
       noteSessionManager(sm);
       const entries =
@@ -445,6 +452,7 @@ export default function (pi: ExtensionAPI) {
       // and the replacement preview row is keyed by the final run.
       detachPass(pi, sm);
       wrappingPass(pi);
+      reconcileThinkingLabels(pi);
     } catch {
       // Label update is cosmetic; never break startup.
     }
@@ -456,7 +464,6 @@ export default function (pi: ExtensionAPI) {
   const reconcileRows = () => {
     reconcileThinkingLabels(pi);
   };
-  pi.on("session_start", () => reconcileRows());
   pi.on("message_start", (event) => {
     traceOnMessageStart(event);
     reconcileRows();
@@ -478,7 +485,8 @@ export default function (pi: ExtensionAPI) {
     detachPass(pi);
     wrappingPass(pi);
   });
-  pi.on("tool_execution_start", () => {
+  pi.on("tool_execution_start", (event) => {
+    traceOnToolExecutionStart(event, isOwnTool);
     reconcileRows();
     // A tool row owned by the trace needs its wrap before the first paint.
     scheduleWrappingPass(pi);
@@ -490,11 +498,9 @@ export default function (pi: ExtensionAPI) {
   });
   // Tools that opted into collapsing (the global wrap slot) render their
   // own rows, so they merge like the built-ins; anything else still splits.
-  const isOwnTool = (name: string): boolean =>
-    !!makeLeftByName[name] || wrappedToolNames().includes(name);
-  pi.on("tool_execution_start", (event) => {
-    traceOnToolExecutionStart(event, isOwnTool);
-  });
+  function isOwnTool(name: string): boolean {
+    return !!makeLeftByName[name] || wrappedToolNames().includes(name);
+  }
   // Pi validates user_bash results (undefined or a valid result object):
   // never leak traceBoundary's return value through the arrow body.
   pi.on("user_bash", () => {

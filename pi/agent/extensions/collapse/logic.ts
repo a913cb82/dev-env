@@ -76,6 +76,10 @@ export function toolTimings(
 
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
+  // Below 1000 the k-form rounds every small result to "0.0k ch"/"0.1k ch",
+  // which reads as noise. Exact characters are more useful there; the k-form
+  // starts where it actually carries information.
+  if (n < 1000) return `${n} ch`;
   return `${(n / 1000).toFixed(1)}k ch`;
 }
 
@@ -713,29 +717,33 @@ export function planToolRuns(
   return groups;
 }
 
-/** Detach-safety predicate: detaching this assistant component from the
- *  transcript tree hides nothing but hidden-thinking label rows (plus the
- *  ignorable blank spacers Pi puts around them). Mirror of
- *  AssistantMessageComponent.updateContent: text renders per non-blank
- *  block; consecutive thinking blocks coalesce into runs (blank-only runs
- *  are skipped and never consume a run index); toolCall/image blocks never
- *  render; length/aborted/error lines render per stopReason. Requires at
- *  least one hidden thinking run, otherwise there is nothing to hide.
- */
-export function isSafeToDetach(
+/** Content facts shared by both detach predicates: one pass over the
+ *  message mirroring AssistantMessageComponent.updateContent. Text renders
+ *  per non-blank block; consecutive thinking blocks coalesce into runs
+ *  (blank-only runs are skipped and never consume a run index); toolCall
+ *  blocks render nothing. `allHidden` is false when any non-blank run is
+ *  visible, so a caller can refuse to hide only part of a message. */
+interface ThinkingScan {
+  hasVisibleText: boolean;
+  hasToolCalls: boolean;
+  hiddenRuns: number;
+  allHidden: boolean;
+}
+
+function scanThinkingContent(
   message: {
     content?: Array<{ type?: string; text?: string; thinking?: string }>;
-    stopReason?: string;
   } | null | undefined,
   hideThinkingBlock: boolean,
   thinkingVisibilityOverrides?: Map<number, boolean> | Record<number, boolean> | null,
-): boolean {
+): ThinkingScan | undefined {
   const content = message?.content;
-  if (!Array.isArray(content)) return false;
+  if (!Array.isArray(content)) return undefined;
   let hasVisibleText = false;
   let hasToolCalls = false;
   let runIndex = 0;
   let hiddenRuns = 0;
+  let allHidden = true;
   for (let i = 0; i < content.length; i++) {
     const block = content[i];
     if (block?.type === "text" && (block.text ?? "").trim() !== "") {
@@ -755,20 +763,38 @@ export function isSafeToDetach(
         thinkingVisibilityOverrides instanceof Map
           ? thinkingVisibilityOverrides.get(runIndex)
           : thinkingVisibilityOverrides?.[runIndex];
-      if ((override ?? hideThinkingBlock) !== true) return false;
+      if ((override ?? hideThinkingBlock) !== true) allHidden = false;
+      else hiddenRuns++;
       runIndex++;
-      hiddenRuns++;
     }
   }
-  if (hasVisibleText) return false;
-  if (hiddenRuns === 0) return false;
+  return { hasVisibleText, hasToolCalls, hiddenRuns, allHidden };
+}
+
+/** Detach-safety predicate: detaching this assistant component from the
+ *  transcript tree hides nothing but hidden-thinking label rows (plus the
+ *  ignorable blank spacers Pi puts around them). Requires at least one
+ *  hidden thinking run, no visible text, and a completed message; length /
+ *  tool-less abort/error lines would be lost with the row. */
+export function isSafeToDetach(
+  message: {
+    content?: Array<{ type?: string; text?: string; thinking?: string }>;
+    stopReason?: string;
+  } | null | undefined,
+  hideThinkingBlock: boolean,
+  thinkingVisibilityOverrides?: Map<number, boolean> | Record<number, boolean> | null,
+): boolean {
+  const scan = scanThinkingContent(message, hideThinkingBlock, thinkingVisibilityOverrides);
+  if (!scan) return false;
+  if (scan.hasVisibleText) return false;
+  if (scan.hiddenRuns === 0 || !scan.allHidden) return false;
   if (message?.stopReason === "length") return false;
   // A row that is still streaming can gain prose after its thinking, and the
   // prose would be lost with the row (the run then splits and the block
-  // flickers between a label and the collapsed cell). Only a completed
-  // message may leave the tree whole.
+  // flickers between a label and the collapsed cell). Pi reports "pending"
+  // while streaming; only a terminal stop reason counts as completed.
   if (!message?.stopReason || message.stopReason === "pending") return false;
-  if (!hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
+  if (!scan.hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
   return true;
 }
 
@@ -793,37 +819,12 @@ export function isPartialSafeToDetach(
   hideThinkingBlock: boolean,
   thinkingVisibilityOverrides?: Map<number, boolean> | Record<number, boolean> | null,
 ): boolean {
-  const content = message?.content;
-  if (!Array.isArray(content)) return false;
+  const scan = scanThinkingContent(message, hideThinkingBlock, thinkingVisibilityOverrides);
+  if (!scan) return false;
   if (message?.stopReason == null || message.stopReason === "pending") return false;
-  let hasToolCalls = false;
-  let runIndex = 0;
-  let hiddenRuns = 0;
-  for (let i = 0; i < content.length; i++) {
-    const block = content[i];
-    if (block?.type === "toolCall") {
-      hasToolCalls = true;
-    } else if (block?.type === "thinking") {
-      let nonBlank = false;
-      for (; i < content.length; i++) {
-        const peer = content[i];
-        if (peer?.type !== "thinking") break;
-        if ((peer.thinking ?? "").trim() !== "") nonBlank = true;
-      }
-      i--;
-      if (!nonBlank) continue;
-      const override =
-        thinkingVisibilityOverrides instanceof Map
-          ? thinkingVisibilityOverrides.get(runIndex)
-          : thinkingVisibilityOverrides?.[runIndex];
-      if ((override ?? hideThinkingBlock) !== true) return false;
-      runIndex++;
-      hiddenRuns++;
-    }
-  }
-  if (hiddenRuns === 0) return false;
+  if (scan.hiddenRuns === 0 || !scan.allHidden) return false;
   if (message?.stopReason === "length") return false;
-  if (!hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
+  if (!scan.hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
   return true;
 }
 

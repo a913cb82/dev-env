@@ -65,11 +65,11 @@ export function setStandaloneThinking(message: unknown, on: boolean): void {
     // Cosmetic only.
   }
 }
-/** Collapsed form for homeless thinking: `N thinking  DURATION`, sized
- *  to the label width. No `>` marker: this row IS the thinking (Pi toggles
- *  its full text natively), not a run that expands into rows. The duration
- *  shows once a full second elapsed; younger or untimed messages render
- *  the bare `N thinking`. Pure. */
+/** Collapsed form for homeless thinking: `>N thinking  DURATION`, sized
+ *  to the label width. The `>` marker makes it read as one more collapsed
+ *  block (a run header) rather than a stray row; Pi still toggles its full
+ *  text natively. The duration shows once a full second elapsed; younger
+ *  or untimed messages render the bare `>N thinking`. Pure. */
 export function standaloneThinkingLabel(count: number, durationMs: number | undefined, width: number): string {
   // A standalone thinking is a block of its own: same `>` marker as a run
   // header, so it reads as one more collapsed block rather than a stray row.

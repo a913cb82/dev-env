@@ -49,6 +49,8 @@ export interface TraceEntry extends CollapseSlots {
   // Turn stamp at first render: placement trusts a candidate run only
   // while no turn-resetting boundary fired since its tools rendered.
   turnSeq: number;
+  // Created while a history rebuild was in progress (never a live turn).
+  history?: boolean;
 }
 
 export type TimingSrc = "pi" | "history" | "fallback";
@@ -228,6 +230,16 @@ export function runHasLive(runId: number): boolean {
   return false;
 }
 
+/** Failed rows inside the run: the resting header shows the count, so an
+ *  error is visible without opening the block. */
+export function runErrorCount(runId: number): number {
+  let count = 0;
+  for (const id of traceRuns.get(runId) ?? []) {
+    if (traceEntries.get(id)?.isError) count++;
+  }
+  return count;
+}
+
 export function runDuration(runId: number): number | undefined {
   let start: number | undefined;
   let end: number | undefined;
@@ -253,11 +265,23 @@ export function runDuration(runId: number): number | undefined {
  *  context. Entries the planner could not place keep single-row runs. */
 const plannedRunById = new Map<string, number>();
 
+/** Run ids are an implementation detail: a history re-plan reassigns every
+ *  entry to a fresh run. Modules that key state by run id (detach's stashed
+ *  thinkings) register here so their state moves with the entries instead of
+ *  pointing at a run that no longer exists. */
+type RunRemapHook = (oldToNew: Map<number, number>) => void;
+let runRemapHook: RunRemapHook | undefined;
+
+export function registerRunRemap(hook: RunRemapHook): void {
+  runRemapHook = hook;
+}
+
 export function applyPlannedRuns(groups: string[][], keepLivePointer = false): void {
   traceBump();
   plannedRunById.clear();
   const byId = new Map(traceEntries);
   const planned = new Set<string>();
+  const oldToNew = new Map<number, number>();
   traceRuns.clear();
   traceOwnerPoke.clear();
   runTurnSeq.clear();
@@ -267,7 +291,9 @@ export function applyPlannedRuns(groups: string[][], keepLivePointer = false): v
     traceRunId++;
     const runId = traceRunId;
     for (const id of ids) {
-      byId.get(id)!.runId = runId;
+      const entry = byId.get(id)!;
+      if (entry.runId !== runId) oldToNew.set(entry.runId, runId);
+      entry.runId = runId;
       planned.add(id);
       plannedRunById.set(id, runId);
     }
@@ -290,9 +316,19 @@ export function applyPlannedRuns(groups: string[][], keepLivePointer = false): v
   for (const ids of orphans.values()) {
     const live = ids.some((id) => byId.get(id)!.history !== true);
     traceRunId++;
-    for (const id of ids) byId.get(id)!.runId = traceRunId;
-    traceRuns.set(traceRunId, [...ids]);
-    if (live) lastLiveRun = traceRunId;
+    const runId = traceRunId;
+    for (const id of ids) {
+      const entry = byId.get(id)!;
+      if (entry.runId !== runId) oldToNew.set(entry.runId, runId);
+      entry.runId = runId;
+    }
+    traceRuns.set(runId, [...ids]);
+    // A live orphan keeps the turn it rendered in; without the stamp the
+    // next thinking guess would defer as if a turn boundary had fired.
+    if (live) {
+      lastLiveRun = runId;
+      runTurnSeq.set(runId, hardBoundarySeq);
+    }
   }
   // traceRunId always names the run the next tool joins. With live entries
   // in flight it must stay on the newest live run, or the next tool opens a
@@ -306,6 +342,11 @@ export function applyPlannedRuns(groups: string[][], keepLivePointer = false): v
   // live tool must start a fresh run.
   if (keepLivePointer && lastLiveRun !== undefined) traceRunId = lastLiveRun;
   else traceRunId++;
+  try {
+    runRemapHook?.(oldToNew);
+  } catch {
+    // A remap listener must never break the re-plan.
+  }
 }
 
 /** Bumped on every observable change to run state (new/updated entry, run

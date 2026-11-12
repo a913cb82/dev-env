@@ -3,12 +3,19 @@
 // Three invariants, checked on the same transcript:
 //   1. thinking:hidden and thinking:visible render the same ORDER of things
 //      (user text, assistant prose, thinking, tool calls).
-//   2. two collapsed blocks never sit next to each other without a visible
-//      message between them.
+//   2. two run blocks never sit next to each other without a visible message
+//      between them. A standalone `>N thinking` is the first line of its own
+//      message row, so it may follow a run (its prose is below).
 //   3. live, /reload and quit->resume (/reload with fresh mount) produce the
 //      same screenshot, both for collapsed blocks and for opened ones.
 //
-//   node replay/parity.cjs <session.jsonl> [--turns N] [--width 100]
+//   node replay/parity.cjs <session.jsonl> [--turns N] [--order-turns N] [--width 100]
+//
+// A real transcript quotes its own screenshots, and probes are substring
+// matches: ordering is reliable on a slice whose text is unique, not on a
+// whole session full of self-quotes. `--turns` sets the render slice; order
+// is checked on the newest `--order-turns` of it (default 8). The
+// live/resume/reload and adjacency checks always cover the whole slice.
 //
 // Exits non-zero when a check fails, so it can gate a commit.
 const fs = require("node:fs");
@@ -88,13 +95,38 @@ function toolText(m) {
 // ---------------------------------------------------------------------------
 const clean = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 
+/** Text lines a Markdown renderer shows as prose: fenced blocks are code,
+ *  and the parity scans blank them (a quoted screenshot must not read as a
+ *  live block), so a probe taken from a fence could never match. */
+function proseLines(text) {
+  const out = [];
+  let fenced = false;
+  for (const raw of String(text ?? "").split("\n")) {
+    if (raw.trim().startsWith("```")) {
+      fenced = !fenced;
+      continue;
+    }
+    if (!fenced) out.push(raw);
+  }
+  return out;
+}
+
 function probes(messages) {
   const out = [];
   const push = (kind, text) => {
-    // Renderers wrap and middle-truncate: match the first LINE long enough
-    // to be distinctive, not a fragment that spans a newline.
-    const line = String(text ?? "").split("\n")
-      .map((l) => clean(l).replace(/^[\u2502>\u258f]+\s*/, ""))
+    // Tool rows show ONE line: the row's head is the first characters of the
+    // collapsed argument text, not of its first newline-separated line (a
+    // "set -e" first line is too short, and the next line falls in the
+    // middle the row cuts away). Prose keeps its line structure and drops
+    // fenced code.
+    const source = kind === "tool" ? [clean(text)] : proseLines(text);
+    const line = source
+      .map((l) => clean(l)
+        .replace(/^[\u2502>\u258f]+\s*/, "")
+        // Markdown consumes emphasis, code and heading markers before
+        // rendering; the screenshot has the visible text only.
+        .replace(/^#{1,6}\s*/, "")
+        .replace(/\*\*|__|`/g, ""))
       .find((l) => l.length >= 10);
     if (!line) return;
     out.push({ kind, frag: line.slice(0, Math.min(10, line.length)) });
@@ -135,11 +167,40 @@ function lineFits(kind, line) {
   return /^\s*[^\s│┃▏>╭╰]/.test(line);
 }
 
+// A real transcript quotes screenshots in fenced code blocks: those lines
+// can start with `>` or `▏` and would otherwise read as live blocks/rows.
+// Blank them out (same length, so indices stay meaningful) before scanning.
+function unfenced(lines) {
+  let fenced = false;
+  let openedAt = -1;
+  return lines.map((line, i) => {
+    if (line.trim().startsWith("```")) {
+      fenced = !fenced;
+      openedAt = fenced ? i : -1;
+      return "";
+    }
+    // A thinking block can end mid-fence; without a cap one unterminated
+    // fence would blank the rest of the transcript and hide real adjacency.
+    if (fenced && i - openedAt > 200) fenced = false;
+    return fenced ? "" : line;
+  });
+}
+
 function orderViolations(lines, list, { tools = true } = {}) {
+  // Search the raw screenshot, fences included: quoted code is visible text
+  // too, and probes are already restricted to fragments unique in the slice.
+  // Only the adjacency scan needs fenced lines excluded (a quoted `>` header
+  // is not a live block).
   const problems = [];
+  // Repeated fragments (the same command or phrase in two turns) cannot be
+  // ordered by substring search: they match the first occurrence, not the
+  // one this probe names. Check only probes unique in this slice.
+  const counts = new Map();
+  for (const p of list) counts.set(`${p.kind}|${p.frag}`, (counts.get(`${p.kind}|${p.frag}`) ?? 0) + 1);
   let cursor = 0;
   for (const probe of list) {
     if (!tools && probe.kind === "tool") continue;
+    if ((counts.get(`${probe.kind}|${probe.frag}`) ?? 0) > 1) continue;
     let at = -1;
     for (let i = cursor; i < lines.length; i++) {
       if (lineFits(probe.kind, lines[i]) && lines[i].includes(probe.frag)) { at = i; break; }
@@ -160,18 +221,42 @@ function orderViolations(lines, list, { tools = true } = {}) {
 // Two collapsed blocks may not touch. A block is a `>` line (header or
 // standalone thinking); rows are `▏`/`┃`/blank; anything else is a visible
 // message and resets the rule.
-function adjacencyViolations(lines) {
+function adjacencyViolations(rawLines) {
+  const lines = unfenced(rawLines);
   const problems = [];
-  let lastBlock = -1;
+  // A standalone thinking (`>N thinking`) is the first line of an assistant
+  // message that carries its own prose below: it is a visible-message start,
+  // not a second run block. A run header directly under one is still wrong
+  // (a thinking-only message must attach to a run, not precede one).
+  let lastRun = -1;
+  let lastStandalone = -1;
   lines.forEach((line, i) => {
     const t = line.trim();
     if (t === "" || t.startsWith("▏") || t.startsWith("┃") || t.startsWith("│")) return;
-    if (t.startsWith(">")) {
-      if (lastBlock >= 0) problems.push(`blocks at lines ${lastBlock} and ${i} with nothing visible between:\n  ${lines[lastBlock]}\n  ${line}`);
-      lastBlock = i;
+    // Our block headers start `>N `; a prose blockquote (`> 3 bash`) is a
+    // visible message, not a block.
+    if (/^>\d/.test(t)) {
+      const standalone = /^>\d+ thinking\b/.test(t);
+      // run -> standalone is the intended shape for a thinking followed by
+      // its own message's prose (the standalone IS that message's first
+      // line). standalone -> anything, and run -> run, have nothing visible
+      // between them.
+      if (!standalone && (lastRun >= 0 || lastStandalone >= 0)) {
+        problems.push(`blocks at lines ${lastRun >= 0 ? lastRun : lastStandalone} and ${i} with nothing visible between:\n  ${lines[lastRun >= 0 ? lastRun : lastStandalone]}\n  ${line}`);
+      } else if (standalone && lastStandalone >= 0) {
+        problems.push(`two standalone blocks at lines ${lastStandalone} and ${i}:\n  ${lines[lastStandalone]}\n  ${line}`);
+      }
+      if (standalone) {
+        lastStandalone = i;
+        lastRun = -1;
+      } else {
+        lastRun = i;
+        lastStandalone = -1;
+      }
       return;
     }
-    lastBlock = -1;
+    lastRun = -1;
+    lastStandalone = -1;
   });
   return problems;
 }
@@ -188,10 +273,12 @@ async function main() {
     return i > 0 ? Number(process.argv[i + 1]) : def;
   };
   const turns = arg("--turns", 3);
+  const orderTurns = arg("--order-turns", Math.min(turns, 8));
   const width = arg("--width", 100);
-  const messages = sliceTurns(readMessages(file), turns);
+  const allMessages = readMessages(file);
+  const messages = sliceTurns(allMessages, turns);
   const ops = turnOps(messages);
-  const list = probes(messages);
+  const list = probes(sliceTurns(allMessages, orderTurns));
 
   const PI = await driver.loadPi();
   const worlds = {};
@@ -251,6 +338,12 @@ async function main() {
       } catch { /* structure miss, compared instead */ }
     }
     openDumps[name] = driver.dump(copy).lines;
+    if (process.env.PARITY_DUMP) {
+      require("node:fs").writeFileSync(
+        `${process.env.PARITY_DUMP}.opened.${name}.txt`,
+        openDumps[name].join("\n"),
+      );
+    }
   }
   for (const other of ["resume", "reload"]) {
     const name = `opened: live == ${other}`;

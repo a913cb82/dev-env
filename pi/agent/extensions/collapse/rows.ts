@@ -18,6 +18,7 @@ import {
 import {
   isRunOpen,
   runDuration,
+  runErrorCount,
   runHasLive,
   runToolNames,
   toggleRunOpen,
@@ -105,7 +106,9 @@ export class CollapsedLine implements Component {
     // (labelBudget: pad + (cols-1-2*pad) is the label's last column), and
     // clamp to the render width so a narrower host never overflows.
     const cols = currentColumns();
-    const target = Math.max(8, Math.min(width, (cols ?? width) - 1 - this.pad));
+    // Never render wider than the host asked for, even for a degenerate
+    // width: Math.max(8, ...) used to overflow a very narrow pane.
+    const target = Math.max(1, Math.min(width, (cols ?? width) - 1 - this.pad));
     // No trailing space after the rail: it occupies column 1 alone, so the
     // first content glyph still lands on column 2 — the column Pi's prose
     // (outputPad), hidden-thinking rows (Text pad) and stock tool cells
@@ -121,7 +124,8 @@ export class CollapsedLine implements Component {
       left = truncateMiddleWidth(this.left, available);
     }
     const gap = this.right ? Math.max(1, target - prefixWidth - visibleWidth(left) - rightWidth) : 0;
-    return [`${prefix}${left}${" ".repeat(gap)}${this.right}`];
+    const line = `${prefix}${left}${" ".repeat(gap)}${this.right}`;
+    return [visibleWidth(line) > width ? sliceByColumn(line, 0, Math.max(0, width)) : line];
   }
 
   invalidate(): void {}
@@ -390,25 +394,34 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
   // container is the extension's own component — tag it with the run's ids
   // so the detach walk (neighbors, anchors, segment gate) sees the tools.
   (trace as { traceToolIds?: string[] }).traceToolIds = [...ids];
-  const duration = formatRunDuration(runDuration(runId));
+  // Time column: elapsed while live, frozen duration once settled. Never arg
+  // chars — the right column is always time.
+  const timeRight = (live: boolean): string => {
+    if (!live) {
+      const duration = formatRunDuration(runDuration(runId));
+      return duration ? theme.fg("dim", duration) : "";
+    }
+    let start: number | undefined;
+    for (const id of ids) {
+      const s = traceEntries.get(id)?.startedAt;
+      if (typeof s === "number") start = start === undefined ? s : Math.min(start, s);
+    }
+    const elapsed = start === undefined ? undefined : Date.now() - start;
+    return elapsed !== undefined && elapsed >= 0 ? theme.fg("dim", formatRunDuration(elapsed)) : "";
+  };
+  const baseSummary = summarizeRun(runToolNames(runId), runThinkingCount(runId));
+  const errors = runErrorCount(runId);
+  // Errors must be visible while the block rests closed: opening every run to
+  // discover a failure defeats the one-line view.
+  const summary = errors > 0
+    ? `${baseSummary}${baseSummary ? " · " : ""}${theme.fg("error", `${errors} error`)}`
+    : baseSummary;
   // Run-level header: every run rests as one line. Click opens the per-row
   // view below. While entries stream the header carries the live wheel
-  // and the elapsed time; settled runs show the final duration. Time is
-  // always on the right — never arg chars.
+  // and the elapsed time; settled runs show the final duration.
   if (!isRunOpen(runId)) {
     const live = runHasLive(runId);
-    const summary = summarizeRun(runToolNames(runId), runThinkingCount(runId));
-    let right = duration ? theme.fg("dim", duration) : "";
-    if (live) {
-      let start: number | undefined;
-      for (const id of ids) {
-        const s = traceEntries.get(id)?.startedAt;
-        if (typeof s === "number") start = start === undefined ? s : Math.min(start, s);
-      }
-      const elapsed = start === undefined ? undefined : Date.now() - start;
-      right = elapsed !== undefined && elapsed >= 0 ? theme.fg("dim", formatRunDuration(elapsed)) : "";
-    }
-    const header = new CollapsedLine(summary, right, liveOutputPad(pi), theme, live, live ? undefined : ">");
+    const header = new CollapsedLine(summary, timeRight(live), liveOutputPad(pi), theme, live, live ? undefined : ">");
     trace.addChild(
       new MouseRegion(header, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -428,7 +441,7 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
   const thinkOpen = isRunThinkingOpen(runId);
   const addPreview = (thinkingText: string): void => {
     const thinkingRow = thinkOpen
-      ? new Text(thinkingText, liveOutputPad(pi), 0)
+      ? new Text(theme.italic(theme.fg("thinkingText", thinkingText)), liveOutputPad(pi), 0)
       : new CollapsedLine(thinkingRowPreview(theme, thinkingText), theme.fg("dim", formatCharCount(thinkingText.length)), liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
@@ -500,8 +513,9 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
   // Footer collapses the run back to its header. Row-open state is preserved.
   // The footer keeps the run rail (col 1) so the block margin stays even.
   if (ids.length >= 1) {
-    const footerRight = duration ? theme.fg("dim", duration) : "";
-    const footer = new CollapsedLine("Collapse", footerRight, liveOutputPad(pi), theme, false);
+    // The footer mirrors the header's time column, including while a live
+    // run is open (the header it replaced is not on screen then).
+    const footer = new CollapsedLine("Collapse", timeRight(runHasLive(runId)), liveOutputPad(pi), theme, false);
     trace.addChild(
       new MouseRegion(footer, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -597,8 +611,6 @@ function stockBox(theme: Theme, state: CollapseSlots, isPartial: unknown, isErro
  *  settled rows would stay stale without a poke through their invalidators.
  *  (No toggle event exists, hence the poll below.) Cleared on session_start. */
 const collapsePoke = new Set<object>();
-let collapseSawUI = false;
-let collapseLastHidden: boolean | undefined;
 
 /** Register a tool instance for visibility-toggle pokes (see collapsePoke). */
 function trackCollapse(state: CollapseSlots, context: any): void {
@@ -729,8 +741,6 @@ export function clearCollapsePokes(): void {
  *  baselines so a render test starts from a known world. */
 export function resetRowsState(): void {
   collapsePoke.clear();
-  collapseSawUI = false;
-  collapseLastHidden = undefined;
 }
 
 /** Invalidate every known tool: the visibility toggle changes the render mode

@@ -40,14 +40,16 @@ function check(name, cond, extra) {
 (async () => {
   const logic = await jiti.import(path.join(__dirname, "logic.ts"));
 
-  // formatCharCount (always k-form, matching the 5.3k / 0.1k / 1.5k examples)
-  check("count 0", logic.formatCharCount(0) === "0.0k ch", logic.formatCharCount(0));
-  check("count 100", logic.formatCharCount(100) === "0.1k ch", logic.formatCharCount(100));
+  // formatCharCount: exact characters below 1000 (k-form rounded every small
+  // result to 0.0k/0.1k), one decimal in k above it.
+  check("count 0", logic.formatCharCount(0) === "0 ch", logic.formatCharCount(0));
+  check("count 42", logic.formatCharCount(42) === "42 ch", logic.formatCharCount(42));
+  check("count 999", logic.formatCharCount(999) === "999 ch", logic.formatCharCount(999));
   check("count 1000", logic.formatCharCount(1000) === "1.0k ch", logic.formatCharCount(1000));
   check("count 1500", logic.formatCharCount(1500) === "1.5k ch", logic.formatCharCount(1500));
   check("count 5300", logic.formatCharCount(5300) === "5.3k ch", logic.formatCharCount(5300));
   check("count 12345", logic.formatCharCount(12345) === "12.3k ch", logic.formatCharCount(12345));
-  check("count negative", logic.formatCharCount(-5) === "0.0k ch", logic.formatCharCount(-5));
+  check("count negative", logic.formatCharCount(-5) === "0 ch", logic.formatCharCount(-5));
 
   // splitDirBase
   check(
@@ -161,10 +163,10 @@ function check(name, cond, extra) {
   }
 
   // buildThinkingLabel
-  check("label empty", logic.buildThinkingLabel("") === "Thinking… 0.0k ch", JSON.stringify(logic.buildThinkingLabel("")));
+  check("label empty", logic.buildThinkingLabel("") === "Thinking… 0 ch", JSON.stringify(logic.buildThinkingLabel("")));
   check(
     "label short",
-    logic.buildThinkingLabel("hello") === "Thinking hello 0.0k ch",
+    logic.buildThinkingLabel("hello") === "Thinking hello 5 ch",
     JSON.stringify(logic.buildThinkingLabel("hello")),
   );
   {
@@ -333,9 +335,9 @@ function check(name, cond, extra) {
     const short = logic.thinkingLabelForWidth("hello", 80);
     check("label no prefix", visible(short).startsWith("hello"), JSON.stringify(short));
     check("label short fills width", visible(short).length === 77, `${visible(short).length}`);
-    check("label short count", short.endsWith("\x1b[23;23m0.0k ch"), JSON.stringify(short.slice(-20)));
-    check("label only count leaves italic", (short.match(/\x1b\[23;23m/g) ?? []).length === 1 && short.endsWith("\x1b[23;23m0.0k ch"), JSON.stringify(short.slice(-20)));
-    check("label visible matches plain pad", visible(short) === logic.padLabel("hello", "0.0k ch", 77), JSON.stringify(visible(short)));
+    check("label short count", short.endsWith("\x1b[23;23m5 ch"), JSON.stringify(short.slice(-20)));
+    check("label only count leaves italic", (short.match(/\x1b\[23;23m/g) ?? []).length === 1 && short.endsWith("\x1b[23;23m5 ch"), JSON.stringify(short.slice(-20)));
+    check("label visible matches plain pad", visible(short) === logic.padLabel("hello", "5 ch", 77), JSON.stringify(visible(short)));
 
     const long = logic.thinkingLabelForWidth("a".repeat(1500), 100);
     check("label long fills width", visible(long).length === 97, `${visible(long).length}`);

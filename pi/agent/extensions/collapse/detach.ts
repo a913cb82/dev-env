@@ -19,16 +19,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { hasVisibleProse, isThinkingRow, setStandaloneThinking, walkerTui } from "./labels.js";
-import { traceEntries, tracePokeOwner, isTurnCurrent } from "./trace.js";
+import { registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent } from "./trace.js";
 
 /** Entry ids whose thinking row is confirmed detached (history + adopted). */
 const hiddenEntryIds = new Set<string>();
 
 /** Live messages detached before persistence assigned an entry id. */
 let liveHidden = new WeakSet<object>();
-
-/** Full thinking text by entry id (history) for the replacement row. */
-const entryThinking = new Map<string, string>();
 
 /** Full thinking texts by trace run id for the replacement rows (a run can
  *  host several thinking-only messages; each keeps its own preview row).
@@ -47,8 +44,19 @@ const runThinkingOpen = new Set<number>();
 
 /** Skip reasons for the last pass (see detachDiag): pinpoints why rows
  *  stay mounted instead of guessing. */
-type SkipReasons = { role: number; nohome: number; unsafe: number; empty: number; parent: number; remove: number };
-const newSkipReasons = (): SkipReasons => ({ role: 0, nohome: 0, unsafe: 0, empty: 0, parent: 0, remove: 0 });
+type SkipReasons = {
+  role: number;
+  nohome: number;
+  unsafe: number;
+  empty: number;
+  parent: number;
+  remove: number;
+  streaming: number;
+  ownprose: number;
+};
+const newSkipReasons = (): SkipReasons => ({
+  role: 0, nohome: 0, unsafe: 0, empty: 0, parent: 0, remove: 0, streaming: 0, ownprose: 0,
+});
 
 /** Thinking-toggle children (Pi wraps each hidden-thinking label in a
  *  MouseRegion) whose inner text carries our label: exactly the children
@@ -86,7 +94,6 @@ export function detachDiag(): string {
 export function resetDetachState(): void {
   hiddenEntryIds.clear();
   liveHidden = new WeakSet<object>();
-  entryThinking.clear();
   runThinking.clear();
   hiddenRuns.clear();
   runThinkingOpen.clear();
@@ -98,6 +105,43 @@ export function noteSessionManager(sm: unknown): void {
   if (sm) lastSessionManager = sm;
 }
 
+/** Move stashed thinking state when trace reassigns run ids (history
+ *  re-plan). Without this, a thinking detached between the history render
+ *  and the deferred plan keeps its old run id: the row is already out of the
+ *  tree, the new run reports no thinking, and the preview disappears.
+ *  Merging into an existing run dedupes by text (a re-detach moves, never
+ *  duplicates), and runs that no longer exist are pruned. */
+function remapRunState(oldToNew: Map<number, number>): void {
+  try {
+    for (const [oldId, newId] of oldToNew) {
+      if (oldId === newId) continue;
+      const items = runThinking.get(oldId);
+      if (items && items.length > 0) {
+        runThinking.delete(oldId);
+        const target = runThinking.get(newId) ?? [];
+        for (const item of items) {
+          if (!target.some((existing) => existing.text === item.text)) target.push(item);
+        }
+        runThinking.set(newId, target);
+      } else {
+        runThinking.delete(oldId);
+      }
+      if (hiddenRuns.delete(oldId)) hiddenRuns.add(newId);
+      if (runThinkingOpen.delete(oldId)) runThinkingOpen.add(newId);
+    }
+    // Runs the re-plan dropped entirely must not keep preview gates alive.
+    for (const runId of [...runThinking.keys()]) {
+      if (traceRuns.has(runId)) continue;
+      runThinking.delete(runId);
+      hiddenRuns.delete(runId);
+      runThinkingOpen.delete(runId);
+    }
+  } catch {
+    // Cosmetic only: a missed remap degrades to the stock row, never a throw.
+  }
+}
+registerRunRemap(remapRunState);
+
 /** Confirmed detached (fail-open gate for diagnostics). */
 export function isMessageHidden(entryId: string): boolean {
   return hiddenEntryIds.has(entryId);
@@ -106,11 +150,6 @@ export function isMessageHidden(entryId: string): boolean {
 /** Runs whose replacement preview row may render (fail-open gate). */
 export function isRunHidden(runId: number): boolean {
   return hiddenRuns.has(runId);
-}
-
-/** Full stashed thinking texts for a hidden run (expansion view). */
-export function runThinkingTexts(runId: number): string[] {
-  return (runThinking.get(runId) ?? []).map((item) => item.text);
 }
 
 /** Stashed thinkings with their transcript anchors (see runThinking). */
@@ -122,18 +161,13 @@ export function runThinkingCount(runId: number): number {
   return runThinking.get(runId)?.length ?? 0;
 }
 
-/** Full stashed thinking text for a hidden run (joined expansion view). */
-export function runThinkingText(runId: number): string | undefined {
-  const texts = runThinking.get(runId);
-  if (!texts || texts.length === 0) return undefined;
-  return texts.map((item) => item.text).join("\n\n");
-}
-
 /** Full stashed thinking text for a tool (diagnostics; follows run merges). */
 export function runThinkingForTool(toolCallId: string): string | undefined {
   const entry = traceEntries.get(toolCallId);
   if (!entry) return undefined;
-  return runThinkingText(entry.runId);
+  const items = runThinking.get(entry.runId);
+  if (!items || items.length === 0) return undefined;
+  return items.map((item) => item.text).join("\n\n");
 }
 
 export function hiddenRunCount(): number {
@@ -265,7 +299,6 @@ export function detachPass(
 ): { detached: number; skipped: number; reasons: SkipReasons } {
   const result = { detached: 0, skipped: 0, reasons: newSkipReasons() };
   const skip = (reason: keyof SkipReasons): void => { result.skipped++; result.reasons[reason]++; };
-  let noHome = 0;
   let walkedTotal = 0;
   let walkedThinking = 0;
   let walkedTools = 0;
@@ -491,7 +524,6 @@ export function detachPass(
           setStandaloneThinking(message, true);
         }
         skip("nohome");
-        noHome++;
         continue;
       }
       const wholeSafe = isSafeToDetach(message, true, overrides);
@@ -586,21 +618,21 @@ export function detachPass(
             continue;
           }
         }
+        // A row left with nothing but spacers renders a stray blank line.
+        // Live already drops the whole row; removal order (resume mounts
+        // before the extension repairs) must not change the line count.
+        // Whole detach already removed the row: never remove it twice.
+        try {
+          const cont = (row as { contentContainer?: { children?: Array<unknown>; removeChild?: (c: unknown) => void } })?.contentContainer;
+          if (cont && Array.isArray(cont.children)) {
+            const leftover = cont.children.filter((k) => !isSpacerLike(k));
+            if (leftover.length === 0 && parent && typeof parent.removeChild === "function") parent.removeChild(row);
+          }
+        } catch { /* cosmetic */ }
       }
-      // A row left with nothing but spacers renders a stray blank line.
-      // Live already drops the whole row; removal order (resume mounts before
-      // the extension repairs) must not change the line count.
-      try {
-        const cont = (row as { contentContainer?: { children?: Array<unknown>; removeChild?: (c: unknown) => void } })?.contentContainer;
-        if (cont && Array.isArray(cont.children) && typeof cont.removeChild === "function") {
-          const leftover = cont.children.filter((k) => !isSpacerLike(k));
-          if (leftover.length === 0 && parent && typeof parent.removeChild === "function") parent.removeChild(row);
-        }
-      } catch { /* cosmetic */ }
       const entryId = byMessage.get(message)?.id;
       if (typeof entryId === "string") {
         hiddenEntryIds.add(entryId);
-        entryThinking.set(entryId, text);
       } else {
         liveHidden.add(message);
       }
@@ -635,9 +667,10 @@ export function detachPass(
   }
   lastDetachDiag =
     `walked ${walkedTotal} (${walkedThinking} thinking, ${walkedTools} tools); ` +
-    `attached ${result.detached}; homeless ${noHome}; skipped ${result.skipped} ` +
+    `attached ${result.detached}; skipped ${result.skipped} ` +
     `(role=${result.reasons.role} nohome=${result.reasons.nohome} unsafe=${result.reasons.unsafe} ` +
-    `empty=${result.reasons.empty} parent=${result.reasons.parent} remove=${result.reasons.remove})`;
+    `empty=${result.reasons.empty} parent=${result.reasons.parent} remove=${result.reasons.remove} ` +
+    `streaming=${result.reasons.streaming} ownprose=${result.reasons.ownprose})`;
   return result;
 }
 

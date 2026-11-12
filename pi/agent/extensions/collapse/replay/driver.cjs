@@ -66,13 +66,18 @@ async function loadPi() {
   const { AssistantMessageComponent } = await import(path.join(compDir, "assistant-message.js"));
   const { UserMessageComponent } = await import(path.join(compDir, "user-message.js"));
   const mdTheme = agent.getMarkdownTheme();
-  // Marker theme (same as unit tests): deterministic, stripped by dump().
+  // Real ANSI, like Pi's live theme. The unit tests use a marker theme
+  // because they assert styling directly; here the screenshots must have
+  // real layout. Marker tags count as visible characters in visibleWidth(),
+  // so a marker theme silently narrows every row and exaggerates truncation
+  // — screenshots then differ from the terminal for a reason that is not the
+  // extension. dump() strips the escapes.
   const theme = {
-    fg: (color, text) => `<${color}>${text}</>`,
-    bg: (color, text) => `<bg:${color}>${text}</>`,
-    bold: (text) => `<b>${text}</b>`,
-    italic: (text) => `<i>${text}</i>`,
-    style: (text) => `<b>${text}</b>`,
+    fg: (_color, text) => `\x1b[38;5;240m${text}\x1b[39m`,
+    bg: (_color, text) => `\x1b[48;5;240m${text}\x1b[49m`,
+    bold: (text) => `\x1b[1m${text}\x1b[22m`,
+    italic: (text) => `\x1b[3m${text}\x1b[23m`,
+    style: (text) => `\x1b[1m${text}\x1b[22m`,
   };
   return { mod, agent, tui, AssistantMessageComponent, UserMessageComponent, mdTheme, theme };
 }
@@ -162,8 +167,21 @@ function mountAssistant(world, message, entryId) {
 }
 
 function mountTool(world, name, toolCallId, args, partial) {
-  const tool = world.tools.get(name);
-  if (!tool) throw new Error(`unknown tool: ${name}`);
+  let tool = world.tools.get(name);
+  if (!tool) {
+    // Sibling extensions (subagents, ...) opt into collapsing at
+    // registration, but the replay has no registration hook. Recreate what
+    // production would have: a generic definition wrapped by collapse, so
+    // old turns that used those tools replay instead of aborting.
+    const def = {
+      name,
+      description: "",
+      parameters: { type: "object", properties: {} },
+      execute: async () => ({ content: [] }),
+    };
+    tool = world.mod.collapseDefinition ? world.mod.collapseDefinition(def, world.pi) : def;
+    world.tools.set(name, tool);
+  }
   // Production fidelity: ToolExecutionComponent.invalidate() calls
   // updateDisplay(), which re-invokes renderCall (remount) and repaints.
   // A stale screenshot after a poll/click would hide real bugs, so the
