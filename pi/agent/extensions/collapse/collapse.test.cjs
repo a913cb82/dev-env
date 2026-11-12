@@ -1945,7 +1945,7 @@ function openRun(comp) {
     const r = detach.detachPass(piQ);
     check("homeless thinking stays mounted", r.detached === 0 && chat.children.includes(rowThink), JSON.stringify(r));
     mod.reconcileThinkingLabels(piQ);
-    check("homeless thinking collapses in place", (rowThink.hiddenThinkingLabel ?? "").includes("1 thinking") && !(rowThink.hiddenThinkingLabel ?? "").includes(">"), rowThink.hiddenThinkingLabel);
+    check("homeless thinking collapses in place", (rowThink.hiddenThinkingLabel ?? "").includes(">1 thinking"), rowThink.hiddenThinkingLabel);
     detach.resetDetachState?.();
   }
 
@@ -1988,10 +1988,10 @@ function openRun(comp) {
   // duration after (the user's `1 thinking  1m54s` case).
   {
     const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
-    check("standalone bare below one second", labelsLib.standaloneThinkingLabel(1, 500, 100) === "1 thinking",
+    check("standalone bare below one second", labelsLib.standaloneThinkingLabel(1, 500, 100) === ">1 thinking",
       labelsLib.standaloneThinkingLabel(1, 500, 100));
     const long = labelsLib.standaloneThinkingLabel(1, 114000, 100);
-    check("standalone shows 1m54s", long.startsWith("1 thinking") && long.includes("1m54s") && !long.includes(">"), long);
+    check("standalone shows 1m54s", long.startsWith(">1 thinking") && long.includes("1m54s"), long);
     check("standalone fits its width", long.length === 100, `${long.length}`);
   }
 

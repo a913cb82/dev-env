@@ -763,6 +763,11 @@ export function isSafeToDetach(
   if (hasVisibleText) return false;
   if (hiddenRuns === 0) return false;
   if (message?.stopReason === "length") return false;
+  // A row that is still streaming can gain prose after its thinking, and the
+  // prose would be lost with the row (the run then splits and the block
+  // flickers between a label and the collapsed cell). Only a completed
+  // message may leave the tree whole.
+  if (!message?.stopReason) return false;
   if (!hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
   return true;
 }

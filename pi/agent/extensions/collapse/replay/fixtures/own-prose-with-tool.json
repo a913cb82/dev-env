@@ -1,0 +1,38 @@
+{
+  "name": "own-prose-with-tool",
+  "note": "One message holds thinking, then prose, then the tool call. Pi mounts the tool AFTER the whole row, so the block sits below the prose: the thinking must stay in the row as a standalone >N thinking and never inflate that block's count. Real-session shape (turn 4).",
+  "restore": [
+    { "id": "e1", "type": "message", "message": { "role": "user", "content": [{ "type": "text", "text": "go" }] } },
+    { "id": "e2", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "thinking", "thinking": "Order is correct: tools at two and three, thinking at four. The gate must let it attach backward." },
+      { "type": "text", "text": "Order is right, so the gate is vetoing something unexpected." },
+      { "type": "toolCall", "id": "t1", "name": "bash", "arguments": { "command": "echo one" } }
+    ], "stopReason": "toolUse" } },
+    { "id": "e3", "type": "message", "message": { "role": "toolResult", "toolCallId": "t1", "content": [{ "type": "text", "text": "one" }] } },
+    { "id": "e4", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "toolCall", "id": "t2", "name": "bash", "arguments": { "command": "echo two" } }
+    ], "stopReason": "toolUse" } },
+    { "id": "e5", "type": "message", "message": { "role": "toolResult", "toolCallId": "t2", "content": [{ "type": "text", "text": "two" }] } }
+  ],
+  "live": [
+    { "op": "user", "text": "go" },
+    { "op": "start", "id": "m1" },
+    { "op": "thinking", "id": "m1", "text": "Order is correct: tools at two and three, thinking at four. The gate must let it attach backward." },
+    { "op": "tick" },
+    { "op": "text", "id": "m1", "text": "Order is right, so the gate is vetoing something unexpected." },
+    { "op": "tick" },
+    { "op": "tool", "id": "m1", "toolId": "t1", "name": "bash", "args": { "command": "echo one" } },
+    { "op": "tick" },
+    { "op": "end", "id": "m1", "stop": "toolUse" },
+    { "op": "result", "toolId": "t1", "text": "one" },
+    { "op": "tick" },
+    { "op": "start", "id": "m2" },
+    { "op": "tool", "id": "m2", "toolId": "t2", "name": "bash", "args": { "command": "echo two" } },
+    { "op": "tick" },
+    { "op": "end", "id": "m2", "stop": "toolUse" },
+    { "op": "result", "toolId": "t2", "text": "two" },
+    { "op": "tick" },
+    { "op": "turn" },
+    { "op": "tick" }
+  ]
+}

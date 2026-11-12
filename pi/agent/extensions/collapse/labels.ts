@@ -71,7 +71,9 @@ export function setStandaloneThinking(message: unknown, on: boolean): void {
  *  shows once a full second elapsed; younger or untimed messages render
  *  the bare `N thinking`. Pure. */
 export function standaloneThinkingLabel(count: number, durationMs: number | undefined, width: number): string {
-  const left = `${count} thinking`;
+  // A standalone thinking is a block of its own: same `>` marker as a run
+  // header, so it reads as one more collapsed block rather than a stray row.
+  const left = `>${count} thinking`;
   if (durationMs === undefined || !(durationMs >= 1000)) return left;
   return padLabel(left, formatRunDuration(durationMs), width);
 }
@@ -208,6 +210,10 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
       // the remaining pad, the label and its style stay where Pi put them.
       // A streaming row is still live: spin the wheel in that same cell.
       const streaming = (row as { isStreaming?: unknown })?.isStreaming === true;
+      // A standalone thinking already carries its own `>` marker in the
+      // label; adding a rail would double the marker.
+      const rowLabel = String((row as { hiddenThinkingLabel?: unknown })?.hiddenThinkingLabel ?? "");
+      if (/^\s*>\d+ thinking\b/.test(rowLabel)) continue;
       const glyph = streaming ? WHEEL_FRAMES[wheelFrameAt()]! : ROW_RAIL;
       const out = lines.slice();
       out[i] =

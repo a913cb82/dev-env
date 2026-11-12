@@ -218,6 +218,22 @@ re-plan (session_start) can never leave a stale grouping on screen. That
 is what makes both resume orders (`pi` and `pi -r`) converge on the same
 transcript.
 
+Two more rules keep live and reloaded sessions identical. A message that is
+still streaming is never removed whole: its prose can arrive after the
+thinking, and removing the row lost that prose (the block then started below
+it, and the header flickered between a label and the collapsed cell). And a
+thinking that precedes its OWN message's prose stays in the row as
+`>N thinking` — even when the same message carries the tool call — because Pi
+mounts tool components after the whole row, so the block always sits below
+that prose. A thinking that arrives after an earlier block's tools still
+attaches backward into it.
+
+Replay a real session's live path with
+`node replay/from-session.cjs <session.jsonl> --turn N [--rows]`: it rebuilds
+the op stream (deltas, tool starts, results, poll ticks) and prints the
+screenshot plus each row's render, which is how the live-only divergences
+above were found.
+
 Run boundaries are visible content only. A prose-only assistant message
 breaks the run (it renders a row of its own); a thinking-only message never
 does; trailing text in a message that has tools renders below its rows and

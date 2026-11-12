@@ -151,9 +151,11 @@ const loadFixture = (name) =>
     await driver.restore(world, []);
     await driver.runLive(world, loadFixture("thinking-prose-same-message").live);
     const lines = driver.dump(world).lines;
-    const standalone = lines.findIndex((l) => l.includes("1 thinking"));
+    const standalone = lines.findIndex((l) => /^\s*>\d+ thinking\b/.test(l));
     const prose = lines.findIndex((l) => l.includes("Real Pi confirms the blank fix"));
-    const header = lines.findIndex((l) => l.trim().startsWith(">"));
+    // A standalone thinking is itself `>N thinking`; the run header is the
+    // `>` line that is not one.
+    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking\b/.test(l));
     check("thinking stands alone above its own message's prose",
       standalone >= 0 && prose > standalone && header > prose, lines.join("\n"));
     check("the block below the prose takes no thinking",
@@ -178,6 +180,41 @@ const loadFixture = (name) =>
     const restoredText = driver.dump(restored).lines.join("\n");
     check(`live matches restore: ${name}`, liveText === restoredText,
       `--- live ---\n${liveText}\n--- restore ---\n${restoredText}`);
+  }
+
+  // R9. Thinking, then its OWN prose, then the tool call, all in one message.
+  // Pi mounts the tool component after the whole row, so the block sits below
+  // the prose; the thinking stays standalone and the block takes none.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, loadFixture("own-prose-with-tool").live);
+    const lines = driver.dump(world).lines;
+    const standalone = lines.findIndex((l) => /^\s*>\d+ thinking\b/.test(l));
+    const prose = lines.findIndex((l) => l.includes("Order is right, so the gate"));
+    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking\b/.test(l));
+    check("own-prose mixed row: thinking stands alone", standalone >= 0 && prose > standalone, lines.join("\n"));
+    check("own-prose mixed row: block below takes no thinking",
+      header > prose && !lines[header].includes("thinking"), JSON.stringify(lines[header]));
+    // A row that is still streaming must never leave the tree whole: its
+    // prose can arrive later, and losing the row loses the prose.
+    check("own-prose mixed row keeps its prose", prose >= 0, lines.join("\n"));
+  }
+
+  // R10. A thinking that arrives AFTER the tools (its own prose follows) must
+  // attach backward into the block above, not stand alone between them.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, loadFixture("thinking-after-tools-own-prose").restore);
+    const lines = driver.dump(world).lines;
+    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking\b/.test(l));
+    check("thinking after tools attaches to the block above",
+      header >= 0 && lines[header].includes("2 bash") && lines[header].includes("1 thinking"),
+      JSON.stringify(lines[header]));
+    check("thinking after tools has no standalone row",
+      !lines.some((l) => /^\s*>\d+ thinking\b/.test(l)), lines.join("\n"));
+    check("thinking after tools keeps the prose below",
+      lines.some((l) => l.includes("harness should have caught this")), lines.join("\n"));
   }
 
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);

@@ -186,13 +186,18 @@ function collectOrdered(
   toolPos?: Map<string, number>,
 ): void {
   if (!node || typeof node !== "object") return;
-  // Mounted prose is a segment boundary for OTHER thinkings (their runs
-  // never span it); a mixed row's own thinking still hosts same-message.
-  if (hasVisibleProse(node)) out.push({ kind: "visible" });
+  // Transcript order inside a row is thinking first, then prose, then the
+  // tool components (Pi mounts those after the whole row). Pushing the
+  // prose marker first made a mixed row's own marker look like a boundary
+  // between an earlier tool and its thinking, so a thinking that arrived
+  // AFTER the tools could not attach backward and stood alone instead.
   if (isThinkingRow(node)) {
     out.push({ kind: "thinking", parent, row: node });
+    if (hasVisibleProse(node)) out.push({ kind: "visible" });
     return;
   }
+  // Prose-only rows are boundaries for everything around them.
+  if (hasVisibleProse(node)) out.push({ kind: "visible" });
   // The extension's own run containers: tagged with the run's toolCallIds
   // (they expose no toolCallId of their own). Every id shares the
   // container's index — neighbors and anchors only need the position.
@@ -239,6 +244,21 @@ function hostRunFor(message: {
 
 /** One idempotent pass: detach every SAFE+hosted thinking row. Returns
  *  counts for /collapse diagnostics. Silent on every failure (cosmetic). */
+/** True when this message carries a tool call that belongs to `runId`. */
+function ownsToolInRun(message: unknown, runId: number): boolean {
+  try {
+    const content = (message as { content?: Array<{ type?: string; id?: string }> })?.content;
+    if (!Array.isArray(content)) return false;
+    for (const block of content) {
+      if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
+      if (traceEntries.get(block.id)?.runId === runId) return true;
+    }
+  } catch {
+    // Structural miss: treat as not owned (the segment gate still applies).
+  }
+  return false;
+}
+
 export function detachPass(
   pi: ExtensionAPI,
   sessionManager?: unknown,
@@ -475,6 +495,23 @@ export function detachPass(
         continue;
       }
       const wholeSafe = isSafeToDetach(message, true, overrides);
+      // Prose after this message's own thinking renders ABOVE the tool
+      // components Pi mounts for that message. Detaching the thinking into
+      // its own tool's run would therefore show it below its prose (and
+      // inflate that block's count). Leave the row as the standalone label;
+      // a run that mounts above it is still reachable through the guess
+      // path, which walks in transcript order.
+      // Only a message that owns a tool in THIS run can hoist itself: that
+      // tool's component mounts after the whole row, so the block sits below
+      // the prose. With no tool of its own in the run, the thinking came
+      // after an earlier block and attaches backward into it, above the
+      // prose, which is correct.
+      if (runId !== undefined && ownProseAfterThinking(message) && ownsToolInRun(message, runId)) {
+        // The row stays mounted, so its label IS the standalone display.
+        setStandaloneThinking(message, true);
+        skip("ownprose");
+        continue;
+      }
       // Mixed message: prose stays, only the thinking children go.
       // Requires our label (proves the row is managed, never stock) so a
       // visible-thinking run can never match by label text.

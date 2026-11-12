@@ -1,0 +1,21 @@
+{
+  "name": "thinking-after-tools-own-prose",
+  "note": "Tools run, THEN a thinking+prose message, then another prose-only message. The thinking sits after the block's tools and before its own prose: it must attach BACKWARD into the block above (count 2), not stand alone between the block and the prose.",
+  "restore": [
+    { "id": "e1", "type": "message", "message": { "role": "user", "content": [{ "type": "text", "text": "go" }] } },
+    { "id": "e2", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "text", "text": "You're right to call that out." },
+      { "type": "toolCall", "id": "k1", "name": "bash", "arguments": { "command": "node -e 'x'" } },
+      { "type": "toolCall", "id": "k2", "name": "bash", "arguments": { "command": "tail -30" } }
+    ], "stopReason": "toolUse" } },
+    { "id": "e3", "type": "message", "message": { "role": "toolResult", "toolCallId": "k1", "content": [{ "type": "text", "text": "ok" }] } },
+    { "id": "e4", "type": "message", "message": { "role": "toolResult", "toolCallId": "k2", "content": [{ "type": "text", "text": "ok" }] } },
+    { "id": "e5", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "thinking", "thinking": "The harness should have caught the live versus restore divergence, so I am adding that invariant as a test now." },
+      { "type": "text", "text": "Your view is r82 — but you're right that the harness should have caught this." }
+    ], "stopReason": "stop" } },
+    { "id": "e6", "type": "message", "message": { "role": "assistant", "content": [
+      { "type": "text", "text": "Adding that invariant as a test." }
+    ], "stopReason": "stop" } }
+  ]
+}
