@@ -312,6 +312,16 @@ async function runLive(world, ops) {
       }
       world.entries.push({ id: msgId("e"), type: "message",
         message: { role: "toolResult", toolCallId: op.toolId, content: [{ type: "text", text: op.text ?? "" }] } });
+    } else if (op.op === "abort") {
+      // The user pressed Escape mid-run: Pi closes the message with
+      // stopReason "aborted" and no tool result follows. The tool component
+      // keeps rendering (as "Operation aborted" in stock form), which is the
+      // shape that has been diverging live.
+      const message = world.messages.get(op.id);
+      message.stopReason = op.stop ?? "aborted";
+      world.entries.push({ id: msgId("e"), type: "message", message });
+      await world.fire("message_end", { message }, {});
+      world.assistantComps.get(op.id)?.updateContent(message, false);
     } else if (op.op === "turn") {
       await world.fire("turn_end", {}, {});
     } else if (op.op === "tick") {

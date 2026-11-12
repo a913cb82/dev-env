@@ -1,0 +1,327 @@
+{
+  "name": "aborted-mixed",
+  "note": "Escape during a tool-using message: Pi closes it with stopReason 'aborted' and no tool result follows. The row keeps its prose; the tool component carries the error. The next turn must not absorb the aborted tool or lose the prose above it.",
+  "restore": [
+    {
+      "id": "e1",
+      "type": "message",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "go"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e2",
+      "type": "message",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "All green. Documenting the rule and shipping."
+          },
+          {
+            "type": "text",
+            "text": "All green. Documenting the rule and shipping."
+          },
+          {
+            "type": "toolCall",
+            "id": "x1",
+            "name": "bash",
+            "arguments": {
+              "command": "cd /home/acbraith/dev-env && git log --oneline"
+            }
+          }
+        ],
+        "stopReason": "aborted"
+      }
+    },
+    {
+      "id": "e3",
+      "type": "message",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "second"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e4",
+      "type": "message",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Running a live mix now with prose and tools."
+          },
+          {
+            "type": "text",
+            "text": "Running a live mix now \u2014 prose and tools."
+          },
+          {
+            "type": "toolCall",
+            "id": "y1",
+            "name": "bash",
+            "arguments": {
+              "command": "git status --short"
+            }
+          }
+        ],
+        "stopReason": "toolUse"
+      }
+    },
+    {
+      "id": "e5",
+      "type": "message",
+      "message": {
+        "role": "toolResult",
+        "toolCallId": "y1",
+        "content": [
+          {
+            "type": "text",
+            "text": "clean"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e6",
+      "type": "message",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Header check done."
+          },
+          {
+            "type": "toolCall",
+            "id": "y2",
+            "name": "bash",
+            "arguments": {
+              "command": "node replay.cjs"
+            }
+          }
+        ],
+        "stopReason": "toolUse"
+      }
+    },
+    {
+      "id": "e7",
+      "type": "message",
+      "message": {
+        "role": "toolResult",
+        "toolCallId": "y2",
+        "content": [
+          {
+            "type": "text",
+            "text": "PASS"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e8",
+      "type": "message",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "third"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e9",
+      "type": "message",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Starting the third step before the user interrupts."
+          },
+          {
+            "type": "text",
+            "text": "Starting the third step now."
+          }
+        ],
+        "stopReason": "aborted"
+      }
+    }
+  ],
+  "live": [
+    {
+      "op": "user",
+      "text": "go"
+    },
+    {
+      "op": "start",
+      "id": "a"
+    },
+    {
+      "op": "thinking",
+      "id": "a",
+      "text": "All green. Documenting the rule and shipping."
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "text",
+      "id": "a",
+      "text": "All green. Documenting the rule and shipping."
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "tool",
+      "id": "a",
+      "toolId": "x1",
+      "name": "bash",
+      "args": {
+        "command": "cd /home/acbraith/dev-env && git log --oneline"
+      }
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "abort",
+      "id": "a"
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "user",
+      "text": "second"
+    },
+    {
+      "op": "start",
+      "id": "b"
+    },
+    {
+      "op": "thinking",
+      "id": "b",
+      "text": "Running a live mix now with prose and tools."
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "text",
+      "id": "b",
+      "text": "Running a live mix now \u2014 prose and tools."
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "tool",
+      "id": "b",
+      "toolId": "y1",
+      "name": "bash",
+      "args": {
+        "command": "git status --short"
+      }
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "end",
+      "id": "b",
+      "stop": "toolUse"
+    },
+    {
+      "op": "result",
+      "toolId": "y1",
+      "text": "clean"
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "start",
+      "id": "c"
+    },
+    {
+      "op": "text",
+      "id": "c",
+      "text": "Header check done."
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "tool",
+      "id": "c",
+      "toolId": "y2",
+      "name": "bash",
+      "args": {
+        "command": "node replay.cjs"
+      }
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "end",
+      "id": "c",
+      "stop": "toolUse"
+    },
+    {
+      "op": "result",
+      "toolId": "y2",
+      "text": "PASS"
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "user",
+      "text": "third"
+    },
+    {
+      "op": "start",
+      "id": "d"
+    },
+    {
+      "op": "thinking",
+      "id": "d",
+      "text": "Starting the third step before the user interrupts."
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "text",
+      "id": "d",
+      "text": "Starting the third step now."
+    },
+    {
+      "op": "tick"
+    },
+    {
+      "op": "abort",
+      "id": "d"
+    },
+    {
+      "op": "tick"
+    }
+  ]
+}

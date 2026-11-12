@@ -236,6 +236,32 @@ const loadFixture = (name) =>
       `--- start first ---\n${a}\n--- mount first ---\n${b}`);
   }
 
+  // R12. Escape during a tool-using message. Pi closes it as "aborted" with
+  // no tool result; the row keeps its prose and the next turn must not absorb
+  // the aborted tool or drop the prose that separates the blocks.
+  {
+    const fx = loadFixture("aborted-mixed");
+    const live = driver.createWorld(PI, { width: 100 });
+    await driver.restore(live, []);
+    await driver.runLive(live, fx.live);
+    const lines = driver.dump(live).lines;
+    const rest = driver.createWorld(PI, { width: 100 });
+    await driver.restore(rest, fx.restore);
+    check("abort: live matches restore", lines.join("\n") === driver.dump(rest).lines.join("\n"),
+      `--- live ---\n${lines.join("\n")}\n--- restore ---\n${driver.dump(rest).lines.join("\n")}`);
+    check("abort: the aborted message keeps its prose",
+      lines.some((l) => l.includes("All green. Documenting")), lines.join("\n"));
+    check("abort: the next turn keeps its prose",
+      lines.some((l) => l.includes("Header check done.")), lines.join("\n"));
+    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking/.test(l));
+    check("abort: the aborted tool has no false duration", header >= 0 && !/\d+s\b/.test(lines[header]), JSON.stringify(lines[header]));
+    // A message aborted WITHOUT tool calls: Pi appends the abort text itself.
+    check("abort: abort text renders for a tool-less message",
+      lines.some((l) => l.includes("Operation aborted")), lines.join("\n"));
+    check("abort: that message keeps its prose",
+      lines.some((l) => l.includes("Starting the third step now.")), lines.join("\n"));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });
