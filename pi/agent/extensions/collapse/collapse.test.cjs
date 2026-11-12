@@ -2036,7 +2036,7 @@ function openRun(comp) {
     await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
     bash.renderCall({ command: "echo hp" }, theme, mk("hp", { command: "echo hp" }));
     // P1: completed mixed message with our label: kid goes, prose stays.
-    const msgP1 = { role: "assistant", content: [think("plan p1"), text("hello"), tool("hp")], stopReason: "toolUse" };
+    const msgP1 = { role: "assistant", content: [text("hello"), think("plan p1"), tool("hp")], stopReason: "toolUse" };
     const m1 = mkMixedRow(msgP1, "\u2026plan p1 0.1k ch");
     const chat = { children: [{ toolCallId: "hp" }, m1.row],
       removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
@@ -2046,19 +2046,19 @@ function openRun(comp) {
     check("partial keeps the prose row mounted", chat.children.includes(m1.row), "");
     check("partial still counts the thinking", (detach.runThinkingForTool("hp") ?? "").includes("plan p1"), detach.runThinkingForTool("hp") ?? "(none)");
     // P2: streaming mixed message never partial-detaches (no flicker).
-    const msgP2 = { role: "assistant", content: [think("plan p2"), text("hello"), tool("hp")] };
+    const msgP2 = { role: "assistant", content: [text("hello"), think("plan p2"), tool("hp")] };
     const m2 = mkMixedRow(msgP2, "\u2026plan p2 0.1k ch");
     chat.children.push(m2.row);
     const r2 = detach.detachPass(piX);
     check("streaming mixed stays whole", r2.detached === 0 && m2.container.children.includes(m2.kid), JSON.stringify(r2));
     // P3: stock-labeled mixed row stays whole (conservative).
-    const msgP3 = { role: "assistant", content: [think("plan p3"), text("hello"), tool("hp")], stopReason: "toolUse" };
+    const msgP3 = { role: "assistant", content: [text("hello"), think("plan p3"), tool("hp")], stopReason: "toolUse" };
     const m3 = mkMixedRow(msgP3, "Thinking...");
     chat.children.push(m3.row);
     const r3 = detach.detachPass(piX);
     check("stock-labeled mixed stays whole", r3.detached === 0 && m3.container.children.includes(m3.kid), JSON.stringify(r3));
     // P4: click-opened thinking run vetoes the partial.
-    const msgP4 = { role: "assistant", content: [think("plan p4"), text("hello"), tool("hp")], stopReason: "toolUse" };
+    const msgP4 = { role: "assistant", content: [text("hello"), think("plan p4"), tool("hp")], stopReason: "toolUse" };
     const m4 = mkMixedRow(msgP4, "\u2026plan p4 0.1k ch", new Map([[0, false]]));
     chat.children.push(m4.row);
     const r4 = detach.detachPass(piX);

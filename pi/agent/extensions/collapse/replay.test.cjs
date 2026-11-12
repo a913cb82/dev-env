@@ -143,6 +143,43 @@ const loadFixture = (name) =>
       JSON.stringify(lines));
   }
 
+  // R7. a thinking followed by ITS OWN message's prose must not be hoisted
+  // into a block that mounts below that prose: the preview would read as if
+  // the thinking happened after the prose. It stands alone above it.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, loadFixture("thinking-prose-same-message").live);
+    const lines = driver.dump(world).lines;
+    const standalone = lines.findIndex((l) => l.includes("1 thinking"));
+    const prose = lines.findIndex((l) => l.includes("Real Pi confirms the blank fix"));
+    const header = lines.findIndex((l) => l.trim().startsWith(">"));
+    check("thinking stands alone above its own message's prose",
+      standalone >= 0 && prose > standalone && header > prose, lines.join("\n"));
+    check("the block below the prose takes no thinking",
+      header >= 0 && !lines[header].includes("thinking"), JSON.stringify(lines[header]));
+    const run = world.mod.traceEntries.get("k1").runId;
+    check("run thinking count stays zero", world.mod.runThinkingCount(run) === 0,
+      String(world.mod.runThinkingCount(run)));
+  }
+
+  // R8. live and restore must agree for the same transcript. This is the
+  // invariant the false reports kept breaking: a rule applied on one path
+  // (live attach) but not the other (history re-plan) shows up as extra
+  // thinking counts and missing standalone rows.
+  for (const name of ["thinking-prose-same-message", "thinking-before-prose-tools", "live-consecutive-turns"]) {
+    const fx = loadFixture(name);
+    const live = driver.createWorld(PI, { width: 100 });
+    await driver.restore(live, []);
+    await driver.runLive(live, fx.live);
+    const liveText = driver.dump(live).lines.join("\n");
+    const restored = driver.createWorld(PI, { width: 100 });
+    await driver.restore(restored, live.entries);
+    const restoredText = driver.dump(restored).lines.join("\n");
+    check(`live matches restore: ${name}`, liveText === restoredText,
+      `--- live ---\n${liveText}\n--- restore ---\n${restoredText}`);
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

@@ -1,0 +1,18 @@
+{
+  "name": "thinking-prose-same-message",
+  "note": "The reported shape: one assistant message holds the thinking AND the agent-to-user prose, with tools arriving in later messages. In visible mode the order is thinking -> prose -> tools, so the thinking must NOT be hoisted into the block below its own prose: it stands alone above the prose (or joins an earlier run).",
+  "live": [
+    { "op": "user", "text": "go" },
+    { "op": "start", "id": "m1" },
+    { "op": "thinking", "id": "m1", "text": "Real Pi now shows the blank line is fixed and no stray label remains. Let me verify wrap.ts is clean and run the full suite." },
+    { "op": "text", "id": "m1", "text": "Real Pi confirms the blank fix; the provider's encrypted thinking means the count can only be verified in replay. Cleaning up and verifying everything." },
+    { "op": "end", "id": "m1", "stop": "stop" },
+    { "op": "turn" },
+    { "op": "start", "id": "m2" },
+    { "op": "tool", "id": "m2", "toolId": "k1", "name": "bash", "args": { "command": "grep -c COLLAPSE_DEBUG_LOG wrap.ts" } },
+    { "op": "end", "id": "m2", "stop": "toolUse" },
+    { "op": "result", "toolId": "k1", "text": "0" },
+    { "op": "turn" },
+    { "op": "tick" }
+  ]
+}

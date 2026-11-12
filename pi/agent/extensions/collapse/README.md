@@ -221,7 +221,11 @@ transcript.
 Run boundaries are visible content only. A prose-only assistant message
 breaks the run (it renders a row of its own); a thinking-only message never
 does; trailing text in a message that has tools renders below its rows and
-changes nothing. The deferred startup plan settles on the first poll, which
+changes nothing. A thinking followed by ITS OWN message's prose never joins a
+block that mounts below that prose (the preview would read as if the thinking
+happened after the prose): it stands alone above it as `N thinking`. This
+holds even when the message also carries the tool call — the tool component
+mounts after the whole row, so the prose still lands in between. The deferred startup plan settles on the first poll, which
 can land mid-turn: it preserves the grouping of the live entries it did not
 name and leaves the run pointer on the newest live run, so one segment never
 splits into adjacent blocks. A switch/fork/seal already starts a new run, so

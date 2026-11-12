@@ -304,6 +304,25 @@ export function detachPass(
      *  hold the live rows entries have not landed yet, entries hold the
      *  settled rows no longer mounted. Fully unknown positions allow
      *  (the settled pass re-checks once entries land). */
+    /** Prose that renders AFTER the thinking within its own message. Pi
+     *  paints the row in content order and mounts the tool components after
+     *  the whole row, so that prose always lands between the thinking and
+     *  any later block. A thinking followed by its own message's prose must
+     *  never be hoisted into that block — it would read as if it happened
+     *  after the prose. */
+    const ownProseAfterThinking = (message: unknown): boolean => {
+      const content = (message as { content?: unknown })?.content;
+      if (!Array.isArray(content)) return false;
+      let lastThinking = -1;
+      content.forEach((block, i) => {
+        if ((block as { type?: unknown } | null | undefined)?.type === "thinking") lastThinking = i;
+      });
+      if (lastThinking < 0) return false;
+      return content.slice(lastThinking + 1).some((block) => {
+        const part = block as { type?: unknown; text?: unknown } | null | undefined;
+        return part?.type === "text" && typeof part.text === "string" && part.text.trim() !== "";
+      });
+    };
     const segmentClear = (thinkIdx: number, thinkMsg: unknown, toolCallId: string): boolean => {
       const mountedAt = toolPos.get(toolCallId);
       if (mountedAt !== undefined) {
@@ -314,6 +333,9 @@ export function detachPass(
       }
       const ti = entryIndex.get(thinkMsg);
       const ci = toolEntryIdx.get(toolCallId);
+      // Forward attach = the tool comes at or after the thinking's message.
+      const forward = mountedAt !== undefined ? mountedAt >= thinkIdx : (ti !== undefined && ci !== undefined && ci >= ti);
+      if (forward && ownProseAfterThinking(thinkMsg)) return false;
       if (ti !== undefined && ci !== undefined) {
         const lo = Math.min(ti, ci), hi = Math.max(ti, ci);
         for (let k = lo + 1; k < hi; k++) {
@@ -393,6 +415,10 @@ export function detachPass(
         continue;
       }
       let runId = hostRunFor(message);
+      // A tool in the thinking's own message mounts after the whole row, so
+      // prose that follows the thinking still lands between them. Treat that
+      // as a forward attach (vetoed) instead of direct evidence.
+      if (runId !== undefined && ownProseAfterThinking(message)) runId = undefined;
       if (runId === undefined) {
         // Live-edge guard: a thinking row whose message is not yet persisted
         // has no settled home — its tools may not have rendered (the poll
@@ -438,7 +464,10 @@ export function detachPass(
         // place (standalone header) instead of lingering as a stock row.
         // Streaming rows keep their live preview; unsafe rows keep stock.
         const text = extractThinkingText(message);
-        if (text && message.stopReason != null && isSafeToDetach(message, true, overrides)) {
+        // A mixed row (prose + thinking) can stand alone too: this only
+        // rewrites the thinking label, the prose stays exactly as it is.
+        if (text && message.stopReason != null &&
+            (isSafeToDetach(message, true, overrides) || isPartialSafeToDetach(message, true, overrides))) {
           setStandaloneThinking(message, true);
         }
         skip("nohome");
