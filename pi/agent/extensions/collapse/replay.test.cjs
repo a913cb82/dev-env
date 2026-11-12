@@ -217,6 +217,25 @@ const loadFixture = (name) =>
       lines.some((l) => l.includes("harness should have caught this")), lines.join("\n"));
   }
 
+  // R11. The two resume orders must render the same spacing. Pi rebuilds a
+  // mounted row by appending, which used to leave a duplicate leading spacer
+  // only on the mount-then-start path: same content, one line taller.
+  for (const name of ["thinking-prose-same-message", "own-prose-with-tool", "thinking-after-tools-own-prose"]) {
+    const fx = loadFixture(name);
+    const live = driver.createWorld(PI, { width: 100 });
+    await driver.restore(live, []);
+    if (fx.live) await driver.runLive(live, fx.live);
+    else await driver.restore(live, fx.restore);
+    const early = driver.createWorld(PI, { width: 100 });
+    await driver.restore(early, live.entries);
+    const late = driver.createWorld(PI, { width: 100 });
+    await driver.restoreLate(late, live.entries);
+    const a = driver.dump(early).lines.join("\n");
+    const b = driver.dump(late).lines.join("\n");
+    check(`resume orders keep spacing: ${name}`, a === b,
+      `--- start first ---\n${a}\n--- mount first ---\n${b}`);
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

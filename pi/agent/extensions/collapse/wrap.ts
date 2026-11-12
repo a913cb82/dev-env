@@ -112,7 +112,10 @@ export function syncRowUpdates(
     row.updateContent = (message: unknown, streaming?: unknown): unknown => {
       const result = orig(message, streaming);
       try {
-        if (isHiddenThinking(pi)) dropLeadingSpacers(row, prevOf());
+        if (isHiddenThinking(pi)) {
+          dropLeadingSpacers(row, prevOf());
+          squeezeLeadingSpacers(row);
+        }
       } catch {
         // Pi's rebuild stands; the next pass heals.
       }
@@ -272,6 +275,37 @@ function gluesToPrev(prev: unknown): boolean {
  *  itself is never touched. Returns spacers removed. Pi re-adds the
  *  spacer on its next content rebuild (streaming delta, visibility
  *  toggle), so the next pass simply re-applies — self-healing. */
+/** A row rebuilt by Pi can end up with more than one leading spacer (the
+ *  resume path mounts rows before the extension repairs them, and Pi's
+ *  updateContent appends rather than replaces). One blank belongs there;
+ *  the duplicates make the same transcript render one line taller than it
+ *  does live. Idempotent: keeps exactly one. */
+function squeezeLeadingSpacers(row: unknown): number {
+  try {
+    if (!isThinkingRow(row)) return 0;
+    const container = (row as { contentContainer?: { children?: unknown[]; removeChild?: (c: unknown) => unknown } }).contentContainer;
+    if (!container || !Array.isArray(container.children) || typeof container.removeChild !== "function") return 0;
+    let leading = 0;
+    for (const child of container.children) {
+      if (!isSpacerLike(child)) break;
+      leading++;
+    }
+    let dropped = 0;
+    while (leading > 1) {
+      try {
+        container.removeChild(container.children[0]);
+        leading--;
+        dropped++;
+      } catch {
+        break;
+      }
+    }
+    return dropped;
+  } catch {
+    return 0;
+  }
+}
+
 function dropLeadingSpacers(row: unknown, prev: unknown): number {
   try {
     if (!isThinkingRow(row)) return 0;
@@ -521,6 +555,7 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
           Array.isArray(kids) && index > 0 ? kids[index - 1] : undefined;
         try {
           counts.spacers += dropLeadingSpacers(node, getPrev());
+          counts.spacers += squeezeLeadingSpacers(node);
         } catch {
           // Surgery skipped; the blank stays stock.
         }

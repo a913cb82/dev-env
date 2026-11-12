@@ -228,6 +228,15 @@ mounts tool components after the whole row, so the block always sits below
 that prose. A thinking that arrives after an earlier block's tools still
 attaches backward into it.
 
+Parity on a real transcript: `node replay/parity.cjs <session.jsonl>
+[--turns N]` replays the last N completed turns three ways (live, quit ->
+resume, /reload) and checks that they render the same collapsed AND opened
+screens, that no two collapsed blocks touch, and that thinking:hidden and
+thinking:visible put prose and tools in the same transcript order. The same
+invariant lives in the replay suite: the two resume orders keep the same
+spacing (Pi appends on rebuild, so a remounted row could carry two leading
+spacers instead of one).
+
 Replay a real session's live path with
 `node replay/from-session.cjs <session.jsonl> --turn N [--rows]`: it rebuilds
 the op stream (deltas, tool starts, results, poll ticks) and prints the
