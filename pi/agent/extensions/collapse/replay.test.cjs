@@ -262,6 +262,36 @@ const loadFixture = (name) =>
       lines.some((l) => l.includes("Starting the third step now.")), lines.join("\n"));
   }
 
+  // R13. While streaming Pi reports stopReason "pending". It is truthy, but
+  // the message can still gain prose, so the row must not be removed whole.
+  // Real Pi lost the live prose row this way; resume showed it again.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "p" },
+      { op: "thinking", id: "p", text: "Evaluating the reply." },
+      { op: "tick" },
+      { op: "pending", id: "p" },
+      { op: "tick" },
+      { op: "text", id: "p", text: "MARKER LATE PROSE" },
+      { op: "tick" },
+      { op: "tool", id: "p", toolId: "p1", name: "bash", args: { command: "sleep 1; echo 1" } },
+      { op: "tick" },
+      { op: "end", id: "p", stop: "toolUse" },
+      { op: "result", toolId: "p1", text: "1" },
+      { op: "tick" }
+    ]);
+    const lines = driver.dump(world).lines;
+    check("pending row keeps the prose that arrives later",
+      lines.some((l) => l.includes("MARKER LATE PROSE")), lines.join("\n"));
+    const rest = driver.createWorld(PI, { width: 100 });
+    await driver.restore(rest, world.entries);
+    check("pending row live matches restore", lines.join("\n") === driver.dump(rest).lines.join("\n"),
+      lines.join("\n"));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

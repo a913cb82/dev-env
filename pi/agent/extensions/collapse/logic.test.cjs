@@ -531,6 +531,12 @@ function check(name, cond, extra) {
       safe({ content: [think("a"), tool("x"), think("b"), tool("c")], stopReason: "toolUse" }, true, new Map([[1, false]])) === false, "");
     check("missing content is unsafe",
       safe({}, true) === false, "");
+    // Pi reports stopReason "pending" while a message is still streaming: it
+    // is truthy but NOT completed, and such a row can still gain prose.
+    check("pending is not completed",
+      safe({ content: [think("plan")], stopReason: "pending" }, true) === false, "");
+    check("pending mixed row is not completed either",
+      safe({ content: [think("plan"), tool("a")], stopReason: "pending" }, true) === false, "");
   }
 
   // isPartialSafeToDetach: same vetoes as whole-row detach, except visible
@@ -545,6 +551,8 @@ function check(name, cond, extra) {
       partial({ content: [think("plan"), text("hello"), tool("a")], stopReason: "toolUse" }, true) === true, "");
     check("partial: streaming never detaches",
       partial({ content: [think("plan"), text("hello"), tool("a")] }, true) === false, "");
+    check("partial: pending is not completed",
+      partial({ content: [think("plan"), text("hello"), tool("a")], stopReason: "pending" }, true) === false, "");
     check("partial: visible thinking run vetoes",
       partial({ content: [think("plan"), text("hello")], stopReason: "stop" }, true, new Map([[0, false]])) === false, "");
     check("partial: text-only has nothing to hide",

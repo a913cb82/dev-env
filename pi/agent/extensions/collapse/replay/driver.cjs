@@ -312,6 +312,13 @@ async function runLive(world, ops) {
       }
       world.entries.push({ id: msgId("e"), type: "message",
         message: { role: "toolResult", toolCallId: op.toolId, content: [{ type: "text", text: op.text ?? "" }] } });
+    } else if (op.op === "pending") {
+      // Pi marks a still-streaming message with stopReason "pending" (truthy,
+      // but not completed). A row in this state can still gain prose.
+      const message = world.messages.get(op.id);
+      message.stopReason = "pending";
+      await world.fire("message_update", { message }, {});
+      world.assistantComps.get(op.id)?.updateContent(message, true);
     } else if (op.op === "abort") {
       // The user pressed Escape mid-run: Pi closes the message with
       // stopReason "aborted" and no tool result follows. The tool component

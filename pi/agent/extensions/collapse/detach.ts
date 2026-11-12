@@ -506,6 +506,14 @@ export function detachPass(
       // the prose. With no tool of its own in the run, the thinking came
       // after an earlier block and attaches backward into it, above the
       // prose, which is correct.
+      // A row Pi is still streaming can gain prose after this thinking; the
+      // structural flag is the honest "not settled yet" signal. Pi also
+      // reports stopReason "pending" while streaming, so the message check in
+      // isSafeToDetach treats that as not completed.
+      if (runId !== undefined && (row as { isStreaming?: unknown })?.isStreaming === true) {
+        skip("streaming");
+        continue;
+      }
       if (runId !== undefined && ownProseAfterThinking(message) && ownsToolInRun(message, runId)) {
         // The row stays mounted, so its label IS the standalone display.
         setStandaloneThinking(message, true);
@@ -579,6 +587,16 @@ export function detachPass(
           }
         }
       }
+      // A row left with nothing but spacers renders a stray blank line.
+      // Live already drops the whole row; removal order (resume mounts before
+      // the extension repairs) must not change the line count.
+      try {
+        const cont = (row as { contentContainer?: { children?: Array<unknown>; removeChild?: (c: unknown) => void } })?.contentContainer;
+        if (cont && Array.isArray(cont.children) && typeof cont.removeChild === "function") {
+          const leftover = cont.children.filter((k) => !isSpacerLike(k));
+          if (leftover.length === 0 && parent && typeof parent.removeChild === "function") parent.removeChild(row);
+        }
+      } catch { /* cosmetic */ }
       const entryId = byMessage.get(message)?.id;
       if (typeof entryId === "string") {
         hiddenEntryIds.add(entryId);

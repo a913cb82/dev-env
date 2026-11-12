@@ -257,6 +257,15 @@ function gluesToPrev(prev: unknown): boolean {
     // Tool-to-tool run boundaries stay glued (r31 behavior).
     if (isToolComponent(prev)) return true;
     if (!isThinkingRow(prev)) return false;
+    // A streaming row can still grow prose; gluing now would drop the blank
+    // before the header and nothing restores it after the thinking detaches.
+    if ((prev as { isStreaming?: unknown }).isStreaming === true) return false;
+    // A row that also carries prose is NOT a label row: gluing its tool block
+    // under it would drop the blank line the transcript expects between the
+    // prose and the header (visible while the row is still streaming, and
+    // permanent after the thinking is detached).
+    const message = (prev as { lastMessage?: { content?: Array<{ type?: string; text?: string }> } }).lastMessage;
+    if ((message?.content ?? []).some((b) => b?.type === "text" && (b.text ?? "").trim() !== "")) return false;
     const kids = rowKids(prev);
     for (let i = kids.length - 1; i >= 0; i--) {
       if (isSpacerLike(kids[i])) continue;
@@ -542,17 +551,26 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
       }
       if (isWrappable(node, pi)) {
         const kids = parent.children;
-        const at = index;
-        const getPrev = (): unknown =>
-          Array.isArray(kids) && at > 0 ? kids[at - 1] : undefined;
+        // Resolve the previous sibling at render time: siblings above can be
+        // removed (detached thinking rows), and a captured index then points
+        // at the wrong node — the block would strip Pi's separator after
+        // prose instead of keeping it.
+        const getPrev = (): unknown => {
+          if (!Array.isArray(kids)) return undefined;
+          const at = kids.indexOf(node);
+          return at > 0 ? kids[at - 1] : undefined;
+        };
         if (wrapToolComponent(node, pi, getPrev)) counts.wrapped++;
         else counts.skipped++;
         continue;
       }
       if (isThinkingRow(node)) {
         const kids = parent.children;
-        const getPrev = (): unknown =>
-          Array.isArray(kids) && index > 0 ? kids[index - 1] : undefined;
+        const getPrev = (): unknown => {
+          if (!Array.isArray(kids)) return undefined;
+          const at = kids.indexOf(node);
+          return at > 0 ? kids[at - 1] : undefined;
+        };
         try {
           counts.spacers += dropLeadingSpacers(node, getPrev());
           counts.spacers += squeezeLeadingSpacers(node);

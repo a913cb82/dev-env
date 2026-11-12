@@ -218,6 +218,16 @@ re-plan (session_start) can never leave a stale grouping on screen. That
 is what makes both resume orders (`pi` and `pi -r`) converge on the same
 transcript.
 
+A message Pi is still streaming carries `stopReason: "pending"`. That value is
+truthy but the message is NOT complete: prose can arrive later in the same
+message. Treating it as finished removed the row whole, so the live screen
+lost assistant prose (the row was detached before its text landed) while a
+resume showed it again — the "messages disappeared live" report. Only a
+terminal stop reason counts as completed, and a streaming row is never
+removed. The wrap's previous-sibling lookup also resolves at render time:
+detaching a row above changes the sibling order, and a captured index made a
+block strip Pi's separator after prose (live one line shorter than resume).
+
 Two more rules keep live and reloaded sessions identical. A message that is
 still streaming is never removed whole: its prose can arrive after the
 thinking, and removing the row lost that prose (the block then started below
