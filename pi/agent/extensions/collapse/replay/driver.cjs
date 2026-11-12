@@ -401,7 +401,12 @@ function openRun(world, toolCallId) {
   const slot = world.toolComps.get(toolCallId);
   if (!slot) throw new Error(`no mounted tool: ${toolCallId}`);
   const comp = slot.inner;
-  if (comp?.children?.length === 1) comp.children[0]?.onMouse?.({ type: "click", button: "left" });
+  if (comp?.children?.length === 1) {
+    comp.children[0]?.onMouse?.({ type: "click", button: "left" });
+    // Pi renders after an input event; the run view is reused across
+    // invalidates, so commit the click before the caller reads `children`.
+    try { comp.render(world.width); } catch { /* compared instead */ }
+  }
   return comp;
 }
 

@@ -29,7 +29,7 @@
  * throughout: anything unrecognized keeps stock rendering.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isThinkingRow, reconcileStreamingLabel, walkerTui } from "./labels.js";
+import { isThinkingRow, reconcileStreamingLabel, refreshThinkingRows, walkerTui } from "./labels.js";
 import { isHiddenThinking } from "./settings.js";
 import { traceEntries, traceOwnerId } from "./trace.js";
 
@@ -179,9 +179,10 @@ export function scheduleWrappingPass(pi: ExtensionAPI): void {
       if (!pending) return;
       try {
         // Runs after the event chain that scheduled it, so the rows already
-        // hold the delta Pi just applied: relabel live rows here as well as
-        // inline, which makes event ordering irrelevant (the second attempt
-        // is a no-op when the first one already wrote).
+        // hold the delta Pi just applied: refresh the row cache, relabel live
+        // rows here as well as inline (makes event ordering irrelevant; the
+        // second attempt is a no-op when the first one already wrote).
+        refreshThinkingRows();
         reconcileStreamingLabel(pending.pi);
         wrappingPass(pending.pi);
       } catch {
@@ -562,6 +563,8 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
         };
         if (wrapToolComponent(node, pi, getPrev)) counts.wrapped++;
         else counts.skipped++;
+        // A wrapped tool's subtree is the stock cell: it cannot contain
+        // another row or tool, so stop here (the walk is the hot path).
         continue;
       }
       if (isThinkingRow(node)) {
@@ -582,6 +585,9 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
         } catch {
           // The next pass retries the install.
         }
+        // Assistant rows contain markdown/text only, never another tool or
+        // thinking row: descending costs the whole message body for nothing.
+        continue;
       }
       counts.skipped++;
       const kids = (node as { children?: unknown }).children;

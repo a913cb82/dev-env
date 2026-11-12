@@ -17,6 +17,15 @@ export interface CollapseSlots extends CollapseState {
   collapseResult?: Component;
   collapseBox?: Box;
   collapseInvalidate?: () => void;
+  /** Hidden-mode run view, reused across renders. Rebuilding it per Pi
+   *  invalidate (the breathe tick pokes every 80ms) repainted the whole
+   *  open run for nothing. */
+  collapseTrace?: Component;
+  /** Tool id the cached view belongs to (a shared state object must not
+   *  lend one tool's view to another). */
+  collapseTraceId?: string;
+  /** Theme the cached view was built with; a theme switch rebuilds it. */
+  collapseTraceTheme?: unknown;
 }
 
 /** One entry in a same-turn tool trace. The entry doubles as the stock

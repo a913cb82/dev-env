@@ -33,14 +33,17 @@ let liveHidden = new WeakSet<object>();
  *  same run (before/after by toolCallId), so previews interleave with the
  *  tool rows instead of clustering at the top. Unanchored entries (blind
  *  trees, entry-order fallback) keep the legacy top position. */
-type ThinkingItem = { text: string; before?: string; after?: string };
+export type ThinkingItem = {
+  text: string;
+  before?: string;
+  after?: string;
+  /** Expanded in place: a click on this preview shows only this text. */
+  open?: boolean;
+};
 const runThinking = new Map<number, ThinkingItem[]>();
 
 /** Run ids with a confirmed detach: the ONLY gate for the preview row. */
 const hiddenRuns = new Set<number>();
-
-/** Expanded (full-text) state per hidden run for the replacement row. */
-const runThinkingOpen = new Set<number>();
 
 /** Skip reasons for the last pass (see detachDiag): pinpoints why rows
  *  stay mounted instead of guessing. */
@@ -96,7 +99,6 @@ export function resetDetachState(): void {
   liveHidden = new WeakSet<object>();
   runThinking.clear();
   hiddenRuns.clear();
-  runThinkingOpen.clear();
   lastSessionManager = undefined;
   lastDetachDiag = "no pass yet";
 }
@@ -120,21 +122,21 @@ function remapRunState(oldToNew: Map<number, number>): void {
         runThinking.delete(oldId);
         const target = runThinking.get(newId) ?? [];
         for (const item of items) {
-          if (!target.some((existing) => existing.text === item.text)) target.push(item);
+          const existing = target.find((candidate) => candidate.text === item.text);
+          if (!existing) target.push(item);
+          else if (item.open) existing.open = true;
         }
         runThinking.set(newId, target);
       } else {
         runThinking.delete(oldId);
       }
       if (hiddenRuns.delete(oldId)) hiddenRuns.add(newId);
-      if (runThinkingOpen.delete(oldId)) runThinkingOpen.add(newId);
     }
     // Runs the re-plan dropped entirely must not keep preview gates alive.
     for (const runId of [...runThinking.keys()]) {
       if (traceRuns.has(runId)) continue;
       runThinking.delete(runId);
       hiddenRuns.delete(runId);
-      runThinkingOpen.delete(runId);
     }
   } catch {
     // Cosmetic only: a missed remap degrades to the stock row, never a throw.
@@ -172,15 +174,6 @@ export function runThinkingForTool(toolCallId: string): string | undefined {
 
 export function hiddenRunCount(): number {
   return hiddenRuns.size;
-}
-
-export function isRunThinkingOpen(runId: number): boolean {
-  return runThinkingOpen.has(runId);
-}
-
-export function toggleRunThinking(runId: number): void {
-  if (runThinkingOpen.has(runId)) runThinkingOpen.delete(runId);
-  else runThinkingOpen.add(runId);
 }
 
 function entriesOf(sm: unknown): Array<{ id?: string; message?: unknown }> {

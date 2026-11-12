@@ -9,11 +9,10 @@ export { WHEEL_FRAMES };
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
-  isRunThinkingOpen,
   runThinkingCount,
   runThinkingItems,
   thinkingRowPreview,
-  toggleRunThinking,
+  type ThinkingItem,
 } from "./detach.js";
 import {
   isRunOpen,
@@ -22,6 +21,7 @@ import {
   runHasLive,
   runToolNames,
   toggleRunOpen,
+  traceBump,
   traceEntries,
   traceOwnerId,
   traceOwnerPoke,
@@ -180,13 +180,32 @@ function renderBashSegment(theme: Theme, segment: BashSegment): string {
   }
 }
 
+/** Tokenized command per args object: the command/args identity is stable
+ *  for a settled call, and a run repaint must not re-tokenize every bash
+ *  row (the 2KB-command path measured ~0.9ms per row per paint). Styling
+ *  stays per paint because the theme can change. Weak keys: streaming args
+ *  objects die with their delta. */
+const bashShapeCache = new WeakMap<object, { summary: string; segments: BashSegment[] }>();
+function bashShape(args: any): { summary: string; segments: BashSegment[] } {
+  const command = typeof args?.command === "string" ? args.command : "";
+  const key = args && typeof args === "object" ? (args as object) : undefined;
+  if (key) {
+    const hit = bashShapeCache.get(key);
+    if (hit) return hit;
+  }
+  const summary = summarizeBashCommand(command);
+  const shape = { summary, segments: summary ? bashSegments(summary) : [] };
+  if (key) bashShapeCache.set(key, shape);
+  return shape;
+}
+
 function shellLeft(theme: Theme, prompt: string, args: any, isError: boolean): string {
-  const summary = summarizeBashCommand(typeof args?.command === "string" ? args.command : "");
+  const { summary, segments } = bashShape(args);
   // The prompt is the tool: accent + bold, and nothing else. The command
   // words are bold, path leaves plain, and the syntax between them dim.
   const head = toolHead(theme, prompt, isError);
   const body = summary
-    ? bashSegments(summary).map((segment) => renderBashSegment(theme, segment)).join("")
+    ? segments.map((segment) => renderBashSegment(theme, segment)).join("")
     : theme.fg("dim", "…");
   const timeout =
     typeof args?.timeout === "number" ? theme.fg("dim", ` (timeout ${args.timeout}s)`) : "";
@@ -252,8 +271,20 @@ function fillPairs(
  *  MCP tools): the argument that names the subject (plain), then every other
  *  argument as a dim `key=value` pair, filled to the row budget and cut at
  *  the end of the last value. */
+const genericRowCache = new WeakMap<object, ReturnType<typeof genericToolRow>>();
+function genericRowFor(args: any): ReturnType<typeof genericToolRow> {
+  if (args && typeof args === "object") {
+    const hit = genericRowCache.get(args as object);
+    if (hit) return hit;
+    const row = genericToolRow(args);
+    genericRowCache.set(args as object, row);
+    return row;
+  }
+  return genericToolRow(args);
+}
+
 function genericLeft(theme: Theme, name: string, args: any, isError: boolean, budget: number): string {
-  const row = genericToolRow(args);
+  const row = genericRowFor(args);
   const head = toolHead(theme, row.primary ? `${name} ` : name, isError);
   return fillPairs(theme, `${head}${row.primary}`, row.pairs, budget).text;
 }
@@ -386,7 +417,11 @@ export function liveCountSuffix(theme: Theme, chars: number): string {
 
 /** Paint one run into `trace`: header or rows + footer. Re-runs whenever
  *  the owner or the run changes (see buildTrace). */
-function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any, pi: ExtensionAPI): void {
+function paintTrace(trace: Container, runId: number, toolCallId: string, theme: Theme, ownerCtx: any, pi: ExtensionAPI): void {
+  // A click must act on the run the registry currently assigns: a re-plan
+  // can move this tool between paints, and the header closure would then
+  // open the old id while the next sync paints the new run closed.
+  const liveRun = (): number => traceEntries.get(toolCallId)?.runId ?? runId;
   trace.clear();
   const piExpanded = !!ownerCtx?.expanded;
   const ids = traceRuns.get(runId) ?? [];
@@ -425,8 +460,10 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
     trace.addChild(
       new MouseRegion(header, (event: any) => {
         if (!event || event.type !== "click") return undefined;
-        toggleRunOpen(runId);
-        tracePokeOwner(runId);
+        const target = liveRun();
+        toggleRunOpen(target);
+        traceBump();
+        tracePokeOwner(target);
         return { handled: true };
       }),
     );
@@ -438,15 +475,16 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
   // row per hosted thinking block, interleaved with the tool rows in
   // transcript order via each thinking's anchor (before/after a tool of
   // this run); unanchored entries keep the legacy top position.
-  const thinkOpen = isRunThinkingOpen(runId);
-  const addPreview = (thinkingText: string): void => {
-    const thinkingRow = thinkOpen
-      ? new Text(theme.italic(theme.fg("thinkingText", thinkingText)), liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, thinkingText), theme.fg("dim", formatCharCount(thinkingText.length)), liveOutputPad(pi), theme);
+  const addPreview = (item: ThinkingItem): void => {
+    const thinkingRow = item.open
+      ? new Text(theme.italic(theme.fg("thinkingText", item.text)), liveOutputPad(pi), 0)
+      : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;
-        toggleRunThinking(runId);
+        // Per-line expansion: only the clicked thinking opens.
+        item.open = !item.open;
+        traceBump();
         tracePokeOwner(runId);
         return { handled: true };
       }),
@@ -454,29 +492,29 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
   };
   const toolIds = traceRuns.get(runId) ?? [];
   const inRun = new Set(toolIds);
-  const beforeMap = new Map<string, string[]>();
-  const afterMap = new Map<string, string[]>();
-  const topThinkings: string[] = [];
+  const beforeMap = new Map<string, ThinkingItem[]>();
+  const afterMap = new Map<string, ThinkingItem[]>();
+  const topThinkings: ThinkingItem[] = [];
   if (isRunHidden(runId)) {
     for (const item of runThinkingItems(runId)) {
       if (item.before !== undefined && inRun.has(item.before)) {
         const list = beforeMap.get(item.before) ?? [];
-        list.push(item.text);
+        list.push(item);
         beforeMap.set(item.before, list);
       } else if (item.after !== undefined && inRun.has(item.after)) {
         const list = afterMap.get(item.after) ?? [];
-        list.push(item.text);
+        list.push(item);
         afterMap.set(item.after, list);
       } else {
-        topThinkings.push(item.text);
+        topThinkings.push(item);
       }
     }
   }
-  for (const thinkingText of topThinkings) addPreview(thinkingText);
+  for (const item of topThinkings) addPreview(item);
   for (const id of toolIds) {
     const entry = traceEntries.get(id);
     if (!entry) continue;
-    for (const thinkingText of beforeMap.get(id) ?? []) addPreview(thinkingText);
+    for (const item of beforeMap.get(id) ?? []) addPreview(item);
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
       : (() => {
@@ -504,11 +542,12 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
         entry.rowOpen = !entry.rowOpen;
-        tracePokeOwner(runId);
+        traceBump();
+        tracePokeOwner(entry.runId);
         return { handled: true };
       }),
     );
-    for (const thinkingText of afterMap.get(id) ?? []) addPreview(thinkingText);
+    for (const item of afterMap.get(id) ?? []) addPreview(item);
   }
   // Footer collapses the run back to its header. Row-open state is preserved.
   // The footer keeps the run rail (col 1) so the block margin stays even.
@@ -519,8 +558,10 @@ function paintTrace(trace: Container, runId: number, theme: Theme, ownerCtx: any
     trace.addChild(
       new MouseRegion(footer, (event: any) => {
         if (!event || event.type !== "click") return undefined;
-        toggleRunOpen(runId);
-        tracePokeOwner(runId);
+        const target = liveRun();
+        toggleRunOpen(target);
+        traceBump();
+        tracePokeOwner(target);
         return { handled: true };
       }),
     );
@@ -543,27 +584,61 @@ function buildTraceFor(
   ownerCtx: any,
   pi: ExtensionAPI,
 ): Component {
-  const trace = new Container();
+  const trace = new Container() as Container & { collapseOwner?: unknown };
+  trace.collapseOwner = ownerCtx;
   let painted = "";
+  let paintedShape = "";
+  let lastPaintAt = 0;
   const sync = (): boolean => {
     const current = traceEntries.get(toolCallId)?.runId ?? runId;
     const ids = traceRuns.get(current) ?? [];
     // Which component of the run paints it? The owner is the run's first
     // tool; every other mounted member renders nothing.
     const isOwner = ids[0] === toolCallId || (ids.length === 0 && traceOwnerId(current) === toolCallId);
+    if (process.env.COLLAPSE_TRACE_DEBUG) console.error("SYNC", toolCallId, "run", current, "ids", JSON.stringify(ids), "owner", isOwner, "open", isRunOpen(current));
+    const live = runHasLive(current);
+    const now = Date.now();
+    // renderCall updates this on every reuse (Pi hands a fresh context when
+    // ctrl+o flips); paint with the latest one, not the creation closure.
+    const ownerNow = (trace as { collapseOwner?: unknown }).collapseOwner ?? ownerCtx;
     // Everything the paint reads: a repaint is needed whenever any of it
     // moves (click, delta, re-plan, a whole second for the live clock).
-    const signature = [
-      current, isOwner, traceRevisionCount(), isRunOpen(current),
-      runThinkingCount(current), runHasLive(current), Math.floor(Date.now() / 1000),
+    // Width/pad/expanded matter too: label budgets and the stock cell depth
+    // are baked in at paint time. `painted` stays stale when a live repaint
+    // is throttled, so the next tick (80ms breather) catches up.
+    // Shape = everything except the stream revision and the clock: a user
+    // action (open, resize, ctrl+o, owner swap) paints immediately; only
+    // stream-driven churn is rate-limited to the breather cadence.
+    // Row/thinking open flags are user actions, not stream churn: they
+    // must repaint immediately even while the run is live.
+    // Per-row live/count flags: a result landing must paint immediately,
+    // even while the rest of the run still streams.
+    const rowFlags = ids.map((id) => {
+      const entry = traceEntries.get(id);
+      return `${entry?.rowOpen ? "1" : "0"}${entry?.isPartial ? "1" : "0"}${entry?.count ?? ""}`;
+    }).join(",");
+    const thinkFlags = runThinkingItems(current).map((item) => (item.open ? "1" : "0")).join("");
+    const shape = [
+      current, isOwner, isRunOpen(current), runThinkingCount(current),
+      isRunHidden(current), live, currentColumns(), liveOutputPad(pi),
+      !!(ownerNow as { expanded?: unknown })?.expanded, rowFlags, thinkFlags,
     ].join("|");
+    const signature = `${shape}|${traceRevisionCount()}|${live ? Math.floor(now / 1000) : 0}`;
     if (signature === painted) return false;
+    if (live && shape === paintedShape && lastPaintAt !== 0 && now - lastPaintAt < 70) return false;
     painted = signature;
+    paintedShape = shape;
+    lastPaintAt = now;
     if (!isOwner) {
       trace.clear();
       return true;
     }
-    paintTrace(trace, current, theme, ownerCtx, pi);
+    try {
+      paintTrace(trace, current, toolCallId, theme, ownerNow, pi);
+    } catch (error) {
+      if (process.env.ROWS_DEBUG) console.error("PAINT ERROR", toolCallId, "run", current, error?.stack ?? error);
+      throw error;
+    }
     return true;
   };
   const paintRender = trace.render.bind(trace);
@@ -690,8 +765,19 @@ export function collapseTool(
       if (typeof context?.invalidate === "function") traceOwnerPoke.set(entry.runId, context.invalidate);
       // Every member of a run gets a self-healing view: the owner paints,
       // the others render nothing — and the roles can swap after a re-plan
-      // without a remount.
-      return buildTraceFor(entry.id, entry.runId, theme, context, pi);
+      // without a remount. Reuse the view across Pi invalidates: the
+      // signature gate inside skips paints whose inputs did not move.
+      const state = (context?.state ?? {}) as CollapseSlots;
+      const cached = state.collapseTrace;
+      if (cached && state.collapseTraceId === entry.id && state.collapseTraceTheme === theme) {
+        (cached as { collapseOwner?: unknown }).collapseOwner = context;
+        return cached;
+      }
+      const trace = buildTraceFor(entry.id, entry.runId, theme, context, pi);
+      state.collapseTrace = trace;
+      state.collapseTraceId = entry.id;
+      state.collapseTraceTheme = theme;
+      return trace;
     },
     renderResult(result: any, options: any, theme: Theme, context: any): Component {
       trackCollapse((context?.state ?? {}) as CollapseSlots, context);

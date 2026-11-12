@@ -94,14 +94,28 @@ size of a tool argument or a thinking block:
   instead of 3.4ms.
 - **Generic summaries** stringify the head of a long argument, not the whole
   thing (1MB: 3.4ms → 0.008ms).
-- **Tree passes** (labels, detach, wrap) are O(components): ~0.05ms for 1000
-  components, and they run on events plus one 1s poll — the only periodic
-  work in the extension.
+- **Tree passes** (labels, detach, wrap) are O(components), and they run on
+  events plus one 1s poll — never per token.
+- **Streaming touches only the live row.** Event walks refresh a cached row
+  list and its live rows; each delta then labels at most that one row
+  (~5µs on a 2,000-row transcript, versus a full tree walk per token before).
+  Pi's own `updateContent` hook heals the spacer inside the update, so no
+  deferred wrap pass is scheduled per delta.
+- **Run views are reused across invalidates.** The breathe timer pokes live
+  rows every 80ms; a signature of the run's visible state (plus the wall
+  clock, width, ctrl+o depth and open rows) decides whether to repaint.
+  Field updates and identical pokes return the same component; stream-driven
+  repaints of a live run are capped at the 80ms cadence, user clicks and
+  completions paint immediately.
+- **Tokenized rows are cached per arguments object** (`bash` command
+  segments, generic tool rows), because a run repaint must not re-tokenize
+  every settled row. The styling pass stays per paint so theme changes apply.
 
-Measured on a 500-row transcript: a thinking delta costs 0.11ms (inline and
-deferred passes), a 2KB `bash` command delta 0.9ms. The rail adds ~0.6µs per
-thinking row per frame (≈0.2% of a core for a screenful). Registries are
-proportional to the transcript (~2.3KB per tool row), not to elapsed time.
+Measured on a 2,000-row synthetic transcript: warm label pass ~4ms, wrap
+pass ~10-12ms (both event/poll only), a streaming delta ~5µs, and a reused
+run view ~0.02ms. The rail adds ~0.6µs per thinking row per frame (≈0.2% of
+a core for a screenful). Registries are proportional to the transcript
+(~2.3KB per tool row), not to elapsed time.
 
 ## Behaviour
 
@@ -206,8 +220,10 @@ settled history keeps the old behavior. A re-detach moves the text
 stacking duplicates across runs; and the replacement preview row (one per
 hosted thinking block, starting with real text and middle-truncated once by
 the row itself, with its size on the right, click to expand the full
-stashed text, styled like Pi's thinking block) renders iff the detach is
-confirmed — a miss degrades to the stock Pi row, never a duplicate.
+stashed text, styled like Pi's thinking block; a click expands or collapses
+that one line, and every preview toggles independently) renders iff the
+detach is confirmed — a miss degrades to the stock Pi row, never a
+duplicate.
 Previews interleave with the tool rows in transcript order (each thinking
 anchors to its neighboring tool); walk-blind thinkings keep the legacy top
 position. Placement never crosses a visible message: a thinking attaches

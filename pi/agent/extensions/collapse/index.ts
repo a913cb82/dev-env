@@ -128,7 +128,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 87;
+const COLLAPSE_REVISION = 89;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -477,8 +477,10 @@ export default function (pi: ExtensionAPI) {
     // Live preview: Pi renders no thinking region until text exists, so
     // writing our label on the delta means the stock `Thinking...` never
     // paints. Throttled per row; the settle pass fixes the final count.
+    // No wrapping pass here: the row-sync hook heals spacing inside Pi's
+    // own update, and scheduling a full tree walk per token was the most
+    // expensive thing the extension did while a model streamed.
     reconcileStreamingLabel(pi, (event as { message?: unknown })?.message);
-    scheduleWrappingPass(pi);
   });
   pi.on("message_end", () => {
     reconcileRows();

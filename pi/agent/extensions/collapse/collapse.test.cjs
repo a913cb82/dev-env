@@ -140,7 +140,12 @@ function textResult(chars) {
 // exactly one child (the header); open runs render rows + footer, so the
 // click only fires when closed (repeat calls are safe no-ops).
 function openRun(comp) {
-  if (comp?.children?.length === 1) comp.children[0]?.onMouse?.({ type: "click", button: "left" });
+  if (comp?.children?.length === 1) {
+    comp.children[0]?.onMouse?.({ type: "click", button: "left" });
+    // Pi renders the tree after an input event before the next one; the
+    // trace now reuses its component, so commit the click explicitly.
+    comp.render?.(100);
+  }
   return comp;
 }
 
@@ -2900,9 +2905,11 @@ function openRun(comp) {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
     check("message_start heals the fresh row", row.contentContainer.children.length === 1, String(row.contentContainer.children.length));
-    // A later delta rebuilds the children (Pi path); the row shadow heals it.
-    row.contentContainer.children = [new Spacer(), new MouseRegion(new Text("T"))];
-    for (const fn of piW.handlers.get("message_update") ?? []) fn({ message: { role: "assistant", content: [{ type: "thinking", thinking: "live text" }] } }, {});
+    // A later delta rebuilds the children (Pi path) INSIDE updateContent;
+    // the installed row shadow heals it without a per-token tree walk.
+    const live = { role: "assistant", content: [{ type: "thinking", thinking: "live text" }] };
+    row.updateContent(live, true);
+    for (const fn of piW.handlers.get("message_update") ?? []) fn({ message: live }, {});
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
     check("update pass heals the rebuilt row", row.contentContainer.children.length === 1, String(row.contentContainer.children.length));
@@ -4291,12 +4298,12 @@ function openRun(comp) {
   bash6.renderResult(doneRes, { expanded: false, isPartial: false }, theme, mkCtx("dur-fill", { isPartial: false }));
   const freshState = {};
   bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-fill", { isPartial: false, state: freshState }));
-  check("backfill fills Pi state gaps", typeof freshState.startedAt === "number" && freshState.endedAt >= freshState.startedAt, JSON.stringify(freshState));
+  check("backfill fills Pi state gaps", typeof freshState.startedAt === "number" && freshState.endedAt >= freshState.startedAt, JSON.stringify({ startedAt: freshState.startedAt, endedAt: freshState.endedAt }));
   // ...but never overwrites exact stamps Pi already holds.
   const T0 = 1699999990000;
   const exactState = { startedAt: T0, endedAt: T0 + 14000 };
   bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-noover", { state: exactState }));
-  check("backfill never overwrites exact stamps", exactState.startedAt === T0 && exactState.endedAt === T0 + 14000, JSON.stringify(exactState));
+  check("backfill never overwrites exact stamps", exactState.startedAt === T0 && exactState.endedAt === T0 + 14000, JSON.stringify({ startedAt: exactState.startedAt, endedAt: exactState.endedAt }));
   // Reverse direction: Pi's exact stamps (e.g. from a visible run) seed an
   // entry that has none, so a later hidden expand shows the true duration.
   bash6.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-adopt", { state: { startedAt: T0, endedAt: T0 + 14000 } }));
@@ -4497,7 +4504,7 @@ function openRun(comp) {
   const piState = { startedAt: T0, endedAt: R_STALE };
   piB._hidden = false;
   bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill", { executionStarted: false, state: piState }));
-  check("visible backfill upgrades stale Pi end", piState.endedAt === T0 + SPAN, JSON.stringify(piState));
+  check("visible backfill upgrades stale Pi end", piState.endedAt === T0 + SPAN, JSON.stringify({ startedAt: piState.startedAt, endedAt: piState.endedAt }));
   bashB.renderResult(res, { expanded: false, isPartial: false }, theme, mkCtx("dur-bfill", { executionStarted: false, state: piState }));
   const visText = bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill", { executionStarted: false, state: piState })).render(100).join("");
   check("visible shows the true duration", visText.includes("Took 14.0s"), visText.slice(-400));
@@ -4508,7 +4515,7 @@ function openRun(comp) {
   keepState.endedAt = T0 + 2;
   bashB.renderCall({ command: "sleep 5" }, theme, mkCtx("dur-bfill-keep", { executionStarted: false, state: keepState }));
   const kept = syncMod.traceEntries.get("dur-bfill-keep");
-  check("unstamped backfill keeps Pi stamps", keepState.endedAt === T0 + 2 && kept.endedAt === undefined, JSON.stringify(keepState));
+  check("unstamped backfill keeps Pi stamps", keepState.endedAt === T0 + 2 && kept.endedAt === undefined, JSON.stringify({ startedAt: keepState.startedAt, endedAt: keepState.endedAt }));
 }
 
   // 90. Skip reasons are real counters. Regression: "streaming" and
@@ -4750,6 +4757,178 @@ function openRun(comp) {
     check("whole detach still detaches", r.detached === 1, JSON.stringify(r));
     check("whole detach removes the row once", removals === 1, String(removals));
     detach.resetDetachState?.();
+  }
+
+  // 96. Per-thinking expansion: clicking one preview expands only that
+  // line. Regression: one run-wide flag expanded every thinking in the block.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piT = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piT);
+    const detach = mod;
+    detach.resetDetachState?.();
+    const bash = tools.get("bash");
+    const t = { fg: (_c, text) => text, style: (text) => text, italic: (text) => text, bold: (text) => text };
+    const mk = (id, args) => ({ args, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const widgets = [];
+    const ui = { setWidget: (_k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+    await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+    bash.renderCall({ command: "echo host" }, t, mk("th1", { command: "echo host" }));
+    const textA = `${"q".repeat(200)}MIDDLEA${"z".repeat(200)}`;
+    const textB = `${"r".repeat(200)}MIDDLEB${"y".repeat(200)}`;
+    const mkRow = (text) => ({
+      lastMessage: { role: "assistant", content: [{ type: "thinking", thinking: text }], stopReason: "stop" },
+      hiddenThinkingLabel: "Thinking...",
+      updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+    });
+    const rowA = mkRow(textA), rowB = mkRow(textB);
+    const chat = {
+      children: [{ toolCallId: "th1" }, rowA, rowB],
+      removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); },
+    };
+    mod.captureWalkerTui({ children: [chat] });
+    const r = detach.detachPass(piT);
+    check("two thinkings attach to one run", r.detached === 2, JSON.stringify(r));
+    const comp = bash.renderCall({ command: "echo host" }, t, mk("th1", { command: "echo host" }));
+    openRun(comp);
+    const clicks = () => comp.children.filter((c) => c?.onMouse);
+    const both = () => comp.render(100).map(plainText).join("\n");
+    // Find the preview by its head: anchor placement may move it, and the
+    // trace is rebuilt on every toggle.
+    const clickPreview = (head) => {
+      const at = comp.children.findIndex((c) => {
+        try { return c.render(100).join("\n").includes(head); } catch { return false; }
+      });
+      if (at < 0) throw new Error(`preview not found: ${head}`);
+      comp.children[at].onMouse({ type: "click", button: "left" });
+    };
+    check("previews start collapsed", !both().includes("MIDDLEA") && !both().includes("MIDDLEB"), both().slice(0, 120));
+    clickPreview("q".repeat(20));
+    const first = both();
+    check("first click expands only its own thinking", first.includes("MIDDLEA") && !first.includes("MIDDLEB"), first.slice(-160));
+    clickPreview("r".repeat(20));
+    const second = both();
+    check("second click expands the second independently", second.includes("MIDDLEA") && second.includes("MIDDLEB"), second.slice(-160));
+    clickPreview("q".repeat(20));
+    const closedFirst = both();
+    check("collapsing the first leaves the second open", !closedFirst.includes("MIDDLEA") && closedFirst.includes("MIDDLEB"), closedFirst.slice(-160));
+    check("preview rows stay clickable", clicks().length >= 4, String(clicks().length));
+    detach.resetDetachState?.();
+  }
+
+  // 97. Hidden run view reuse: the same Pi state + theme gets the same
+  // component, so field updates (breathe pokes) do not rebuild the run. A
+  // shared state object must still not lend one tool another tool's view.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piR = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piR);
+    const bash = tools.get("bash");
+    const t = { fg: (_c, text) => text, bg: (_c, text) => text, style: (text) => text, italic: (text) => text, bold: (text) => text };
+    const mk = (id) => ({ args: { command: "echo 1" }, toolCallId: id, invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false });
+    const ctx = mk("reuse1");
+    const first = bash.renderCall(ctx.args, t, ctx);
+    const second = bash.renderCall(ctx.args, t, ctx);
+    check("hidden run view reused", first === second, `${first === second}`);
+    const other = mk("reuse2");
+    other.state = ctx.state;
+    const third = bash.renderCall(other.args, t, other);
+    check("shared state does not lend another tool's view", third !== first, `${third === first}`);
+    const themeB = { ...t, fg: (_c, text) => `<b>${text}</>` };
+    const fourth = bash.renderCall(ctx.args, themeB, ctx);
+    check("theme switch rebuilds the view", fourth !== first, `${fourth === first}`);
+    check("reused view still paints", second.render(80).length === 1, JSON.stringify(second.render(80)));
+  }
+
+  // 98. A click after a re-plan opens the run the registry now assigns.
+  // Regression: the cached view's header still captured the old run id, so
+  // the click toggled a dead run and the next paint showed it closed.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    const tools = new Map();
+    const handlers = new Map();
+    const piQ = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piQ);
+    const bash = tools.get("bash");
+    const t = { fg: (_c, text) => text, bg: (_c, text) => text, style: (text) => text, italic: (text) => text, bold: (text) => text };
+    const ctx = { args: { command: "echo remap" }, toolCallId: "rp1", invalidate() {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+      expanded: false, showImages: true, isError: false };
+    const comp = bash.renderCall(ctx.args, t, ctx);
+    comp.render(100);
+    check("re-plan fixture starts closed", comp.children.length === 1, String(comp.children.length));
+    mod.applyPlannedRuns([["rp1"]], false);
+    comp.children[0].onMouse({ type: "click", button: "left" });
+    comp.render(100);
+    check("post-re-plan click opens the live run", comp.children.length >= 2, String(comp.children.length));
+    const lines = comp.render(100).map(plainText);
+    check("post-re-plan open view has rows", lines.some((l) => l.includes("Collapse")), JSON.stringify(lines));
+  }
+
+  // 99. A row's first render must not clobber its standalone label.
+  // Regression: maybeRelabel wrote the preview on the first render after the
+  // rail was installed even when detachPass had marked the thinking
+  // standalone, so a resumed mixed message (thinking + prose + tool) showed a
+  // run preview where live showed `>1 thinking`.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const before = process.stdout.columns;
+    Object.defineProperty(process.stdout, "columns", { value: 100, configurable: true, writable: true });
+    const pi = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const message = {
+      role: "assistant",
+      stopReason: "stop",
+      content: [
+        { type: "thinking", thinking: "alpha ".repeat(40) },
+        { type: "text", text: "prose after thinking" },
+      ],
+    };
+    const row = {
+      lastMessage: message,
+      hiddenThinkingLabel: "Thinking...",
+      isStreaming: false,
+      outputPad: 1,
+      setHiddenThinkingLabel(label) { row.hiddenThinkingLabel = label; },
+      updateContent() {},
+      render() { return [row.hiddenThinkingLabel]; },
+    };
+    labelsLib.captureWalkerTui({ children: [row] });
+    labelsLib.setStandaloneThinking(message, true);
+    labelsLib.reconcileThinkingLabels(pi);
+    check("standalone label written", /^>1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
+    row.render(100);
+    check("first render keeps the standalone label", /^>1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
+    Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true, writable: true });
+    row.render(80);
+    check("resize keeps the standalone label", /^>1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
+    if (before === undefined) delete process.stdout.columns;
+    else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
   }
 
   if (failures > 0) {

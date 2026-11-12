@@ -37,6 +37,44 @@ interface LabeledFor {
 }
 let labeledFor = new WeakMap<object, LabeledFor>();
 
+/** Last full scan of thinking rows, reused by the per-delta streaming path.
+ *  Walking the whole transcript on every token is O(all components); the
+ *  settle/event walks refresh this cache, and streaming only scans when a
+ *  live row is missing (a row mounted after the last scan). */
+let rowCache: unknown[] = [];
+/** Rows flagged streaming at the last scan (usually one). The per-delta
+ *  path labels these directly: iterating every row per token made the
+ *  cost O(transcript), not O(live). */
+let liveRows: unknown[] = [];
+/** Last row seen for a message object, for the handler-ordering case where
+ *  the event message is one delta ahead of the row's own `lastMessage`. */
+let rowByMessage = new WeakMap<object, unknown>();
+/** Last extra scan attempt per streaming message, so a row that mounts a
+ *  tick late gets found without scanning per token forever. */
+let scannedFor = new WeakMap<object, number>();
+
+/** Re-scan and cache the mounted thinking rows. Returns the row count. */
+export function refreshThinkingRows(): number {
+  try {
+    const rows: unknown[] = [];
+    if (capturedTui && Array.isArray((capturedTui as { children?: unknown }).children)) {
+      collectRows(capturedTui, rows);
+    }
+    rowCache = rows;
+    liveRows = [];
+    rowByMessage = new WeakMap<object, unknown>();
+    for (const row of rows) {
+      const own = (row as { lastMessage?: unknown }).lastMessage;
+      if (own && typeof own === "object") rowByMessage.set(own, row);
+      if ((row as { isStreaming?: unknown }).isStreaming === true) liveRows.push(row);
+    }
+    return rows.length;
+  } catch {
+    rowCache = [];
+    return 0;
+  }
+}
+
 /** Test-only reset: clear walker handle, caches and counters so a
  *  render test starts from a known world. Production never calls it. */
 export function resetLabelsState(): void {
@@ -48,6 +86,10 @@ export function resetLabelsState(): void {
   streamWrites = 0;
   standaloneMessages = new WeakSet<object>();
   standaloneSeen = new WeakMap<object, { first: number; done?: number }>();
+  rowCache = [];
+  liveRows = [];
+  rowByMessage = new WeakMap<object, unknown>();
+  scannedFor = new WeakMap<object, number>();
 }
 
 /** Thinking with nowhere to go: completed messages detach could not host
@@ -92,7 +134,17 @@ export function walkerTui(): unknown {
  *  labels anything (factories run during render; labeling there would loop). */
 export function captureWalkerTui(tui: unknown): void {
   try {
-    if (tui && typeof tui === "object") capturedTui = tui;
+    if (tui && typeof tui === "object" && tui !== capturedTui) {
+      capturedTui = tui;
+      // A new tree can reuse the same live flags on rows that are gone.
+      // Drop the row cache so the next streaming delta rescans new rows;
+      // the TUI handle itself is stable across a session, so this does not
+      // run per render.
+      rowCache = [];
+      liveRows = [];
+      rowByMessage = new WeakMap<object, unknown>();
+      scannedFor = new WeakMap<object, number>();
+    }
   } catch {
     // A hostile handle is the same as no handle: stock behavior.
   }
@@ -311,6 +363,14 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
     const thinking = extractThinkingText(message);
     if (!thinking) return;
     const pad = liveOutputPad(pi);
+    // A standalone thinking wears the `>N thinking` block label; the preview
+    // is a different rendering and must not replace it on the first render
+    // after install (r88: a resumed mixed row showed a preview where live
+    // showed the standalone label).
+    if (standaloneMessages.has(message)) {
+      writeStandaloneLabel(row, message, cols, pad);
+      return;
+    }
     const label = thinkingLabelForWidth(thinking, cols, pad);
     if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
     labeledFor.set(row, { message, width: cols, pad });
@@ -370,8 +430,8 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
       walkStatus = "inactive (no TUI handle)";
       return 0;
     }
-    const rows: unknown[] = [];
-    collectRows(capturedTui, rows);
+    refreshThinkingRows();
+    const rows = rowCache;
     if (rows.length === 0) {
       walkStatus = "inactive (no rows found)";
       return 0;
@@ -380,17 +440,19 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
     const pad = liveOutputPad(pi);
     let labeled = 0;
     for (const row of rows) {
-      if (!isThinkingRow(row)) continue;
-      installRowRail(row, pi);
       const message = row.lastMessage as { role?: unknown; content?: unknown };
       if (message?.role !== "assistant") continue;
+      // Cache hit first: a steady row costs one WeakMap read per pass, not
+      // a rail install. The rail was installed when the label was written.
+      const cached = labeledFor.get(row);
+      if (!standaloneMessages.has(message as object) &&
+          cached && cached.message === message && cached.width === width && cached.pad === pad) continue;
+      installRowRail(row, pi);
       if (standaloneMessages.has(message as object)) {
         writeStandaloneLabel(row, message, width, pad);
         labeled++;
         continue;
       }
-      const cached = labeledFor.get(row);
-      if (cached && cached.message === message && cached.width === width && cached.pad === pad) continue;
       const thinking = extractThinkingText(message);
       if (!thinking) {
         labeledFor.set(row, { message, width, pad });
@@ -454,12 +516,43 @@ export function reconcileStreamingLabel(
   try {
     if (!isHiddenThinking(pi)) return 0;
     if (!capturedTui || !Array.isArray((capturedTui as { children?: unknown }).children)) return 0;
-    const rows: unknown[] = [];
-    collectRows(capturedTui, rows);
+    // The per-delta path must not walk the transcript. Event/settle walks
+    // refresh `liveRows`; here we touch only the rows that can be live now.
+    const isLive = (row: unknown): boolean => {
+      if (!isThinkingRow(row)) return false;
+      const own = (row as { lastMessage?: unknown }).lastMessage;
+      return (row as { isStreaming?: unknown }).isStreaming === true ||
+        (message !== undefined && own === message);
+    };
+    let candidates = liveRows.filter(isLive);
+    if (message !== undefined) {
+      const text = extractThinkingText(message);
+      // A text-only message has no thinking row worth finding.
+      if (!text && candidates.length === 0) return 0;
+      const found = rowByMessage.get(message as object);
+      if (found && isLive(found) && !candidates.includes(found)) candidates.push(found);
+      if (candidates.length === 0) {
+        // The row may have mounted after the last scan, or its isStreaming
+        // flag is a delta behind. Retry the scan sparingly (not per token).
+        const lastScan = scannedFor.get(message as object);
+        if (lastScan === undefined || now - lastScan >= 200) {
+          scannedFor.set(message as object, now);
+          refreshThinkingRows();
+          candidates = liveRows.filter(isLive);
+          const late = rowByMessage.get(message as object);
+          if (late && isLive(late) && !candidates.includes(late)) candidates.push(late);
+        }
+      }
+    } else if (candidates.length === 0) {
+      // Deferred/settle pass: the scheduled caller refreshes first, but a
+      // direct call (tests, a late mount) still finds the live row once.
+      refreshThinkingRows();
+      candidates = liveRows.filter(isLive);
+    }
     const width = currentColumns();
     const pad = liveOutputPad(pi);
     let written = 0;
-    for (const row of rows) {
+    for (const row of candidates) {
       if (!isThinkingRow(row)) continue;
       installRowRail(row, pi);
       const own = row.lastMessage as { role?: unknown; content?: unknown };
