@@ -52,11 +52,13 @@ import {
   createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+  cleanupLiveHosts,
   detachDiag,
   detachPass,
   hiddenRunCount,
   isMessageHidden,
   noteSessionManager,
+  reconcileLiveThinking,
   resetDetachState,
   runThinkingCount,
   runThinkingForTool,
@@ -128,7 +130,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 89;
+const COLLAPSE_REVISION = 90;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -448,6 +450,9 @@ export default function (pi: ExtensionAPI) {
       // Recover pre-reload execution windows from persisted message
       // timestamps, so expanding a history row shows its true duration.
       noteHistoryTimings(toolTimings(entries));
+      // A rebuild drops the old rows; their live hosts must not leak into
+      // the restored transcript.
+      cleanupLiveHosts(pi);
       // Detach only after planning: applyPlannedRuns reassigns run ids,
       // and the replacement preview row is keyed by the final run.
       detachPass(pi, sm);
@@ -474,13 +479,18 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("message_update", (event) => {
     traceOnMessageUpdate(event);
+    const message = (event as { message?: unknown })?.message;
+    // A thinking-only row that is still streaming joins its block now: its
+    // own row is emptied and the run's trace carries the live preview, so
+    // it never sits outside the block until message_end.
+    reconcileLiveThinking(pi, message);
     // Live preview: Pi renders no thinking region until text exists, so
     // writing our label on the delta means the stock `Thinking...` never
     // paints. Throttled per row; the settle pass fixes the final count.
     // No wrapping pass here: the row-sync hook heals spacing inside Pi's
     // own update, and scheduling a full tree walk per token was the most
     // expensive thing the extension did while a model streamed.
-    reconcileStreamingLabel(pi, (event as { message?: unknown })?.message);
+    reconcileStreamingLabel(pi, message);
   });
   pi.on("message_end", () => {
     reconcileRows();
@@ -489,6 +499,9 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("tool_execution_start", (event) => {
     traceOnToolExecutionStart(event, isOwnTool);
+    // The tool component now exists: a live thinking anchored to the
+    // previous run can move under its own message's first tool.
+    reconcileLiveThinking(pi);
     reconcileRows();
     // A tool row owned by the trace needs its wrap before the first paint.
     scheduleWrappingPass(pi);

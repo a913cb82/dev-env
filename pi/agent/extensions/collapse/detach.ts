@@ -18,8 +18,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
-import { hasVisibleProse, isThinkingRow, setStandaloneThinking, walkerTui } from "./labels.js";
-import { registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent } from "./trace.js";
+import { findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
+import { registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent, isRunOpen } from "./trace.js";
 
 /** Entry ids whose thinking row is confirmed detached (history + adopted). */
 const hiddenEntryIds = new Set<string>();
@@ -39,8 +39,35 @@ export type ThinkingItem = {
   after?: string;
   /** Expanded in place: a click on this preview shows only this text. */
   open?: boolean;
+  /** Provisional item while the row still streams (live detach). The token
+   *  lets an update find/move this item across a run re-plan; it is dropped
+   *  when the completed detach replaces the item. */
+  live?: object;
 };
 const runThinking = new Map<number, ThinkingItem[]>();
+
+/** Live detach: a still-streaming thinking row is provisionally hosted by
+ *  the run it will join. Its Pi row gets an empty hidden label (so it renders
+ *  no separate line) while the run's trace renders the live preview. The
+ *  completed detach replaces the provisional item; any failure restores the
+ *  row label (fail-open). */
+type LiveThinking = {
+  row: object;
+  token: object;
+  runId: number;
+  text: string;
+  before?: string;
+  after?: string;
+};
+let liveThinkingByRow = new WeakMap<object, LiveThinking>();
+const liveThinkingRows = new Set<object>();
+/** Per-run text revision, included in an OPEN run's paint signature so the
+ *  growing preview repaints without bumping every other run's view. */
+const liveThinkingRevisions = new Map<number, number>();
+
+export function liveThinkingRevision(runId: number): number {
+  return liveThinkingRevisions.get(runId) ?? 0;
+}
 
 /** Run ids with a confirmed detach: the ONLY gate for the preview row. */
 const hiddenRuns = new Set<number>();
@@ -99,6 +126,9 @@ export function resetDetachState(): void {
   liveHidden = new WeakSet<object>();
   runThinking.clear();
   hiddenRuns.clear();
+  liveThinkingByRow = new WeakMap<object, LiveThinking>();
+  liveThinkingRows.clear();
+  liveThinkingRevisions.clear();
   lastSessionManager = undefined;
   lastDetachDiag = "no pass yet";
 }
@@ -131,6 +161,25 @@ function remapRunState(oldToNew: Map<number, number>): void {
         runThinking.delete(oldId);
       }
       if (hiddenRuns.delete(oldId)) hiddenRuns.add(newId);
+    }
+    // Live hosts point at a run id too: follow the same remap or the next
+    // delta would move the provisional item back to a dead run.
+    for (const row of liveThinkingRows) {
+      const info = liveThinkingByRow.get(row);
+      if (!info) continue;
+      const next = oldToNew.get(info.runId);
+      if (next !== undefined) info.runId = next;
+    }
+    const movedRevisions = new Map<number, number>();
+    for (const [oldId, newId] of oldToNew) {
+      const revision = liveThinkingRevisions.get(oldId);
+      if (revision === undefined) continue;
+      liveThinkingRevisions.delete(oldId);
+      movedRevisions.set(newId, (movedRevisions.get(newId) ?? 0) + revision);
+    }
+    for (const [runId, revision] of movedRevisions) {
+      liveThinkingRevisions.set(runId, (liveThinkingRevisions.get(runId) ?? 0) + revision);
+      tracePokeOwner(runId);
     }
     // Runs the re-plan dropped entirely must not keep preview gates alive.
     for (const runId of [...runThinking.keys()]) {
@@ -286,6 +335,285 @@ function ownsToolInRun(message: unknown, runId: number): boolean {
   return false;
 }
 
+/** Prose that renders AFTER the thinking within its own message. Pi paints
+ *  the row in content order and mounts the tool components after the whole
+ *  row, so that prose always lands between the thinking and any later block.
+ *  A thinking followed by its own message's prose must never be hoisted into
+ *  that block — it would read as if it happened after the prose. */
+function ownProseAfterThinking(message: unknown): boolean {
+  const content = (message as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return false;
+  let lastThinking = -1;
+  content.forEach((block, i) => {
+    if ((block as { type?: unknown } | null | undefined)?.type === "thinking") lastThinking = i;
+  });
+  if (lastThinking < 0) return false;
+  return content.slice(lastThinking + 1).some((block) => {
+    const part = block as { type?: unknown; text?: unknown } | null | undefined;
+    return part?.type === "text" && typeof part.text === "string" && part.text.trim() !== "";
+  });
+}
+
+/** Any visible prose in the message. A live host is conservative: a mixed
+ *  row keeps its own label above the prose (the completed pass may still
+ *  place it, but live must never hoist it below prose). */
+function messageHasProse(message: unknown): boolean {
+  const content = (message as { content?: unknown })?.content;
+  return Array.isArray(content) && content.some((block) => {
+    const part = block as { type?: unknown; text?: unknown } | null | undefined;
+    return part?.type === "text" && typeof part.text === "string" && part.text.trim() !== "";
+  });
+}
+
+function messageVisibleToUser(message: unknown): boolean {
+  if (!message || typeof message !== "object") return false;
+  const role = (message as { role?: unknown }).role;
+  if (role === "user") return true;
+  if (role === "assistant") return messageHasProse(message);
+  return false;
+}
+
+/** A persisted visible block after the newest tool. Live messages are not
+ *  persisted yet; a prose-only assistant (or a user message) is, and vetoes
+ *  a backward attach across it. */
+function visibleAfterTool(toolCallId: string): boolean {
+  const entries = entriesOf(lastSessionManager);
+  let at = -1;
+  for (let i = 0; i < entries.length; i++) {
+    const content = (entries[i] as { message?: { content?: unknown } })?.message?.content;
+    if (!Array.isArray(content)) continue;
+    if (content.some((block) => {
+      const part = block as { type?: unknown; id?: unknown } | null | undefined;
+      return part?.type === "toolCall" && part.id === toolCallId;
+    })) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return false;
+  for (let k = at + 1; k < entries.length; k++) {
+    const entry = entries[k] as { message?: unknown; type?: unknown; display?: unknown };
+    if (messageVisibleToUser(entry?.message)) return true;
+    if (entry?.type === "custom_message" && entry.display !== false) return true;
+  }
+  return false;
+}
+
+/** Newest tool run in insertion order (runs are appended as they render). */
+function newestRunInfo(): { runId: number; toolCallId: string } | undefined {
+  let out: { runId: number; toolCallId: string } | undefined;
+  for (const [runId, ids] of traceRuns) {
+    if (!ids.length) continue;
+    const toolCallId = ids[ids.length - 1];
+    if (toolCallId) out = { runId, toolCallId };
+  }
+  return out;
+}
+
+/** First tool in the streaming message's own content, once its component
+ *  has rendered. The thinking is above all own tools (Pi mounts them after
+ *  the whole row), so the first id is the right anchor. */
+function ownToolRun(message: unknown): { runId: number; toolCallId: string } | undefined {
+  const content = (message as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    const part = block as { type?: unknown; id?: unknown } | null | undefined;
+    if (part?.type !== "toolCall" || typeof part.id !== "string") continue;
+    const entry = traceEntries.get(part.id);
+    if (entry) return { runId: entry.runId, toolCallId: part.id };
+  }
+  return undefined;
+}
+
+function findLiveItem(token: object): { runId: number; index: number; item: ThinkingItem } | undefined {
+  for (const [runId, items] of runThinking) {
+    const index = items.findIndex((item) => item.live === token);
+    if (index >= 0) return { runId, index, item: items[index] };
+  }
+  return undefined;
+}
+
+function bumpLive(runId: number, headerChanged = false): void {
+  liveThinkingRevisions.set(runId, (liveThinkingRevisions.get(runId) ?? 0) + 1);
+  // A closed run only shows the count; a text-only delta does not move it.
+  // An open run renders the growing preview, so it repaints every delta.
+  if (headerChanged || isRunOpen(runId)) tracePokeOwner(runId);
+}
+
+function removeLiveItem(info: LiveThinking): void {
+  const found = findLiveItem(info.token);
+  if (found) {
+    const items = runThinking.get(found.runId);
+    if (items) {
+      items.splice(found.index, 1);
+      if (items.length === 0) {
+        runThinking.delete(found.runId);
+        hiddenRuns.delete(found.runId);
+      }
+      bumpLive(found.runId, true);
+    }
+  }
+}
+
+/** Forget the live state for a row without touching its stashed item. The
+ *  completed detach owns the item from here on. */
+function forgetLiveRow(row: object): void {
+  const info = liveThinkingByRow.get(row);
+  if (info) removeLiveItem(info);
+  liveThinkingByRow.delete(row);
+  liveThinkingRows.delete(row);
+  setRowLiveHosted(row, false);
+}
+
+function removeLiveThinking(row: object): void {
+  forgetLiveRow(row);
+}
+
+/** Restore every hosted row (visibility flip, opt-out, reset, reload). */
+export function cleanupLiveHosts(pi: ExtensionAPI): void {
+  for (const row of [...liveThinkingRows]) {
+    removeLiveThinking(row);
+    // Visible thinking renders stock content, not a hidden label: leave the
+    // row untouched when collapse is off.
+    if (isHiddenThinking(pi)) restoreThinkingLabel(row, pi);
+  }
+}
+
+function upsertLiveThinking(
+  row: object,
+  host: { runId: number; before?: string; after?: string },
+  text: string,
+  pi: ExtensionAPI,
+): void {
+  let info = liveThinkingByRow.get(row);
+  const isNewRow = !info;
+  if (!info) {
+    info = { row, token: {}, runId: host.runId, text, before: host.before, after: host.after };
+    liveThinkingByRow.set(row, info);
+    liveThinkingRows.add(row);
+  } else if (info.runId !== host.runId) {
+    removeLiveItem(info);
+    info.runId = host.runId;
+  }
+  info.text = text;
+  info.before = host.before;
+  info.after = host.after;
+  const found = findLiveItem(info.token);
+  let added = false;
+  let moved = false;
+  if (found) {
+    found.item.text = text;
+    found.item.before = host.before;
+    found.item.after = host.after;
+    if (found.runId !== host.runId) {
+      // A re-plan moved the item's run without touching this token.
+      moved = true;
+      const items = runThinking.get(found.runId);
+      if (items) {
+        items.splice(found.index, 1);
+        if (items.length === 0) runThinking.delete(found.runId);
+      }
+      const target = runThinking.get(host.runId) ?? [];
+      target.push(found.item);
+      runThinking.set(host.runId, target);
+      bumpLive(found.runId, true);
+    }
+  } else {
+    added = true;
+    const target = runThinking.get(host.runId) ?? [];
+    target.push({ text, before: host.before, after: host.after, live: info.token });
+    runThinking.set(host.runId, target);
+  }
+  hiddenRuns.add(host.runId);
+  bumpLive(host.runId, isNewRow || added || moved);
+  setRowLiveHosted(row, true);
+  if ((row as { hiddenThinkingLabel?: unknown }).hiddenThinkingLabel !== "") {
+    try {
+      (row as { setHiddenThinkingLabel: (label: string) => void }).setHiddenThinkingLabel("");
+    } catch {
+      // The next delta retries; fail-open keeps the stock row.
+    }
+  }
+}
+
+/** Update the live host for one streaming thinking row. Cheap enough for
+ *  every delta: message content, the newest run id, and the set of live
+ *  rows — no tree walk. Returns 1 when the row is hosted. */
+export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): number {
+  try {
+    if (!isHiddenThinking(pi) || !isDetachEnabled()) {
+      cleanupLiveHosts(pi);
+      return 0;
+    }
+    // Text-only deltas have no live thinking to host; avoid the row scan
+    // that r89 removed from this per-token path.
+    if (message !== undefined && !extractThinkingText(message)) return 0;
+    const row = findStreamingRow(message);
+    if (!row || !isThinkingRow(row)) return 0;
+    const msg = (message ?? row.lastMessage) as { role?: unknown; stopReason?: unknown };
+    if (!msg || msg.role !== "assistant") return 0;
+    const streaming = (row as { isStreaming?: unknown }).isStreaming === true ||
+      msg.stopReason == null || msg.stopReason === "pending";
+    const existing = liveThinkingByRow.get(row);
+    if (!streaming) {
+      if (existing) {
+        removeLiveThinking(row);
+        restoreThinkingLabel(row, pi);
+      }
+      return 0;
+    }
+    if (ownProseAfterThinking(msg) || messageHasProse(msg)) {
+      if (existing) {
+        removeLiveThinking(row);
+        restoreThinkingLabel(row, pi);
+      }
+      return 0;
+    }
+    const text = extractThinkingText(msg);
+    if (!text) {
+      if (existing) {
+        removeLiveThinking(row);
+        restoreThinkingLabel(row, pi);
+      }
+      return 0;
+    }
+    const own = ownToolRun(msg);
+    if (existing) {
+      // Same row, still streaming: no transcript scan. Keep the host stable
+      // until the message grows its own tool; that tool's run is the only
+      // thing that can move the preview.
+      let host: { runId: number; before?: string; after?: string } = { runId: existing.runId, before: existing.before, after: existing.after };
+      if (own && (existing.runId !== own.runId || existing.before !== own.toolCallId)) {
+        host = { runId: own.runId, before: own.toolCallId };
+      }
+      if (!own && !isTurnCurrent(existing.runId)) {
+        removeLiveThinking(row);
+        restoreThinkingLabel(row, pi);
+        return 0;
+      }
+      upsertLiveThinking(row, host, text, pi);
+      return 1;
+    }
+    let host: { runId: number; before?: string; after?: string } | undefined;
+    if (own) {
+      host = { runId: own.runId, before: own.toolCallId };
+    } else {
+      const prev = newestRunInfo();
+      if (prev && isTurnCurrent(prev.runId) && !visibleAfterTool(prev.toolCallId)) {
+        host = { runId: prev.runId, after: prev.toolCallId };
+      }
+    }
+    if (!host) {
+      return 0;
+    }
+    upsertLiveThinking(row, host, text, pi);
+    return 1;
+  } catch {
+    // Fail-open: the row keeps its own line; the completed pass retries.
+    return 0;
+  }
+}
+
 export function detachPass(
   pi: ExtensionAPI,
   sessionManager?: unknown,
@@ -296,10 +624,19 @@ export function detachPass(
   let walkedThinking = 0;
   let walkedTools = 0;
   try {
-    if (!isDetachEnabled() || !isHiddenThinking(pi)) return result;
+    if (!isDetachEnabled() || !isHiddenThinking(pi)) {
+      cleanupLiveHosts(pi);
+      return result;
+    }
     const tui = walkerTui();
-    if (!tui || typeof tui !== "object") return result;
-    if (!Array.isArray((tui as { children?: unknown }).children)) return result;
+    if (!tui || typeof tui !== "object") {
+      cleanupLiveHosts(pi);
+      return result;
+    }
+    if (!Array.isArray((tui as { children?: unknown }).children)) {
+      cleanupLiveHosts(pi);
+      return result;
+    }
     const sm = sessionManager ?? lastSessionManager;
     const entryList = entriesOf(sm);
     const byMessage = new Map<unknown, { id?: string }>();
@@ -350,25 +687,6 @@ export function detachPass(
      *  hold the live rows entries have not landed yet, entries hold the
      *  settled rows no longer mounted. Fully unknown positions allow
      *  (the settled pass re-checks once entries land). */
-    /** Prose that renders AFTER the thinking within its own message. Pi
-     *  paints the row in content order and mounts the tool components after
-     *  the whole row, so that prose always lands between the thinking and
-     *  any later block. A thinking followed by its own message's prose must
-     *  never be hoisted into that block — it would read as if it happened
-     *  after the prose. */
-    const ownProseAfterThinking = (message: unknown): boolean => {
-      const content = (message as { content?: unknown })?.content;
-      if (!Array.isArray(content)) return false;
-      let lastThinking = -1;
-      content.forEach((block, i) => {
-        if ((block as { type?: unknown } | null | undefined)?.type === "thinking") lastThinking = i;
-      });
-      if (lastThinking < 0) return false;
-      return content.slice(lastThinking + 1).some((block) => {
-        const part = block as { type?: unknown; text?: unknown } | null | undefined;
-        return part?.type === "text" && typeof part.text === "string" && part.text.trim() !== "";
-      });
-    };
     const segmentClear = (thinkIdx: number, thinkMsg: unknown, toolCallId: string): boolean => {
       const mountedAt = toolPos.get(toolCallId);
       if (mountedAt !== undefined) {
@@ -460,6 +778,17 @@ export function detachPass(
         skip("role");
         continue;
       }
+      // Live detach ends when the row settles (or turns mixed): restore its
+      // own label before the completed pass inspects it. A still-streaming,
+      // prose-free row keeps its provisional host.
+      if (liveThinkingByRow.has(row)) {
+        const settled = (row as { isStreaming?: unknown }).isStreaming !== true ||
+          (message.stopReason != null && message.stopReason !== "pending");
+        if (settled || ownProseAfterThinking(message) || messageHasProse(message)) {
+          removeLiveThinking(row);
+          restoreThinkingLabel(row, pi);
+        }
+      }
       let runId = hostRunFor(message);
       // A tool in the thinking's own message mounts after the whole row, so
       // prose that follows the thinking still lands between them. Treat that
@@ -509,6 +838,10 @@ export function detachPass(
         // No home: a completed thinking with nowhere to go collapses in
         // place (standalone header) instead of lingering as a stock row.
         // Streaming rows keep their live preview; unsafe rows keep stock.
+        if (liveThinkingByRow.has(row)) {
+          removeLiveThinking(row);
+          restoreThinkingLabel(row, pi);
+        }
         const text = extractThinkingText(message);
         // A mixed row (prose + thinking) can stand alone too: this only
         // rewrites the thinking label, the prose stays exactly as it is.
@@ -536,6 +869,10 @@ export function detachPass(
       // reports stopReason "pending" while streaming, so the message check in
       // isSafeToDetach treats that as not completed.
       if (runId !== undefined && (row as { isStreaming?: unknown })?.isStreaming === true) {
+        const text = extractThinkingText(message);
+        if (text && !ownProseAfterThinking(message) && !messageHasProse(message)) {
+          upsertLiveThinking(row, { runId, ...anchorFor(i, prev, runId) }, text, pi);
+        }
         skip("streaming");
         continue;
       }

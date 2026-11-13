@@ -53,6 +53,84 @@ let rowByMessage = new WeakMap<object, unknown>();
  *  tick late gets found without scanning per token forever. */
 let scannedFor = new WeakMap<object, number>();
 
+/** Rows whose hidden-thinking line is currently hosted by a run (live
+ *  detach). Their label is kept empty so Pi renders no separate row; the
+ *  run's trace renders the live preview instead. */
+let liveHostedRows = new WeakSet<object>();
+
+/** Mark one row as live-hosted. Detach owns the state; labels only honor it
+ *  so no label pass can resurrect the line. */
+export function setRowLiveHosted(row: unknown, on: boolean): void {
+  try {
+    if (!row || typeof row !== "object") return;
+    if (on) liveHostedRows.add(row);
+    else liveHostedRows.delete(row);
+  } catch {
+    // Cosmetic only.
+  }
+}
+
+export function isRowLiveHosted(row: unknown): boolean {
+  try {
+    return !!row && typeof row === "object" && liveHostedRows.has(row);
+  } catch {
+    return false;
+  }
+}
+
+/** The row's current message, if it has one. */
+function rowMessage(row: unknown): unknown {
+  return (row as { lastMessage?: unknown } | undefined)?.lastMessage;
+}
+
+/** A row mounted for a message that has not finished streaming. Pi may hand
+ *  the row a different message object than the event carries, so identity
+ *  alone can miss the first delta; pending is the safe fallback. */
+function isPendingAssistant(message: unknown): boolean {
+  const msg = message as { role?: unknown; stopReason?: unknown } | undefined;
+  return msg?.role === "assistant" && (msg.stopReason == null || msg.stopReason === "pending");
+}
+
+/** The row for an update. Handlers may run before or after Pi applies the
+ *  delta: match by message identity first, then the one live row, then the
+ *  just-mounted last row (its `lastMessage` is still undefined). Returns
+ *  undefined when the answer is ambiguous — a missed frame is better than
+ *  moving another row's thinking. */
+export function findStreamingRow(message?: unknown): unknown | undefined {
+  try {
+    if (message) {
+      const byMessage = rowByMessage.get(message as object);
+      if (byMessage && isThinkingRow(byMessage)) return byMessage;
+    }
+    if (rowCache.length === 0) refreshThinkingRows();
+    const live = (): unknown[] => liveRows.filter((row) => isThinkingRow(row) &&
+      (row as { isStreaming?: unknown }).isStreaming === true);
+    const one = live();
+    if (one.length === 1) return one[0];
+    if (message) {
+      const last = rowCache[rowCache.length - 1];
+      const lastLive = (last as { isStreaming?: unknown } | undefined)?.isStreaming === true;
+      if (last && isThinkingRow(last) &&
+          (rowMessage(last) === undefined || rowMessage(last) === message ||
+           (lastLive && isPendingAssistant(rowMessage(last))))) {
+        return last;
+      }
+    }
+    if (one.length > 0) return undefined;
+    refreshThinkingRows();
+    const retry = live();
+    if (retry.length === 1) return retry[0];
+    const last = rowCache[rowCache.length - 1];
+    const lastLive = (last as { isStreaming?: unknown } | undefined)?.isStreaming === true;
+    if (message && last && isThinkingRow(last) &&
+        (rowMessage(last) === undefined || rowMessage(last) === message ||
+         (lastLive && isPendingAssistant(rowMessage(last))))) return last;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Re-scan and cache the mounted thinking rows. Returns the row count. */
 export function refreshThinkingRows(): number {
   try {
@@ -90,6 +168,7 @@ export function resetLabelsState(): void {
   liveRows = [];
   rowByMessage = new WeakMap<object, unknown>();
   scannedFor = new WeakMap<object, number>();
+  liveHostedRows = new WeakSet<object>();
 }
 
 /** Thinking with nowhere to go: completed messages detach could not host
@@ -342,6 +421,26 @@ function writeLabel(row: any, label: string): boolean {
   return false;
 }
 
+/** Put a normal preview label back on a row that is no longer live-hosted
+ *  (fail-open, prose arrival, or completion before detach). */
+export function restoreThinkingLabel(row: unknown, pi: ExtensionAPI): void {
+  try {
+    if (!row || typeof row !== "object" || !isThinkingRow(row)) return;
+    const message = row.lastMessage as { role?: unknown; content?: unknown } | undefined;
+    if (!message || message.role !== "assistant") return;
+    const thinking = extractThinkingText(message);
+    if (!thinking) return;
+    const width = currentColumns();
+    const pad = liveOutputPad(pi);
+    installRowRail(row, pi);
+    const label = thinkingLabelForWidth(thinking, width, pad);
+    if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
+    labeledFor.set(row, { message, width, pad });
+  } catch {
+    // Fail-open: the poll's reconcile labels it.
+  }
+}
+
 /** Columns each row's label was last built for. A render is the only place
  *  that learns about a resize (Pi has no resize event), so the row's own
  *  render relabels for the new width before the frame is drawn. */
@@ -358,6 +457,7 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
     rowColumns.set(row, cols);
     if (seen === cols) return;
     if (!isHiddenThinking(pi)) return;
+    if (isRowLiveHosted(row)) return;
     const message = row.lastMessage;
     if (message?.role !== "assistant") return;
     const thinking = extractThinkingText(message);
@@ -442,6 +542,7 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
     for (const row of rows) {
       const message = row.lastMessage as { role?: unknown; content?: unknown };
       if (message?.role !== "assistant") continue;
+      if (isRowLiveHosted(row)) continue;
       // Cache hit first: a steady row costs one WeakMap read per pass, not
       // a rail install. The rail was installed when the label was written.
       const cached = labeledFor.get(row);
@@ -554,6 +655,18 @@ export function reconcileStreamingLabel(
     let written = 0;
     for (const row of candidates) {
       if (!isThinkingRow(row)) continue;
+      if (isRowLiveHosted(row)) {
+        // The run's trace owns the live preview; an empty hidden label makes
+        // Pi render no separate row at all (no line, no spacer).
+        if (row.hiddenThinkingLabel !== "") {
+          try {
+            (row as { setHiddenThinkingLabel: (label: string) => void }).setHiddenThinkingLabel("");
+          } catch {
+            // The next delta retries.
+          }
+        }
+        continue;
+      }
       installRowRail(row, pi);
       const own = row.lastMessage as { role?: unknown; content?: unknown };
       if (own?.role !== "assistant") continue;

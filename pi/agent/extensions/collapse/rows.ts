@@ -9,6 +9,7 @@ export { WHEEL_FRAMES };
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
+  liveThinkingRevision,
   runThinkingCount,
   runThinkingItems,
   thinkingRowPreview,
@@ -618,10 +619,15 @@ function buildTraceFor(
       return `${entry?.rowOpen ? "1" : "0"}${entry?.isPartial ? "1" : "0"}${entry?.count ?? ""}`;
     }).join(",");
     const thinkFlags = runThinkingItems(current).map((item) => (item.open ? "1" : "0")).join("");
+    // Only an open run shows the live preview text; a closed run's header
+    // changes with the count alone, so don't repaint it on every token.
+    const openRun = isRunOpen(current);
+    const liveRev = openRun ? liveThinkingRevision(current) : 0;
     const shape = [
-      current, isOwner, isRunOpen(current), runThinkingCount(current),
+      current, isOwner, openRun, runThinkingCount(current),
       isRunHidden(current), live, currentColumns(), liveOutputPad(pi),
       !!(ownerNow as { expanded?: unknown })?.expanded, rowFlags, thinkFlags,
+      liveRev,
     ].join("|");
     const signature = `${shape}|${traceRevisionCount()}|${live ? Math.floor(now / 1000) : 0}`;
     if (signature === painted) return false;

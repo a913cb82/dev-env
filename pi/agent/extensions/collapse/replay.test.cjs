@@ -292,6 +292,163 @@ const loadFixture = (name) =>
       lines.join("\n"));
   }
 
+  // R14. A thinking-only row that is still streaming belongs to the block
+  // above: it must not linger as a separate row until message_end. Live
+  // frames showed `>6 bash · 4 thinking` and then a standalone streaming
+  // preview below it.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "a" },
+      { op: "tool", id: "a", toolId: "a1", name: "bash", args: { command: "echo one" } },
+      { op: "end", id: "a", stop: "toolUse" },
+      { op: "result", toolId: "a1", text: "one" },
+      { op: "tick" },
+      { op: "start", id: "b" },
+      { op: "thinking", id: "b", text: "LIVEALPHA " },
+      { op: "thinking", id: "b", text: "LIVEBETA" },
+    ]);
+    const shot = driver.dump(world);
+    const header = shot.lines.findIndex((l) => l.trim().startsWith(">"));
+    check("streaming thinking joins the block count",
+      header >= 0 && shot.lines[header].includes("1 bash") && shot.lines[header].includes("1 thinking"),
+      shot.lines.join("\n"));
+    check("streaming thinking has no separate row",
+      !shot.lines.some((l) => l.includes("LIVEALPHA")), shot.lines.join("\n"));
+    const comp = driver.openRun(world, "a1");
+    const opened = driver.dump(world).lines;
+    const toolRow = opened.findIndex((l) => l.includes("echo one"));
+    const preview = opened.findIndex((l) => l.includes("LIVEALPHA"));
+    const footerAt = opened.findIndex((l) => l.includes("Collapse"));
+    check("streaming thinking preview is inside the opened block",
+      preview > toolRow && footerAt > preview, opened.slice(Math.max(0, toolRow - 1), footerAt + 1).join("\n"));
+    check("opening the block leaves the live row mounted but empty",
+      comp.children.length >= 2, String(comp.children.length));
+
+    // Close the run again before comparing with a collapsed restore.
+    const footer = comp.children[comp.children.length - 1];
+    footer?.onMouse?.({ type: "click", button: "left" });
+    comp.render(world.width);
+    // Once it settles the provisional item is replaced by the completed
+    // detach; live and restore must agree.
+    await driver.runLive(world, [
+      { op: "end", id: "b", stop: "stop" },
+      { op: "tick" },
+    ]);
+    const settled = driver.dump(world).lines.join("\n");
+    check("settled thinking stays in the block",
+      settled.includes("1 bash") && settled.includes("1 thinking") &&
+      !settled.split("\n").some((l) => l.includes("LIVEALPHA")), settled);
+    const restored = driver.createWorld(PI, { width: 100 });
+    await driver.restore(restored, world.entries);
+    check("live streaming thinking matches restore", settled === driver.dump(restored).lines.join("\n"),
+      `--- live ---\n${settled}\n--- restore ---\n${driver.dump(restored).lines.join("\n")}`);
+  }
+
+  // R15. A streaming mixed row (thinking then its own prose) must NOT be
+  // hosted: the prose follows the thinking, so the label belongs above the
+  // prose in the row, not inside a block below it.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "a" },
+      { op: "tool", id: "a", toolId: "a1", name: "bash", args: { command: "echo one" } },
+      { op: "end", id: "a", stop: "toolUse" },
+      { op: "result", toolId: "a1", text: "one" },
+      { op: "tick" },
+      { op: "start", id: "b" },
+      { op: "thinking", id: "b", text: "LIVEOWN" },
+      { op: "text", id: "b", text: "PROSE AFTER LIVEOWN" },
+      { op: "tick" },
+    ]);
+    const lines = driver.dump(world).lines;
+    const header = lines.findIndex((l) => l.trim().startsWith(">"));
+    check("mixed streaming row is not hoisted into the block",
+      header >= 0 && lines[header].includes("1 bash") && !lines[header].includes("thinking"),
+      lines.join("\n"));
+    const preview = lines.findIndex((l) => l.includes("LIVEOWN"));
+    const prose = lines.findIndex((l) => l.includes("PROSE AFTER"));
+    check("mixed streaming row keeps the preview above its prose",
+      preview >= 0 && prose > preview, lines.join("\n"));
+  }
+
+  // R16. Prose arriving after the live host must pull the thinking back
+  // above its own prose; the block must not keep counting it.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "a" },
+      { op: "tool", id: "a", toolId: "a1", name: "bash", args: { command: "echo one" } },
+      { op: "end", id: "a", stop: "toolUse" },
+      { op: "result", toolId: "a1", text: "one" },
+      { op: "tick" },
+      { op: "start", id: "b" },
+      { op: "thinking", id: "b", text: "LIVEPROSE" },
+      { op: "text", id: "b", text: "PROSE ARRIVES" },
+    ]);
+    const lines = driver.dump(world).lines;
+    const header = lines.findIndex((l) => l.includes("bash"));
+    check("prose arrival releases the live thinking",
+      header >= 0 && !lines[header].includes("thinking"), lines.join("\n"));
+    const preview = lines.findIndex((l) => l.includes("LIVEPROSE"));
+    const prose = lines.findIndex((l) => l.includes("PROSE ARRIVES"));
+    check("prose arrival keeps the preview above its prose",
+      preview >= 0 && prose > preview, lines.join("\n"));
+  }
+
+  // R17. The message's own tool mounts after the thinking: the live item
+  // moves under that tool (before it), not after the previous block.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "a" },
+      { op: "tool", id: "a", toolId: "a1", name: "bash", args: { command: "echo one" } },
+      { op: "end", id: "a", stop: "toolUse" },
+      { op: "result", toolId: "a1", text: "one" },
+      { op: "tick" },
+      { op: "start", id: "b" },
+      { op: "thinking", id: "b", text: "LIVEOWNTOOL" },
+      { op: "tool", id: "b", toolId: "b1", name: "bash", args: { command: "echo two" } },
+      { op: "tick" },
+    ]);
+    const header = driver.dump(world).lines.find((l) => l.includes("bash")) ?? "";
+    check("own tool keeps the live thinking in one block",
+      header.includes("2 bash") && header.includes("1 thinking"), header);
+    driver.openRun(world, "a1");
+    const opened = driver.dump(world).lines;
+    const one = opened.findIndex((l) => l.includes("echo one"));
+    const live = opened.findIndex((l) => l.includes("LIVEOWNTOOL"));
+    const two = opened.findIndex((l) => l.includes("echo two"));
+    check("own tool anchors the live preview before it",
+      one >= 0 && live > one && two > live, opened.join("\n"));
+  }
+
+  // R18. A first-turn thinking with no block to join stays visible; live
+  // hosting must never hide a row with nowhere to go.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "b" },
+      { op: "thinking", id: "b", text: "LIVEALONE" },
+      { op: "tick" },
+    ]);
+    const lines = driver.dump(world).lines;
+    check("first-turn live thinking keeps a row",
+      lines.some((l) => l.includes("LIVEALONE")), lines.join("\n"));
+    check("first-turn live thinking has no empty block",
+      !lines.some((l) => l.trim().startsWith(">")), lines.join("\n"));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

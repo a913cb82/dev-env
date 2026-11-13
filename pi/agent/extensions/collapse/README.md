@@ -100,7 +100,11 @@ size of a tool argument or a thinking block:
   list and its live rows; each delta then labels at most that one row
   (~5µs on a 2,000-row transcript, versus a full tree walk per token before).
   Pi's own `updateContent` hook heals the spacer inside the update, so no
-  deferred wrap pass is scheduled per delta.
+  deferred wrap pass is scheduled per delta. A streaming thinking with a
+  home run is hosted provisionally by that run: the first delta scans for
+  the host once, then each further delta updates the one item and, when the
+  run is open, repaints that preview — measured at ~0.02ms per delta on a
+  1,000-row transcript (~2ms for the first host scan).
 - **Run views are reused across invalidates.** The breathe timer pokes live
   rows every 80ms; a signature of the run's visible state (plus the wall
   clock, width, ctrl+o depth and open rows) decides whether to repaint.
@@ -232,6 +236,18 @@ and a thinking past prose from every tool stands alone as `N thinking`
 instead of teleporting into a later block. Mounted tree order and entry
 order each veto a crossing: trees hold the live rows entries have not
 landed yet, entries hold the settled rows no longer mounted.
+
+**Live thinking joins its block while it streams.** A thinking-only message
+that is still streaming is hosted provisionally by the run it will join:
+its Pi row's hidden label is emptied (so Pi draws no separate line) and the
+run's trace renders the growing preview. It attaches to its own message's
+tool when that tool mounts (before the tool), else backward to the newest
+current run after its last tool. The host is dropped the moment the row
+gains prose, loses its turn, or completes; the completed detach then
+replaces the provisional item, so live, resume, and restore agree and no
+thinking is counted twice. Any failure restores the stock row (fail-open).
+The count updates while streaming; a closed header repaints only when the
+count changes, an open one on every delta.
 
 Every mounted member of a run gets a self-healing view: it resolves its
 run and owner on each render and repaints when they move, so a history
