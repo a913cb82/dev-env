@@ -24,7 +24,7 @@
 //   {op:"tool", id, toolId, name, args} append toolCall + real tool host
 //   {op:"end", id, stop, timestamp?, durationMs?} assistant message_end, then persist
 //   {op:"abort", id, stop?}             abort branch (error results in UI)
-//   {op:"result", toolId, text, timestamp?} tool_execution_end + toolResult events
+//   {op:"result", toolId, text, timestamp?, durationMs?} tool_execution_end + toolResult events
 //   {op:"turn"}                         turn_end
 //   {op:"tick"}                         the 1s poll (detach + wrap + labels)
 //   {op:"reload"}                       fresh module, rebuild + session_start
@@ -524,12 +524,14 @@ async function runOps(world, ops) {
       const result = {
         content: [{ type: "text", text: op.text ?? "" }],
         isError: op.isError === true,
+        ...(op.durationMs === undefined ? {} : { durationMs: op.durationMs }),
       };
       await world.fire("tool_execution_end", {
         toolCallId: op.toolId,
         toolName: slot?.name,
         result,
         isError: result.isError,
+        ...(op.durationMs === undefined ? {} : { durationMs: op.durationMs }),
       }, {});
       if (slot) {
         slot.comp.updateResult(result, false);

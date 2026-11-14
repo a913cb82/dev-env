@@ -47,6 +47,10 @@ export interface TraceEntry extends CollapseSlots {
   argsComplete: boolean;
   hasResult: boolean;
   result?: any;
+  /** Pi's own execution duration, when the tool event carried one. Opened
+   *  rows must use their own value: the owner context belongs to the first
+   *  tool of the run, not to every row. */
+  durationMs?: number;
   // Timing seeds for expanded rows (see buildOpenedRow): the original
   // renderers stamp startedAt/endedAt on context.state on first execution
   // and completion renders. Seeds land on first observation, not on expand.
@@ -584,6 +588,13 @@ export function traceSync(
     changed = true;
   } else if (result !== undefined) {
     entry.result = result;
+  }
+  const rawDuration = (context as { durationMs?: unknown } | undefined)?.durationMs ??
+    (result as { durationMs?: unknown } | undefined)?.durationMs;
+  if (typeof rawDuration === "number" && Number.isFinite(rawDuration) && rawDuration >= 0 &&
+    entry.durationMs !== rawDuration) {
+    entry.durationMs = rawDuration;
+    changed = true;
   }
   // Timing seeds for expanded rows (see buildOpenedRow and
   // backfillRendererTiming): prefer Pi's own renderer stamps when present

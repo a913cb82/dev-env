@@ -4382,6 +4382,44 @@ function clickFirstRow(comp) {
 }
 
 // ---------------------------------------------------------------------------
+// 83b. Every row in a multi-tool run shows its OWN duration. The opened-row
+// renderer receives the run owner's context (which carries the FIRST tool's
+// durationMs); copying that context wholesale made every row say the first
+// tool's time, often `Took 0.0s` for a fast bash call.
+// ---------------------------------------------------------------------------
+{
+  const syncMod = await reuseIndex();
+  syncMod.resetTraceState();
+  const pi7 = createMockPi();
+  (syncMod.default ?? syncMod)(pi7);
+  const bash7 = pi7.tools.get("bash");
+  const mkCtx = (id, durationMs, flags = {}) => ({
+    args: { command: id }, toolCallId: id,
+    invalidate: () => {},
+    lastComponent: undefined, state: {}, cwd: "/repo",
+    executionStarted: true, argsComplete: true, isPartial: true,
+    expanded: false, showImages: true, isError: false,
+    durationMs,
+    ...flags,
+  });
+  const call = (id, durationMs, flags = {}) =>
+    bash7.renderCall({ command: id }, theme, mkCtx(id, durationMs, flags));
+  const result = (id, durationMs) =>
+    bash7.renderResult({ content: [{ type: "text", text: "done" }] },
+      { expanded: false, isPartial: false }, theme,
+      mkCtx(id, durationMs, { isPartial: false }));
+  call("multi-a", 0);
+  result("multi-a", 0);
+  call("multi-b", 5000);
+  result("multi-b", 5000);
+  const opened = openRun(call("multi-a", 0, { isPartial: false }));
+  opened.children?.[2]?.onMouse?.({ type: "click", button: "left" });
+  const text = opened.render?.(120).join("") ?? "";
+  check("each expanded row shows its own duration",
+    text.includes("Took 5.0s") && !text.includes("Took 0.0s"), text.slice(-240));
+}
+
+// ---------------------------------------------------------------------------
 // 84. Cross-mode timing: a run observed in hidden mode never invoked the
 // original renderers, so Pi's own state lacks the stamps a visible render
 // expects (it would stamp both at switch time). The entry bridges both

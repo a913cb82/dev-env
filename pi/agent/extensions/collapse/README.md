@@ -475,7 +475,9 @@ footer read the same clock once per paint, so they cannot disagree at a
 second boundary. A standalone `▸N thinking` block uses its message's own
 start and `durationMs`, so it always carries a time too (including `0s` for
 a sub-second block) instead of leaving the right column empty; while it
-streams, its marker is the wheel. **Failures surface at rest:** the header
+streams, its marker is the wheel. Opening a tool row uses that tool's own
+event duration, never the duration of the run's first row. **Failures
+surface at rest:** the header
 appends a red `N error` when any row in the run failed, so a broken tool is
 visible without opening the block.
 `/collapse` reports the last detach pass (`walked N (T thinking, M tools);

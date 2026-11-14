@@ -284,6 +284,10 @@ function buildOpenedRow(
     lastComponent: entry.collapseCall,
     isPartial: entry.isPartial,
     isError: entry.isError,
+    // The owner context carries the FIRST row's duration. Every opened row
+    // must read its own tool event, or each bash result says `Took 0.0s`
+    // whenever the run owner happened to be fast (or missing a duration).
+    durationMs: entry.durationMs,
     // Without an observed start the original renderCall would stamp
     // startedAt at expand time — after endedAt — yielding a negative
     // duration. Suppress it: no start means no duration line.

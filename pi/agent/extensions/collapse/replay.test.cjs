@@ -773,6 +773,38 @@ const loadFixture = (name) =>
       headers.length === 1, JSON.stringify({ summary, headers }));
   }
 
+  // R26. Every row in a multi-tool run shows its own duration. The opened
+  // row builder gets the run owner's context, so inheriting `durationMs`
+  // made each later row report the first tool's time (`Took 0.0s` when the
+  // owner was fast). The real ToolExecutionComponent supplies the event
+  // duration; the trace entry must carry its own copy to the row.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "duration check" },
+      { op: "start", id: "dur" },
+      { op: "tool", id: "dur", toolId: "dur-a", name: "bash", args: { command: "echo one" } },
+      { op: "tool", id: "dur", toolId: "dur-b", name: "bash", args: { command: "echo two" } },
+      { op: "result", toolId: "dur-a", text: "one", durationMs: 0 },
+      { op: "result", toolId: "dur-b", text: "two", durationMs: 5000 },
+      { op: "end", id: "dur", stop: "stop" },
+    ]);
+    driver.openRun(world, "dur-a");
+    const slot = world.toolComps.get("dur-a");
+    const trace = slot.comp.callRendererComponent ?? slot.inner;
+    trace.children[2]?.onMouse?.({ type: "click", button: "left" });
+    trace.render?.(100);
+    const lines = driver.dump(world).lines.join("\n");
+    check("each expanded row shows its own tool duration",
+      lines.includes("Took 5.0s") && !lines.includes("Took 0.0s"), lines);
+    const entries = world.mod.traceEntries;
+    const map = typeof entries === "function" ? entries() : entries;
+    check("trace entries keep per-row durations",
+      map.get("dur-a")?.durationMs === 0 && map.get("dur-b")?.durationMs === 5000,
+      JSON.stringify([map.get("dur-a")?.durationMs, map.get("dur-b")?.durationMs]));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });
