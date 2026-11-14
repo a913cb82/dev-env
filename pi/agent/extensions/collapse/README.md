@@ -527,11 +527,17 @@ row. Within a session, size stays proportional to the transcript.
 node logic.test.cjs      # pure helpers
 node collapse.test.cjs   # renderers, trace behaviour, click depth, diagnostics
 node replay.test.cjs     # headless Pi: real components, scripted transcripts
+node replay/real-session.test.cjs  # actual AgentSession + extension loader + tool loop
 ./typecheck.sh           # strict tsc against the installed Pi release
 ```
 
-The three Node suites run on plain Node via `jiti`, with the installed Pi
-bundle aliased; no network and no real terminal required. `typecheck.sh`
+The Node suites run on plain Node via `jiti`, with the installed Pi
+bundle aliased; no network and no real terminal required. The logic,
+collapse and replay suites exercise the extension through its own APIs and
+the replay harness; `real-session.test.cjs` loads it through Pi's real
+`DefaultResourceLoader`, binds a real
+`AgentSession`, and drives Pi's real agent loop with a fake provider
+stream (including one real `bash` call). `typecheck.sh`
 generates a temporary `tsconfig` from the current Pi install (its path is
 per-machine), so it needs `tsc` or `npx`; it is the check that catches
 undefined identifiers such as the former `isSpacerLike` reference. The replay driver renders
@@ -542,10 +548,18 @@ count as visible characters and would narrow every row.
 
 Fake rows lie: they cannot reproduce unmounted settled rows, persistence
 timing, or the extension's own components hiding tools from the walk.
-The replay driver mounts the REAL `AssistantMessageComponent` /
-`UserMessageComponent` classes and the extension's own wrapped tools,
+The replay driver mounts the REAL `AssistantMessageComponent`,
+`UserMessageComponent`, `ToolExecutionComponent`, and
+`CustomMessageComponent` classes and the extension's own wrapped tools,
 feeds them a scripted transcript, and screenshots the chat with
-`component.render(width)` — no terminal, no mocks.
+`component.render(width)`. No terminal is needed. Pi's event dispatch and
+persistence order is emulated, but it is asserted: extension handlers run
+before the UI listener, and `message_end` sees the branch BEFORE
+`SessionManager.appendMessage`. The session manager exposes `getBranch`,
+`getEntries`, and `buildContextEntries` over the same entry array, so the
+production branch path is exercised. `/reload` loads a fresh extension
+module, clears state, mounts the rebuilt chat, then emits
+`session_start(reason="reload")`; it does not reuse the old module.
 
 ```
 node replay/record.cjs <session.jsonl> [--from N] [--to N] [--out <name>]
@@ -554,9 +568,17 @@ node replay/record.cjs <session.jsonl> [--from N] [--to N] [--out <name>]
 
 Phases mirror a real session: `restore` (entries load before
 `session_start`, then mount oldest-first, then converge over poll ticks),
-live ops (`start`/`thinking`/`text`/`tool`/`end`/`result`/`turn`/`tick`),
-and `reload` (rebuild from the same entries — the dump must be
-identical). Fixtures live in `replay/fixtures/`; sanitize recorded ones
+live ops (`user`/`custom`/`start`/`thinking`/`text`/`tool`/`end`/`abort`/
+`pending`/`result`/`turn`/`tick`), and `reload` (fresh module, rebuild from
+the same entries — the dump must be identical). Fixtures live in `replay/fixtures/`; sanitize recorded ones
 before committing (thinking blocks can carry secrets). The driver takes
 the REAL production poll tick (`collapseTick`: settle plan, detach, wrap,
 relabel) so order bugs surface here, not in production.
+
+The scripted host is still an emulation: it does not construct Pi's
+`InteractiveMode`, terminal, mouse router, or extension runner. The
+parity checker therefore reads the real transcript and asserts that it
+recognized at least one current block marker; a stale `>`-only detector
+used to pass every check vacuously. `real-session.test.cjs` is the
+end-to-end complement for loading, session start, persistence order, tool
+execution, widget registration, and reload.

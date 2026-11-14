@@ -25,4 +25,21 @@ function findPiRoot() {
 
 const PI = findPiRoot();
 const vreq = (id) => require.resolve(id, { paths: [PI] });
-module.exports = { PI, vreq, findPiRoot };
+
+// pi-ai publishes no exports entry, so resolve its dist file directly. The
+// dependency layout moves with Pi: try both the hoisted release root and the
+// pre-1.5 nested layouts.
+function findPiAiRoot() {
+  const candidates = [
+    path.join(PI, "..", "pi-ai"),
+    path.join(PI, "node_modules", "@earendil-works", "pi-ai"),
+    path.join(PI, "node_modules", "pi-ai"),
+    path.join(PI, "..", "..", "pi-ai"),
+  ];
+  for (const root of candidates) {
+    if (fs.existsSync(path.join(root, "dist", "index.js"))) return root;
+  }
+  throw new Error("test-pi: no pi-ai install found; set PI_ROOT or check the Pi release");
+}
+
+module.exports = { PI, vreq, findPiRoot, findPiAiRoot };

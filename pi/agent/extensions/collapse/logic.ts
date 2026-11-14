@@ -681,7 +681,7 @@ export function isVisibleMessage(role: unknown, display?: unknown): boolean {
 }
 
 export function planToolRuns(
-  entries: Array<{ type?: unknown; message?: unknown }> | undefined | null,
+  entries: Array<{ type?: unknown; message?: unknown; summary?: unknown; display?: unknown }> | undefined | null,
   isOwnTool: (name: string) => boolean,
 ): string[][] {
   const groups: string[][] = [];
@@ -700,6 +700,13 @@ export function planToolRuns(
     if (entry.type === "custom_message") {
       const custom = entry as { display?: unknown };
       if (isVisibleMessage("custom", custom.display)) boundary();
+      continue;
+    }
+    // Compaction/branch summaries render as visible Markdown rows. They are
+    // boundaries even though they carry no `message` field. An empty summary
+    // draws nothing, so it must not open a blank gap.
+    if (entry.type === "compaction" || entry.type === "branch_summary") {
+      if (typeof entry.summary === "string" && entry.summary.trim() !== "") boundary();
       continue;
     }
     if (entry.type !== "message") continue;

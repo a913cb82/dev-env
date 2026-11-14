@@ -27,6 +27,42 @@ const loadFixture = (name) =>
 (async () => {
   const driver = require("./replay/driver.cjs");
   const PI = await driver.loadPi();
+  const parity = require("./replay/parity.cjs");
+
+  // R0. The parity checker must recognize the markers this extension
+  // actually renders. A stale marker made every adjacency check vacuous.
+  {
+    const adjacent = parity.adjacencyViolations([
+      "▸1 bash  2s",
+      "▸1 bash  2s",
+    ]);
+    check("parity catches adjacent current headers", adjacent.length === 1, JSON.stringify(adjacent));
+    check("parity counts current block headers", parity.blockHeaderCount(["▸1 bash", "▏row", "▸1 thinking"]) === 2,
+      String(parity.blockHeaderCount(["▸1 bash", "▏row", "▸1 thinking"])));
+    const wheel = parity.adjacencyViolations([
+      "⠋1 thinking  1s",
+      "▸1 thinking  2s",
+    ]);
+    check("parity catches adjacent wheel headers", wheel.length === 1, JSON.stringify(wheel));
+    const prose = parity.adjacencyViolations([
+      "> 3 bash",
+      "▸1 bash  2s",
+    ]);
+    check("parity does not treat a blockquote as a header", prose.length === 0, JSON.stringify(prose));
+    check("parity no longer recognizes the retired > marker",
+      parity.blockHeaderCount([">1 bash", ">1 thinking"]) === 0,
+      JSON.stringify(parity.blockHeaderCount([">1 bash", ">1 thinking"])));
+    const withThinking = parity.probes([{
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "DISTINCTIVE THINKING TEXT" }],
+    }], { thinking: true });
+    check("parity probes include thinking when asked",
+      withThinking.some((p) => p.kind === "thinking"), JSON.stringify(withThinking));
+    const missingThinking = parity.orderViolations(
+      ["▏DISTINCTIVE THINKING TEXT  10 ch"], withThinking,
+    );
+    check("parity can order thinking on a rail", missingThinking.length === 0, JSON.stringify(missingThinking));
+  }
 
   // R1. the reported shape, live, real components: thinking-only messages,
   // then agent prose, then the tools. The thinkings stand alone in their
@@ -531,6 +567,206 @@ const loadFixture = (name) =>
       block >= 0 && !lines.some((l) => l.includes("LIVEALONE")), lines.join("\n"));
     check("first-turn live thinking has no empty block",
       !lines.some((l) => l.trim().startsWith("▸")), lines.join("\n"));
+  }
+
+  // R19. Pi's event order, not an approximation: extension handlers run
+  // before the UI listener, and message_end runs BEFORE the message is
+  // persisted. The replay driver used to persist first, hiding every
+  // settled-vs-live difference at message_end.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "order check" },
+      { op: "start", id: "ord" },
+      { op: "text", id: "ord", text: "answer" },
+      { op: "end", id: "ord", stop: "stop" },
+      { op: "turn" },
+    ]);
+    const extEnd = world.events.find((e) => e.type === "message_end" && e.role === "assistant");
+    const persist = world.events.find((e) => e.side === "persist" && e.role === "assistant");
+    check("message_end extension sees the message unpersisted",
+      !!extEnd && extEnd.side === "extension" && extEnd.entryCount === 1,
+      JSON.stringify(world.events.filter((e) => e.role === "assistant")));
+    const uiEnd = world.events.find((e) => e.side === "ui" && e.type === "message_end" && e.role === "assistant");
+    check("extension -> UI -> persistence is the event order",
+      !!extEnd && !!uiEnd && !!persist && extEnd.seq < uiEnd.seq && uiEnd.seq < persist.seq,
+      JSON.stringify(world.events.filter((e) => e.role === "assistant")));
+    check("message_update reaches the extension as a Pi copy",
+      world.messageCopies.length >= 1 && world.messageCopies.every((e) => e.message !== e.canonical),
+      `${world.messageCopies.length} copies`);
+  }
+
+  // R20. The replay host must be Pi's REAL ToolExecutionComponent, with the
+  // real lifecycle. The old fake host could not expose argsComplete,
+  // executionStarted, result errors, or the stock click path.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "tool check" },
+      { op: "start", id: "tc" },
+      { op: "tool", id: "tc", toolId: "tc1", name: "bash", args: { command: "echo one" } },
+      { op: "end", id: "tc", stop: "toolUse" },
+      { op: "result", toolId: "tc1", text: "one" },
+      { op: "turn" },
+    ]);
+    const slot = world.toolComps.get("tc1");
+    check("replay mounts a real ToolExecutionComponent",
+      !!slot && !!world.PI.ToolExecutionComponent && slot.comp instanceof world.PI.ToolExecutionComponent,
+      slot ? slot.comp?.constructor?.name : "no slot");
+    check("tool lifecycle marks execution and args complete",
+      !!slot && slot.comp.executionStarted === true && slot.comp.argsComplete === true,
+      slot ? JSON.stringify({ started: slot.comp.executionStarted, args: slot.comp.argsComplete }) : "no slot");
+    check("tool result reaches the real component",
+      !!slot && slot.comp.result?.content?.[0]?.text === "one" && slot.comp.isPartial === false,
+      slot ? JSON.stringify(slot.comp.result) : "no slot");
+    check("tool execution events are emitted",
+      world.events.some((e) => e.type === "tool_execution_start") &&
+      world.events.some((e) => e.type === "tool_execution_end"),
+      JSON.stringify(world.events.map((e) => e.type)));
+    check("toolResult messages use message_start/message_end",
+      world.events.some((e) => e.type === "message_start" && e.role === "toolResult") &&
+      world.events.some((e) => e.type === "message_end" && e.role === "toolResult"),
+      JSON.stringify(world.events.map((e) => `${e.type}:${e.role ?? ""}`)));
+  }
+
+  // R21. Abort must follow Pi's message_end UI branch: pending tools get an
+  // error result, are marked complete, and the row renders "Operation
+  // aborted". The old driver only changed stopReason, so R12 missed it.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, loadFixture("aborted-mixed").live);
+    const slot = world.toolComps.get("x1");
+    check("abort gives the pending tool an error result",
+      !!slot && slot.comp.result?.isError === true,
+      slot ? JSON.stringify(slot.comp.result) : "no slot");
+    check("abort leaves args incomplete like Pi (no setArgsComplete)",
+      !!slot && slot.comp.argsComplete === false && slot.comp.isPartial === false,
+      slot ? JSON.stringify({ args: slot.comp.argsComplete, partial: slot.comp.isPartial }) : "no slot");
+    check("abort renders the stock tool error",
+      driver.dump(world).lines.some((l) => l.includes("Operation aborted")),
+      driver.dump(world).lines.join("\n"));
+  }
+
+  // R21b. Error uses Pi's same interactive-mode cleanup branch, with the
+  // message's errorMessage (or its fallback) instead of the abort text.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "error check" },
+      { op: "start", id: "err" },
+      { op: "tool", id: "err", toolId: "err1", name: "bash", args: { command: "echo fail" } },
+      { op: "end", id: "err", stop: "error" },
+    ]);
+    const slot = world.toolComps.get("err1");
+    check("error gives the pending tool an error result",
+      !!slot && slot.comp.result?.isError === true,
+      slot ? JSON.stringify(slot.comp.result) : "no slot");
+    check("error leaves args incomplete like Pi",
+      !!slot && slot.comp.argsComplete === false && slot.comp.isPartial === false,
+      slot ? JSON.stringify({ args: slot.comp.argsComplete, partial: slot.comp.isPartial }) : "no slot");
+  }
+
+  // R22. The real extension prefers getBranch(). The driver used to expose
+  // only getEntries(), so the production branch path was never exercised.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    check("driver exposes getBranch", typeof world.sm.getBranch === "function", typeof world.sm.getBranch);
+    const entries = loadFixture("history-split").restore;
+    await driver.restore(world, entries);
+    world.sm.getEntries = () => [];
+    await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
+    driver.tickOnce(world);
+    check("history loads through getBranch", driver.dump(world).lines.some((l) => l.includes("1 thinking")),
+      driver.dump(world).lines.join("\n"));
+  }
+
+  // R23. `/reload` builds a NEW extension runner from a fresh module. The
+  // old driver reused the module and its state, so fresh-instance bugs were
+  // invisible.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, loadFixture("history-split").restore);
+    const beforeMod = world.mod;
+    const before = driver.dump(world).lines.join("\n");
+    await driver.reload(world);
+    check("reload loads a fresh extension module", world.mod !== beforeMod,
+      `${beforeMod === world.mod ? "same" : "different"} module`);
+    check("fresh reload reproduces the screenshot", driver.dump(world).lines.join("\n") === before,
+      `--- before ---\n${before}\n--- after ---\n${driver.dump(world).lines.join("\n")}`);
+  }
+
+  // R24. History must include visible custom entries and compaction
+  // summaries. Dropping them from the replay model turned a real boundary
+  // into adjacent blocks (and parity only read type:"message" lines).
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    const entries = [
+      { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "first" }] } },
+      { id: "a1", type: "message", message: {
+        role: "assistant", timestamp: Date.now() - 2000,
+        content: [{ type: "toolCall", id: "h1", name: "bash", arguments: { command: "echo one" } }],
+      } },
+      { id: "r1", type: "message", message: {
+        role: "toolResult", toolCallId: "h1", toolName: "bash",
+        content: [{ type: "text", text: "one" }],
+      } },
+      { id: "c1", type: "custom_message", customType: "note", content: [{ type: "text", text: "CUSTOM BOUNDARY" }], display: true, timestamp: Date.now() },
+      { id: "a2", type: "message", message: {
+        role: "assistant", timestamp: Date.now() - 1000,
+        content: [{ type: "toolCall", id: "h2", name: "bash", arguments: { command: "echo two" } }],
+      } },
+      { id: "r2", type: "message", message: {
+        role: "toolResult", toolCallId: "h2", toolName: "bash",
+        content: [{ type: "text", text: "two" }],
+      } },
+    ];
+    await driver.restore(world, entries);
+    const lines = driver.dump(world).lines;
+    const custom = lines.findIndex((l) => l.includes("CUSTOM BOUNDARY"));
+    const headers = lines.map((l, i) => (/^\s*▸/.test(l) ? i : -1)).filter((i) => i >= 0);
+    check("custom history row renders", custom >= 0, lines.join("\n"));
+    check("custom row separates the two blocks",
+      custom >= 0 && headers.length === 2 && headers[0] < custom && headers[1] > custom,
+      JSON.stringify({ custom, headers }));
+  }
+
+  // R25. Compaction and branch summaries are visible history too. They must
+  // split tool runs just like prose; otherwise two blocks sit adjacent with
+  // a summary rendered between them (and parity can see the bad shape).
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    const entries = [
+      { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "first" }] } },
+      { id: "a1", type: "message", message: {
+        role: "assistant", timestamp: Date.now() - 2000,
+        content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "echo one" } }],
+      } },
+      { id: "r1", type: "message", message: {
+        role: "toolResult", toolCallId: "c1", toolName: "bash",
+        content: [{ type: "text", text: "one" }],
+      } },
+      { id: "cmp", type: "compaction", summary: "COMPACTION SUMMARY", timestamp: Date.now() },
+      { id: "a2", type: "message", message: {
+        role: "assistant", timestamp: Date.now() - 1000,
+        content: [{ type: "toolCall", id: "c2", name: "bash", arguments: { command: "echo two" } }],
+      } },
+      { id: "r2", type: "message", message: {
+        role: "toolResult", toolCallId: "c2", toolName: "bash",
+        content: [{ type: "text", text: "two" }],
+      } },
+    ];
+    await driver.restore(world, entries);
+    const lines = driver.dump(world).lines;
+    const summary = lines.findIndex((l) => l.includes("COMPACTION SUMMARY"));
+    const headers = lines.map((l, i) => (/^\s*▸/.test(l) ? i : -1)).filter((i) => i >= 0);
+    check("compaction summary renders", summary >= 0, lines.join("\n"));
+    check("compaction summary separates tool blocks",
+      summary >= 0 && headers.length === 2 && headers[0] < summary && headers[1] > summary,
+      JSON.stringify({ summary, headers }));
   }
 
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);

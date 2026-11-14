@@ -4,7 +4,7 @@
 //   1. thinking:hidden and thinking:visible render the same ORDER of things
 //      (user text, assistant prose, thinking, tool calls).
 //   2. two run blocks never sit next to each other without a visible message
-//      between them. A standalone `>N thinking` is the first line of its own
+//      between them. A standalone `▸N thinking` is the first line of its own
 //      message row, so it may follow a run (its prose is below).
 //   3. live, /reload and quit->resume (/reload with fresh mount) produce the
 //      same screenshot, both for collapsed blocks and for opened ones.
@@ -27,11 +27,43 @@ const driver = require("./driver.cjs");
 let seq = 0;
 const id = (p) => `${p}${++seq}`;
 
-function readMessages(file) {
+function readEntries(file) {
   return fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
     .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-    .filter((e) => e && e.type === "message" && e.message)
-    .map((e) => e.message);
+    .filter((e) => e && typeof e === "object");
+}
+
+// Include every entry that Pi draws as a visible row. Compaction and branch
+// summaries are rendered as Markdown, and extension custom messages are
+// boxes; dropping them from the parity model made a boundary look adjacent.
+function messagesFromEntries(entries) {
+  const entryTime = (entry) => {
+    const ms = new Date(entry.timestamp).getTime();
+    return Number.isNaN(ms) ? undefined : ms;
+  };
+  const out = [];
+  for (const entry of entries) {
+    if (entry.type === "message" && entry.message) {
+      // Keep the ENTRY timestamp (what SessionManager persists and what
+      // toolTimings uses), not only message.timestamp: they can differ by a
+      // second, which made live/restore clock columns disagree.
+      out.push({ ...entry.message, entryTime: entryTime(entry) });
+    } else if ((entry.type === "custom" || entry.type === "custom_message") && entry.display !== false) {
+      out.push({
+        role: "custom",
+        customType: entry.customType ?? "custom",
+        content: entry.content ?? entry.message?.content ?? "",
+        timestamp: entry.timestamp,
+        entryTime: entryTime(entry),
+      });
+    } else if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.summary) {
+      out.push({
+        role: "custom", customType: entry.type, content: entry.summary,
+        timestamp: entry.timestamp, entryTime: entryTime(entry),
+      });
+    }
+  }
+  return out;
 }
 
 function sliceTurns(messages, n) {
@@ -49,21 +81,36 @@ function sliceTurns(messages, n) {
 function turnOps(messages) {
   const ops = [];
   for (const m of messages) {
+    if (m.role === "custom") {
+      const text = typeof m.content === "string" ? m.content
+        : (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+      ops.push({ op: "custom", text, customType: m.customType, timestamp: m.entryTime ?? m.timestamp });
+      ops.push({ op: "tick" });
+      continue;
+    }
     if (m.role === "user") {
       const text = typeof m.content === "string" ? m.content
         : (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
-      ops.push({ op: "user", text });
+      ops.push({ op: "user", text, timestamp: m.entryTime ?? m.timestamp });
       ops.push({ op: "tick" });
       continue;
     }
     if (m.role === "toolResult") {
-      ops.push({ op: "result", toolId: m.toolCallId, text: toolText(m) });
+      ops.push({ op: "result", toolId: m.toolCallId, text: toolText(m), timestamp: m.entryTime ?? m.timestamp });
       ops.push({ op: "tick" });
       continue;
     }
     if (m.role !== "assistant") continue;
     const mid = id("m");
-    ops.push({ op: "start", id: mid });
+    // A persisted assistant entry is stamped at message_end, but the message's
+    // own timestamp is its start. Live replay must use the message clock, or
+    // a long thinking block renders as 0s while a restored one shows its
+    // durationMs. End is the stated completion when Pi recorded one.
+    const startTime = typeof m.timestamp === "number" ? m.timestamp : m.entryTime;
+    const endTime = typeof m.timestamp === "number" && typeof m.durationMs === "number"
+      ? m.timestamp + m.durationMs
+      : m.entryTime ?? m.timestamp;
+    ops.push({ op: "start", id: mid, timestamp: startTime });
     for (const block of m.content || []) {
       if (block.type === "thinking") {
         const text = block.thinking || "";
@@ -78,7 +125,10 @@ function turnOps(messages) {
       }
       ops.push({ op: "tick" });
     }
-    ops.push({ op: "end", id: mid, stop: m.stopReason || "stop" });
+    ops.push({
+      op: "end", id: mid, stop: m.stopReason || "stop", timestamp: endTime,
+      ...(typeof m.durationMs === "number" ? { durationMs: m.durationMs } : {}),
+    });
     ops.push({ op: "tick" });
   }
   return ops;
@@ -111,7 +161,7 @@ function proseLines(text) {
   return out;
 }
 
-function probes(messages) {
+function probes(messages, { thinking = false } = {}) {
   const out = [];
   const push = (kind, text) => {
     // Tool rows show ONE line: the row's head is the first characters of the
@@ -132,15 +182,23 @@ function probes(messages) {
     out.push({ kind, frag: line.slice(0, Math.min(10, line.length)) });
   };
   for (const m of messages) {
+    if (m.role === "custom") {
+      push("prose", typeof m.content === "string" ? m.content : (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join(" "));
+      continue;
+    }
     if (m.role === "user" || m.role === "toolResult") {
       if (m.role === "user") push("user", typeof m.content === "string" ? m.content : (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join(" "));
       continue;
     }
     if (m.role !== "assistant") continue;
     for (const block of m.content || []) {
-      // A thinking renders as a count and a preview: its text is often
-      // truncated, so order is checked on prose, users and tools.
-      if (block.type === "thinking") continue;
+      // A thinking normally renders as a count and a preview; when it is
+      // opened (or thinking is visible) its text is real content and must
+      // not be skipped by the order check.
+      if (block.type === "thinking") {
+        if (thinking && block.thinking) push("thinking", block.thinking);
+        continue;
+      }
       if (block.type === "text") push("prose", block.text);
       else if (block.type === "toolCall") push("tool", probeForTool(block));
     }
@@ -164,6 +222,11 @@ function probeForTool(block) {
 // rows carry the `▏` rail.
 function lineFits(kind, line) {
   if (kind === "tool") return /^\s*▏/.test(line);
+  if (kind === "thinking") {
+    // Hidden+opened thinking lives on a `▏` rail (preview); visible thinking
+    // is ordinary prose. Both are valid places for the text.
+    return /^\s*▏/.test(line) || /^\s*[^\s│┃▏>╭╰]/.test(line);
+  }
   return /^\s*[^\s│┃▏>╭╰]/.test(line);
 }
 
@@ -189,7 +252,7 @@ function unfenced(lines) {
 function orderViolations(lines, list, { tools = true } = {}) {
   // Search the raw screenshot, fences included: quoted code is visible text
   // too, and probes are already restricted to fragments unique in the slice.
-  // Only the adjacency scan needs fenced lines excluded (a quoted `>` header
+  // Only the adjacency scan needs fenced lines excluded (a quoted `▸` header
   // is not a live block).
   const problems = [];
   // Repeated fragments (the same command or phrase in two turns) cannot be
@@ -218,13 +281,34 @@ function orderViolations(lines, list, { tools = true } = {}) {
   return problems;
 }
 
-// Two collapsed blocks may not touch. A block is a `>` line (header or
+// Current markers: closed run/standalone `▸`, open run/standalone `▾`, and
+// the same header while live with a spinner in column one. Keep this grammar
+// next to the renderer; a stale marker silently disables the whole check.
+const WHEEL = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+const BLOCK_HEADER = new RegExp(`^(?:[▸▾]|[${WHEEL}])\\d+\\s`);
+const STANDALONE_HEADER = new RegExp(`^(?:[▸▾]|[${WHEEL}])\\d+\\s+thinking\\b`);
+
+/** Every live block header in a screenshot (indices after fence blanking). */
+function blockHeaders(rawLines) {
+  const lines = unfenced(rawLines);
+  const out = [];
+  lines.forEach((line, i) => {
+    if (BLOCK_HEADER.test(line.trim())) out.push(i);
+  });
+  return out;
+}
+
+function blockHeaderCount(rawLines) {
+  return blockHeaders(rawLines).length;
+}
+
+// Two collapsed blocks may not touch. A block is a `▸`/wheel line (header or
 // standalone thinking); rows are `▏`/`┃`/blank; anything else is a visible
 // message and resets the rule.
 function adjacencyViolations(rawLines) {
   const lines = unfenced(rawLines);
   const problems = [];
-  // A standalone thinking (`>N thinking`) is the first line of an assistant
+  // A standalone thinking (`▸N thinking`) is the first line of an assistant
   // message that carries its own prose below: it is a visible-message start,
   // not a second run block. A run header directly under one is still wrong
   // (a thinking-only message must attach to a run, not precede one).
@@ -233,10 +317,9 @@ function adjacencyViolations(rawLines) {
   lines.forEach((line, i) => {
     const t = line.trim();
     if (t === "" || t.startsWith("▏") || t.startsWith("┃") || t.startsWith("│")) return;
-    // Our block headers start `>N `; a prose blockquote (`> 3 bash`) is a
-    // visible message, not a block.
-    if (/^>\d/.test(t)) {
-      const standalone = /^>\d+ thinking\b/.test(t);
+    // A prose blockquote (`> 3 bash`) is a visible message, not a block.
+    if (BLOCK_HEADER.test(t)) {
+      const standalone = STANDALONE_HEADER.test(t);
       // run -> standalone is the intended shape for a thinking followed by
       // its own message's prose (the standalone IS that message's first
       // line). standalone -> anything, and run -> run, have nothing visible
@@ -275,7 +358,7 @@ async function main() {
   const turns = arg("--turns", 3);
   const orderTurns = arg("--order-turns", Math.min(turns, 8));
   const width = arg("--width", 100);
-  const allMessages = readMessages(file);
+  const allMessages = messagesFromEntries(readEntries(file));
   const messages = sliceTurns(allMessages, turns);
   const ops = turnOps(messages);
   const list = probes(sliceTurns(allMessages, orderTurns));
@@ -285,7 +368,10 @@ async function main() {
 
   // live
   {
-    const world = driver.createWorld(PI, { width });
+    const world = driver.createWorld(PI, {
+      width,
+      clock: { value: messages[0]?.timestamp ?? Date.now() },
+    });
     await driver.restore(world, []);
     await driver.runLive(world, ops);
     worlds.live = world;
@@ -317,6 +403,12 @@ async function main() {
     dumps[name] = driver.dump(world).lines;
   }
 
+  // A recognized marker is itself a precondition: the old `>` check passed
+  // every transcript because the renderer had moved to `▸`.
+  const liveBlocks = blockHeaderCount(dumps.live);
+  if (liveBlocks === 0) fail("no current block headers recognized", dumps.live.join("\n"));
+  else ok(`recognized ${liveBlocks} block header(s)`);
+
   // (3) all three paths identical, collapsed.
   for (const other of ["resume", "reload"]) {
     const a = dumps.live.join("\n"), b = dumps[other].join("\n");
@@ -325,25 +417,35 @@ async function main() {
     else fail(name, firstDiff(dumps.live, dumps[other]));
   }
 
-  // (3b) all three identical with every run opened.
+  // (3b) all three identical with every run opened. Opening a row can
+  // stamp a fallback end for a result observed late; pin the wall clock so
+  // the comparison is about layout/ownership, not how long this process
+  // has been running.
   const openDumps = {};
-  for (const [name, world] of Object.entries(worlds)) {
-    const copy = driver.createWorld(PI, { width });
-    await driver.restore(copy, world.entries);
-    const runs = runsOf(copy);
-    for (const runId of runs) {
-      try {
-        const owner = ownerToolOf(copy, runId);
-        if (owner) driver.openRun(copy, owner);
-      } catch { /* structure miss, compared instead */ }
+  const openNow = Date.now();
+  const realNow = Date.now;
+  Date.now = () => openNow;
+  try {
+    for (const [name, world] of Object.entries(worlds)) {
+      const copy = driver.createWorld(PI, { width });
+      await driver.restore(copy, world.entries);
+      const runs = runsOf(copy);
+      for (const runId of runs) {
+        try {
+          const owner = ownerToolOf(copy, runId);
+          if (owner) driver.openRun(copy, owner);
+        } catch { /* structure miss, compared instead */ }
+      }
+      openDumps[name] = driver.dump(copy).lines;
+      if (process.env.PARITY_DUMP) {
+        require("node:fs").writeFileSync(
+          `${process.env.PARITY_DUMP}.opened.${name}.txt`,
+          openDumps[name].join("\n"),
+        );
+      }
     }
-    openDumps[name] = driver.dump(copy).lines;
-    if (process.env.PARITY_DUMP) {
-      require("node:fs").writeFileSync(
-        `${process.env.PARITY_DUMP}.opened.${name}.txt`,
-        openDumps[name].join("\n"),
-      );
-    }
+  } finally {
+    Date.now = realNow;
   }
   for (const other of ["resume", "reload"]) {
     const name = `opened: live == ${other}`;
@@ -358,8 +460,11 @@ async function main() {
     const visible = driver.dump(world).lines;
     // The collapsed hidden view shows only headers and counts, so it cannot
     // be ordered by content: compare the flattened views.
-    for (const [name, lines, opts] of [["hidden+opened", openDumps.live, { tools: true }], ["visible", visible, { tools: false }]]) {
-      const problems = orderViolations(lines, list, opts);
+    for (const [name, lines, opts, items] of [
+      ["hidden+opened", openDumps.live, { tools: true }, list],
+      ["visible", visible, { tools: false }, probes(sliceTurns(allMessages, orderTurns), { thinking: true })],
+    ]) {
+      const problems = orderViolations(lines, items, opts);
       if (problems.length === 0) ok(`order holds: ${name}`);
       else fail(`order broken: ${name}`, problems.slice(0, 8).join("\n") + `\n---\n${lines.join("\n")}`);
     }
@@ -401,4 +506,12 @@ function firstDiff(a, b) {
   return out.join("\n");
 }
 
-main().catch((e) => { console.error("FATAL", e); process.exit(1); });
+module.exports = {
+  adjacencyViolations, blockHeaders, blockHeaderCount,
+  probes, orderViolations, lineFits,
+  readEntries, messagesFromEntries, sliceTurns, turnOps,
+};
+
+if (require.main === module) {
+  main().catch((e) => { console.error("FATAL", e); process.exit(1); });
+}

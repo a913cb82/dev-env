@@ -721,6 +721,29 @@ function backfillRendererTiming(state: any, entry: TraceEntry | undefined): void
   }
 }
 
+/** Invalidate after the current Pi render pass, never during it. Pi's
+ *  ToolExecutionComponent.updateDisplay() invokes renderResult while it is
+ *  still composing the self shell; a synchronous invalidate re-enters and
+ *  duplicates cells. Microtasks run after updateDisplay returns and before
+ *  the next paint. */
+function scheduleInvalidate(context: any): void {
+  const invalidate = context?.invalidate;
+  if (typeof invalidate !== "function") return;
+  const run = (): void => {
+    try {
+      invalidate();
+    } catch {
+      // A dead component must not break the next frame.
+    }
+  };
+  try {
+    if (typeof queueMicrotask === "function") queueMicrotask(run);
+    else run();
+  } catch {
+    run();
+  }
+}
+
 /** Wrap a built-in definition with collapsed renderers; expanded + errors
  *  keep stock content, re-boxed in Pi's chrome for default-shell tools. */
 export function collapseTool(
@@ -812,7 +835,12 @@ export function collapseTool(
       const changed = entry ? traceSync(entry, context?.args, context, count, result) : false;
       if (entry) backfillRendererTiming(context?.state, entry);
       if (changed) {
-        context?.invalidate?.();
+        // A result renderer runs INSIDE ToolExecutionComponent.updateDisplay.
+        // Calling invalidate() here re-enters updateDisplay before it has
+        // finished adding the call cell, so the self shell ends up with
+        // duplicate rows. Defer one microtask: the current update completes,
+        // then the owner repaints with the new count.
+        scheduleInvalidate(context);
         if (entry && traceOwnerId(entry.runId) !== entry.id) tracePokeOwner(entry.runId);
       }
       return new Text("", 0, 0);

@@ -196,7 +196,8 @@ function clickFirstRow(comp) {
     const out = read.renderResult(textResult(5300), { expanded: false, isPartial: false }, theme, ctx);
     check("read result collapsed empty", out.render(80).join("") === "", JSON.stringify(out.render(80)));
     check("read result stores count", state.count === 5300, JSON.stringify(state));
-    check("read result invalidates", invalidated === 1, String(invalidated));
+    await Promise.resolve();
+    check("read result invalidates after the render pass", invalidated === 1, String(invalidated));
     openRun(read.renderCall(ctx.args, ansiTheme, { ...ctx, state }));
     const lines = read.renderCall(ctx.args, ansiTheme, { ...ctx, state }).render(100);
     check("read count shown", plainText(lines[1]).endsWith("5.3k ch"), JSON.stringify(plainText(lines[1])));
@@ -5375,6 +5376,83 @@ function clickFirstRow(comp) {
     } finally {
       Date.now = realNow;
       labelsLib.setActiveTheme(undefined);
+    }
+  }
+
+  // 108. The standalone block opens through the REAL TUI dispatch path,
+  // not only via a direct row.handleMouse() call. Container/MouseRegion
+  // coordinates are the layer that can silently break on a Pi upgrade.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const tui = await jiti.import("@earendil-works/pi-tui");
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const now = 1700000000000;
+    const msg = {
+      role: "assistant", timestamp: now - 3000, stopReason: "stop", durationMs: 3000,
+      content: [{ type: "thinking", thinking: "dispatch body ".repeat(80) }],
+    };
+    const row = new agent.AssistantMessageComponent(
+      undefined, true, undefined, "Thinking...", 1, [],
+    );
+    row.updateContent(msg, false);
+    labelsLib.setActiveTheme(theme);
+    labelsLib.captureWalkerTui({ children: [row] });
+    labelsLib.setStandaloneThinking(msg, true);
+    labelsLib.reconcileThinkingLabels(piS);
+    const container = new tui.Container();
+    container.addChild(row);
+    container.render(100);
+    const handled = container.handleMouse({
+      type: "click", button: "left", x: 0, y: 0, width: 100, height: 1,
+    });
+    const opened = row.render(100).map(plainText);
+    check("real Container dispatch opens the standalone block",
+      handled?.handled === true && opened.length === 3 && opened[0].startsWith("▾1 thinking") &&
+      opened[2].startsWith("▴Collapse"), JSON.stringify({ handled, opened }));
+    labelsLib.setActiveTheme(undefined);
+  }
+
+  // 109. Production theme wiring: session_start stores ctx.ui, and the
+  // standalone block reads the live theme through that provider. Test 107
+  // injects setActiveTheme directly, which cannot catch a broken noteTheme.
+  {
+    const mod = await reuseIndex();
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const piS = createMockPi();
+    (mod.default ?? mod)(piS);
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    const row = new agent.AssistantMessageComponent(
+      undefined, true, undefined, "Thinking...", 1, [],
+    );
+    const msg = {
+      role: "assistant", timestamp: now - 2000, stopReason: "stop", durationMs: 2000,
+      content: [{ type: "thinking", thinking: "provider theme body" }],
+    };
+    row.updateContent(msg, false);
+    const ui = {
+      theme,
+      setWidget() {},
+      setHiddenThinkingLabel() {},
+      requestRender() {},
+      notify() {},
+    };
+    try {
+      await piS.handlers.get("session_start")[0]({}, {
+        hasUI: true, ui, sessionManager: { getBranch: () => [] },
+      });
+      mod.captureWalkerTui({ children: [row] });
+      mod.setStandaloneThinking(msg, true);
+      mod.reconcileThinkingLabels(piS);
+      const rendered = row.render(100).join("\n");
+      check("production theme provider reaches the standalone block",
+        rendered.includes("<thinkingText>") && rendered.includes("<dim>2s</>"),
+        JSON.stringify(rendered.slice(0, 180)));
+    } finally {
+      Date.now = realNow;
+      mod.setThemeProvider(undefined);
     }
   }
 

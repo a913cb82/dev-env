@@ -513,6 +513,25 @@ function check(name, cond, extra) {
         msg("system", [text("sys")]),
         msg("assistant", [call("b", "bash")]),
       ])) === '[["a","b"]]');
+    check("compaction summaries split",
+      JSON.stringify(plan([
+        msg("assistant", [call("a", "read")]),
+        { type: "compaction", summary: "SUMMARY" },
+        msg("assistant", [call("b", "bash")]),
+      ])) === '[["a"],["b"]]');
+    check("branch summaries split",
+      JSON.stringify(plan([
+        msg("assistant", [call("a", "read")]),
+        { type: "branch_summary", summary: "SUMMARY" },
+        msg("assistant", [call("b", "bash")]),
+      ])) === '[["a"],["b"]]');
+    check("empty summaries do not split",
+      JSON.stringify(plan([
+        msg("assistant", [call("a", "read")]),
+        { type: "compaction", summary: "  " },
+        { type: "branch_summary" },
+        msg("assistant", [call("b", "bash")]),
+      ])) === '[["a","b"]]');
   }
 
   // isSafeToDetach: detach hides nothing but hidden-thinking label rows.
