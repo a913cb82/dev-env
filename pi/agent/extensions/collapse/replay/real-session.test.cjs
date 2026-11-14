@@ -95,6 +95,11 @@ function check(name, cond, extra) {
   const commands = session.extensionRunner.getRegisteredCommands().map((c) => c.invocationName);
   check("real Pi loads the extension", commands.includes("collapse"), JSON.stringify(commands));
   check("real Pi session_start installs the walker widget", !!widgetFactory, JSON.stringify(widgetFactory?.key));
+  let walker;
+  try { walker = widgetFactory?.factory?.({ requestRender() {} }); } catch (e) { walker = e; }
+  check("walker widget factory returns a component",
+    !!walker && typeof walker.render === "function",
+    String(walker?.message ?? walker));
   check("probe observed session_start", probe.some((e) => e.type === "session_start"), JSON.stringify(probe));
 
   // A real Pi assistant response, shaped like pi-ai's stream events.
