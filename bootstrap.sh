@@ -56,15 +56,26 @@ link "$REPO/git/gitconfig" "$HOME/.gitconfig"
 link "$REPO/git/gitignore_global" "$HOME/.gitignore_global"
 
 section "ssh"
+# The public half is what gets printed and pasted into GitHub; it grants no
+# access on its own. Print it once, when it is created - re-printing on every
+# run reads like a leak and is noise for anyone using the gh credential helper.
 install -d -m 700 "$HOME/.ssh"
+CREATED=0
 if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ -z "$CHECK_ONLY" ]; then
-  ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
+  ssh-keygen -t ed25519 -N "" -C "$(id -un)@$(hostname)" -f "$HOME/.ssh/id_ed25519" >/dev/null
+  CREATED=1
 fi
 if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
-  echo "Add this key to GitHub:"; cat "$HOME/.ssh/id_ed25519.pub"
+  if [ "$CREATED" = 1 ]; then
+    echo "Created an SSH key. Public half (safe to publish) - add it to GitHub only if you use SSH remotes:"
+    cat "$HOME/.ssh/id_ed25519.pub"
+  else
+    echo "ssh key present (~/.ssh/id_ed25519.pub) - add it to GitHub if you use SSH remotes; not needed for gh/HTTPS"
+  fi
 elif [ -f "$HOME/.ssh/id_ed25519" ]; then
   ssh-keygen -y -f "$HOME/.ssh/id_ed25519" > "$HOME/.ssh/id_ed25519.pub"
-  echo "Add this key to GitHub:"; cat "$HOME/.ssh/id_ed25519.pub"
+  echo "Recovered the public half from ~/.ssh/id_ed25519 - add it to GitHub only if you use SSH remotes:"
+  cat "$HOME/.ssh/id_ed25519.pub"
 else
   echo "TODO: run ./bootstrap.sh without --check-only to create an SSH key"
 fi

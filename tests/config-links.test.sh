@@ -18,6 +18,16 @@ if ! "$REPO/bootstrap.sh" --check-only >"$TMP/bootstrap.log" 2>&1; then
   fail "bootstrap --check-only exited non-zero"
 fi
 
+# The public key is printed only when bootstrap creates it. Re-printing on
+# every run reads like a credential leak (it is the public half, but still).
+# This HOME already has a key, so nothing key-shaped may appear in the log.
+if grep -q "ssh-ed25519" "$TMP/bootstrap.log"; then
+  cat "$TMP/bootstrap.log" >&2
+  fail "bootstrap printed the SSH public key for an existing key"
+fi
+grep -q "ssh key present" "$TMP/bootstrap.log" \
+  || fail "bootstrap did not report the existing SSH key"
+
 for f in AGENTS.md keybindings.json settings.json subagents.json; do
   dest="$HOME/.pi/agent/$f"
   [ -L "$dest" ] || fail "$f is not a symlink"
