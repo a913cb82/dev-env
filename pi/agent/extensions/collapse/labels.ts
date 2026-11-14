@@ -8,11 +8,11 @@
  * own message: no prototype patching, no Pi changes. If the tree shape ever
  * stops matching, everything below bails to stock behavior (never throws).
  */
-import { Container, Text, type Component } from "@earendil-works/pi-tui";
+import { Container, type Component } from "@earendil-works/pi-tui";
 import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatCharCount, formatRunDuration, isVisibleTextBlock, labelBudget, padLabel, thinkingLabelForWidth, thinkingPreview, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
-import { CollapsedLine } from "./line.js";
+import { CollapsedLine, thinkingMarkdown } from "./line.js";
 
 /** Widget key for the invisible handle holder (renders zero lines). */
 export const WALKER_KEY = "collapse-thinking-walker";
@@ -662,7 +662,7 @@ function buildStandaloneLines(row: any, width: number, pi?: ExtensionAPI): strin
   const lines = ["", ...header.render(width)];
   if (!view.open) return lines;
   if (view.expanded) {
-    lines.push(...new Text(quiet(theme, info.text), pad, 0).render(width));
+    lines.push(...thinkingMarkdown(info.text, pad, theme).render(width));
   } else {
     const preview = new CollapsedLine(
       quiet(theme, thinkingPreview(info.text, 240)),

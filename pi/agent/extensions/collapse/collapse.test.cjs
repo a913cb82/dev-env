@@ -4846,7 +4846,7 @@ function clickFirstRow(comp) {
     await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
     bash.renderCall({ command: "echo live" }, theme, mk("lv1", { command: "echo live" }, true));
     const msg = { role: "assistant", content: [
-      { type: "thinking", thinking: `${"alpha ".repeat(60)}TAILWORD` },
+      { type: "thinking", thinking: `# Heading\n\nSome **bold** and \`code\`\n\n- one\n- two\n\n${"alpha ".repeat(60)}TAILWORD` },
       { type: "toolCall", id: "lv1", name: "bash", arguments: {} },
     ], stopReason: "toolUse" };
     const row = { lastMessage: msg, hiddenThinkingLabel: "alpha",
@@ -4868,6 +4868,10 @@ function clickFirstRow(comp) {
     check("expanded thinking shows the full text", expanded.includes("TAILWORD"), expanded.slice(-120));
     const styled = comp.render(100).join("\n");
     check("expanded thinking keeps the thinking style", styled.includes("thinkingText"), styled.slice(0, 120));
+    check("expanded thinking renders markdown",
+      styled.includes("mdHeading") && styled.includes("mdCode") &&
+      !expanded.includes("**bold**") && !expanded.includes("# Heading"),
+      styled.slice(0, 500));
     detach.resetDetachState?.();
   }
 
@@ -5372,7 +5376,7 @@ function clickFirstRow(comp) {
     const now = 1700000000000;
     Date.now = () => now;
     try {
-      const thinking = "HEAD " + "stuff here ".repeat(320) + "TAIL";
+      const thinking = "# HEAD " + "stuff here ".repeat(320) + "TAIL";
       const msg = {
         role: "assistant", timestamp: now - 22000, stopReason: "stop", durationMs: 22000,
         content: [{ type: "thinking", thinking }],
@@ -5406,10 +5410,13 @@ function clickFirstRow(comp) {
         JSON.stringify(opened[2]));
 
       click(2, 4);
-      const expanded = row.render(100).map(plainText);
+      const expandedLines = row.render(100);
+      const expanded = expandedLines.map(plainText);
       check("clicking the preview expands the thinking text",
         expanded.length > 4 && expanded.some((line) => line.includes("TAIL")) &&
         expanded[expanded.length - 1].startsWith("▴Collapse"), JSON.stringify(expanded.slice(0, 4)));
+      check("standalone expanded thinking renders markdown",
+        expandedLines.join("\n").includes("mdHeading"), JSON.stringify(expanded.slice(0, 4)));
 
       click(expanded.length - 1, expanded.length);
       const reclosing = row.render(100).map(plainText);

@@ -204,9 +204,11 @@ it again starts from the one-line view. A one-row run is the same block in
 every state: settled or live, tool or thinking, it still has a header and
 the same click depth. A standalone `▸N thinking` block follows the same
 depth: its header opens `▾` + one preview row + `▴Collapse`, the preview
-expands the full thinking text in place, and the footer closes it. The block
-keeps Pi's blank spacer above its header, so it never glues itself to a
-preceding row.
+expands the full thinking text in place with Pi's Markdown renderer and
+thinking style, and the footer closes it. The block keeps Pi's blank spacer
+above its header, so it never glues itself to a preceding row. A thinking
+preview inside an opened run renders its full text the same way, so hidden
+thinking matches a visible thinking block once expanded.
 (Mixed thinking-plus-prose rows keep their prose and their native label
 click; the block view is only for a thinking-only row.)
 Each row opens its stock cell at the depth Pi currently asks for:
@@ -515,7 +517,7 @@ If rows show an unexpected gap, the boundary list names what split them.
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
 | `labels.ts` | tree-walk per-row thinking labels (settle + live block), standalone block view, walker widget, reconcile |
-| `line.ts` | shared one-line renderer for run headers, tool rows, footers, and standalone blocks |
+| `line.ts` | shared one-line renderer, thinking Markdown, run headers, tool rows, footers, and standalone blocks |
 | `detach.ts` | thinking-row detach (on by default; `COLLAPSE_HIDE_THINKING=0` opts out) |
 | `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
 | `tree.ts` | duck-typed TUI node helpers shared by wrap/detach (`classNameOf`, `isSpacerLike`) |

@@ -1,7 +1,7 @@
 // Row painting: one collapsed line per tool, and the stock cell a row opens
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { CollapsedLine } from "./line.js";
+import { CollapsedLine, thinkingMarkdown } from "./line.js";
 export { CollapsedLine };
 import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
 import { ROW_RAIL, WHEEL_FRAMES, WHEEL_MS, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, formatRunDuration, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, summarizeRun, textCharCount, wheelFrameAt, type BashSegment, type GenericPair } from "./logic.js";
@@ -476,7 +476,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   const addPreview = (item: ThinkingItem): void => {
     const thinkingLive = item.live !== undefined;
     const thinkingRow = item.open
-      ? new Text(italic(theme.fg("thinkingText", item.text)), liveOutputPad(pi), 0)
+      ? thinkingMarkdown(item.text, liveOutputPad(pi), theme)
       : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme, thinkingLive);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {

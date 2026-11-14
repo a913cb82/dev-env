@@ -1,8 +1,8 @@
 // One collapsed line: the shared visual grammar for run headers, data rows,
 // footers, and standalone thinking blocks. Kept separate from rows.ts so the
 // label/detach path can render a block without importing the tool pipeline.
-import { sliceByColumn, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { Markdown, Text, sliceByColumn, visibleWidth, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { ROW_RAIL, WHEEL_FRAMES, wheelFrameAt } from "./logic.js";
 import { currentColumns } from "./settings.js";
 
@@ -19,6 +19,66 @@ function truncateMiddleWidth(text: string, maxWidth: number): string {
   const start = Math.ceil(keep / 2);
   const end = keep - start;
   return `${sliceByColumn(text, 0, start)}…${sliceByColumn(text, visibleWidth(text) - end, end)}`;
+}
+
+/** Markdown theme over the active theme. Pi's `getMarkdownTheme()` is
+ *  global; this keeps the colors and decorations of the row's theme so the
+ *  expanded thinking block matches the visible assistant block (and test
+ *  themes keep their markers). Missing decorations degrade to plain text;
+ *  syntax highlighting still comes from Pi's global highlighter. */
+function thinkingMarkdownTheme(theme: Theme): MarkdownTheme {
+  const source = theme as any;
+  const fg = (token: string, text: string): string => {
+    try {
+      return typeof source?.fg === "function" ? source.fg(token, text) : text;
+    } catch {
+      return text;
+    }
+  };
+  const decorate = (name: string, text: string): string => {
+    try {
+      return typeof source?.[name] === "function" ? source[name](text) : text;
+    } catch {
+      return text;
+    }
+  };
+  let highlightCode: MarkdownTheme["highlightCode"];
+  try {
+    highlightCode = getMarkdownTheme().highlightCode;
+  } catch {
+    // No global theme/highlighter: plain code blocks are still readable.
+  }
+  return {
+    heading: (text) => fg("mdHeading", text),
+    link: (text) => fg("mdLink", text),
+    linkUrl: (text) => fg("mdLinkUrl", text),
+    code: (text) => fg("mdCode", text),
+    codeBlock: (text) => fg("mdCodeBlock", text),
+    codeBlockBorder: (text) => fg("mdCodeBlockBorder", text),
+    quote: (text) => fg("mdQuote", text),
+    quoteBorder: (text) => fg("mdQuoteBorder", text),
+    hr: (text) => fg("mdHr", text),
+    listBullet: (text) => fg("mdListBullet", text),
+    bold: (text) => decorate("bold", text),
+    italic: (text) => decorate("italic", text),
+    strikethrough: (text) => decorate("strikethrough", text),
+    underline: (text) => decorate("underline", text),
+    ...(highlightCode ? { highlightCode } : {}),
+  };
+}
+
+/** Expanded thinking text: the same Markdown renderer and thinking style Pi
+ *  uses when thinking is visible. Falls back to plain text if the renderer
+ *  cannot be constructed. */
+export function thinkingMarkdown(text: string, pad: number, theme: Theme): Component {
+  try {
+    return new Markdown(text, pad, 0, thinkingMarkdownTheme(theme), {
+      color: (value) => (typeof theme?.fg === "function" ? theme.fg("thinkingText", value) : value),
+      italic: true,
+    });
+  } catch {
+    return new Text(text, pad, 0);
+  }
 }
 
 /** Single collapsed row: styled summary left, char count right-aligned.
