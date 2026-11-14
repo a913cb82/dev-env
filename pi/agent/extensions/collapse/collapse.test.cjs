@@ -5318,6 +5318,66 @@ function clickFirstRow(comp) {
     }
   }
 
+  // 107. Clicking a standalone thinking header opens the same block shape as
+  // a run: header, one-line preview with its size, and a footer. The preview
+  // is not the full thinking; clicking it expands the text, and the footer
+  // collapses the block again.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    try {
+      const thinking = "HEAD " + "stuff here ".repeat(320) + "TAIL";
+      const msg = {
+        role: "assistant", timestamp: now - 22000, stopReason: "stop", durationMs: 22000,
+        content: [{ type: "thinking", thinking }],
+      };
+      const row = new agent.AssistantMessageComponent(
+        undefined, true, undefined, "Thinking...", 1, [],
+      );
+      row.updateContent(msg, false);
+      labelsLib.setActiveTheme(theme);
+      labelsLib.captureWalkerTui({ children: [row] });
+      labelsLib.setStandaloneThinking(msg, true);
+      labelsLib.reconcileThinkingLabels(piS);
+
+      const click = (y, height) => row.handleMouse({
+        type: "click", button: "left", y, width: 100, height,
+      });
+      const closed = row.render(100).map(plainText);
+      check("standalone header is one line before the click",
+        closed.length === 1 && closed[0].startsWith("▸1 thinking") && closed[0].includes("22s"),
+        JSON.stringify(closed));
+
+      click(0, 1);
+      const opened = row.render(100).map(plainText);
+      check("standalone header opens a block",
+        opened.length === 3 && opened[0].startsWith("▾1 thinking") &&
+        opened[1].startsWith("▏") && /k ch\s*$/.test(opened[1]) &&
+        opened[2].startsWith("▴Collapse"), JSON.stringify(opened));
+      check("standalone block starts with a middle-truncated preview",
+        opened[1].includes("HEAD") && opened[1].includes("…") && opened[1].length <= 100,
+        JSON.stringify(opened[1]));
+
+      click(1, 3);
+      const expanded = row.render(100).map(plainText);
+      check("clicking the preview expands the thinking text",
+        expanded.length > 3 && expanded.some((line) => line.includes("TAIL")) &&
+        expanded[expanded.length - 1].startsWith("▴Collapse"), JSON.stringify(expanded.slice(0, 4)));
+
+      click(expanded.length - 1, expanded.length);
+      const reclosing = row.render(100).map(plainText);
+      check("the footer collapses the standalone block",
+        reclosing.length === 1 && reclosing[0].startsWith("▸1 thinking"), JSON.stringify(reclosing));
+    } finally {
+      Date.now = realNow;
+      labelsLib.setActiveTheme(undefined);
+    }
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

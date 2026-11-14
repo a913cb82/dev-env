@@ -933,8 +933,8 @@ export function detachPass(
         .thinkingVisibilityOverrides as Map<number, boolean> | undefined;
       if (runId === undefined) {
         // No home: a completed thinking with nowhere to go collapses in
-        // place (standalone header) instead of lingering as a stock row.
-        // Streaming rows keep their live preview; unsafe rows keep stock.
+        // place (standalone block) instead of lingering as a stock row.
+        // Streaming rows keep their live block; unsafe rows keep stock.
         if (liveThinkingByRow.has(row)) {
           removeLiveThinking(row);
           restoreThinkingLabel(row, pi);

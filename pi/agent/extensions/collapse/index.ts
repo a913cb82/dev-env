@@ -74,9 +74,11 @@ export {
 };
 import {
   captureWalkerTui,
+  pokeStandaloneRows,
   reconcileStreamingLabel,
   reconcileThinkingLabels,
   resetLabelsState,
+  setThemeProvider,
   streamStatus,
   walkerStatus,
   walkerWidget,
@@ -134,7 +136,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 94;
+const COLLAPSE_REVISION = 95;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -143,6 +145,20 @@ const BREATHE_SLOT = "__collapseBreatheTick";
 // Test surface: the shared wheel clock (quantum + wall-clock frame) and the
 // repaint tick that drives live rows while they run.
 export { BREATHE_MS, breatheFrame, breatheTick };
+
+/** Keep the label renderer on the live TUI theme. ctx.ui.theme is a getter;
+ *  storing the provider means a later theme switch is picked up without
+ *  threading the ctx through the poll. */
+let collapseUi: any;
+function noteTheme(ctx: any): void {
+  try {
+    if (!ctx?.ui) return;
+    collapseUi = ctx.ui;
+    setThemeProvider(() => collapseUi?.theme);
+  } catch {
+    // No themed UI (RPC/headless): plain styling is fine.
+  }
+}
 
 /** Repaint driver for live rows: an 80ms timer pokes live rows so the wheel
  *  keeps turning even when Pi's own cycle is quiet. Same cadence as Pi's
@@ -169,6 +185,9 @@ function liveRunIds(): number[] {
 function breatheTick(pi: ExtensionAPI): void {
   try {
     if (!isHiddenThinking(pi)) return;
+    // Standalone thinking blocks have no run id. Repaint them on the same
+    // cadence so their wheel and elapsed clock stay live.
+    pokeStandaloneRows();
     const runs = liveRunIds();
     if (runs.length === 0) return;
     breatheTicks++;
@@ -419,6 +438,7 @@ export default function (pi: ExtensionAPI) {
   const boundary = (reason: string) => traceBoundary(reason);
   pi.on("session_start", (_event, ctx) => {
     try {
+      noteTheme(ctx);
       clearCollapsePokes();
       if (ctx.hasUI) collapseSawUI = true;
       try {
@@ -489,7 +509,8 @@ export default function (pi: ExtensionAPI) {
   const reconcileRows = () => {
     reconcileThinkingLabels(pi);
   };
-  pi.on("message_start", (event) => {
+  pi.on("message_start", (event, ctx) => {
+    noteTheme(ctx);
     traceOnMessageStart(event);
     reconcileRows();
     // Shadow the new row before its first content lands: otherwise its
@@ -497,7 +518,8 @@ export default function (pi: ExtensionAPI) {
     // (the row appears one line low, then jumps up when the pass runs).
     scheduleWrappingPass(pi);
   });
-  pi.on("message_update", (event) => {
+  pi.on("message_update", (event, ctx) => {
+    noteTheme(ctx);
     traceOnMessageUpdate(event);
     const message = (event as { message?: unknown })?.message;
     // A thinking-only row that is still streaming joins its block now: its
@@ -512,12 +534,14 @@ export default function (pi: ExtensionAPI) {
     // expensive thing the extension did while a model streamed.
     reconcileStreamingLabel(pi, message);
   });
-  pi.on("message_end", () => {
+  pi.on("message_end", (_event, ctx) => {
+    noteTheme(ctx);
     reconcileRows();
     detachPass(pi);
     wrappingPass(pi);
   });
-  pi.on("tool_execution_start", (event) => {
+  pi.on("tool_execution_start", (event, ctx) => {
+    noteTheme(ctx);
     traceOnToolExecutionStart(event, isOwnTool);
     // The tool component now exists: a live thinking anchored to the
     // previous run can move under its own message's first tool.
@@ -526,7 +550,8 @@ export default function (pi: ExtensionAPI) {
     // A tool row owned by the trace needs its wrap before the first paint.
     scheduleWrappingPass(pi);
   });
-  pi.on("turn_end", () => {
+  pi.on("turn_end", (_event, ctx) => {
+    noteTheme(ctx);
     reconcileRows();
     detachPass(pi);
     wrappingPass(pi);

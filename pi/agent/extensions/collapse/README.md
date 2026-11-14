@@ -199,7 +199,11 @@ header) is appended below. Closing
 the run resets any row or thinking preview the user had opened, so opening
 it again starts from the one-line view. A one-row run is the same block in
 every state: settled or live, tool or thinking, it still has a header and
-the same click depth.
+the same click depth. A standalone `▸N thinking` block follows the same
+depth: its header opens `▾` + one preview row + `▴Collapse`, the preview
+expands the full thinking text in place, and the footer closes it.
+(Mixed thinking-plus-prose rows keep their prose and their native label
+click; the block view is only for a thinking-only row.)
 Each row opens its stock cell at the depth Pi currently asks for:
 
 | Pi (ctrl+o) | At rest | After click |
@@ -352,9 +356,12 @@ so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
 collapses in place as `▸1 thinking  1m54s` instead of lingering — same
 header shape, frozen at completion; while it streams the marker is the
-wheel and the elapsed time ticks. A streaming thinking that later gains a
-host gives up this block to the run; an unsafe conclusion (a tool-less
-abort, for example) falls back to the stock preview instead. Detach runs on
+wheel and the elapsed time ticks. Clicking the header opens the block
+preview (`▾`, a middle-truncated line with its size, `▴Collapse`) instead
+of expanding Pi's hidden label immediately; clicking the preview then shows
+the full text. A streaming thinking that later gains a host gives up this
+block to the run; an unsafe conclusion (a tool-less abort, for example)
+falls back to the stock preview instead. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
 are never edited, so history, replay, compaction, and reload backfill keep
@@ -500,7 +507,8 @@ If rows show an unexpected gap, the boundary list names what split them.
 | `rows.ts` | row painting, the stock cell a row opens, tool wrappers, the opt-in slot for foreign tools |
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
-| `labels.ts` | tree-walk per-row thinking labels (settle + live block), walker widget, reconcile |
+| `labels.ts` | tree-walk per-row thinking labels (settle + live block), standalone block view, walker widget, reconcile |
+| `line.ts` | shared one-line renderer for run headers, tool rows, footers, and standalone blocks |
 | `detach.ts` | thinking-row detach (on by default; `COLLAPSE_HIDE_THINKING=0` opts out) |
 | `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
 | `tree.ts` | duck-typed TUI node helpers shared by wrap/detach (`classNameOf`, `isSpacerLike`) |

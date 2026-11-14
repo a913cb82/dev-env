@@ -51,6 +51,27 @@ const loadFixture = (name) =>
     check("thinking text stays hidden (count only, expands on click)",
       !shot.text.includes("Designing") && !shot.text.includes("Evaluating"),
       shot.lines.join("\n"));
+
+    // The same row, through the real detach pass and the real component:
+    // clicking its collapsed header opens the block, not Pi's full text.
+    const plain = (line) => String(line)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-9;]*m/g, "");
+    const rowLines = (row) => row.render(100).map(plain);
+    const blockRow = [...world.assistantComps.values()].find((row) => {
+      const lines = rowLines(row);
+      return lines.length === 1 && /^\s*▸1 thinking\b/.test(lines[0]);
+    });
+    check("a detached standalone is one block line", !!blockRow,
+      blockRow ? rowLines(blockRow).join("\n") : "no standalone row");
+    if (blockRow) {
+      blockRow.handleMouse({ type: "click", button: "left", y: 0, width: 100, height: 1 });
+      const opened = rowLines(blockRow);
+      check("detached standalone header opens the block",
+        opened.length === 3 && opened[0].startsWith("▾1 thinking") &&
+        opened[1].startsWith("▏") && opened[2].startsWith("▴Collapse"),
+        opened.join("\n"));
+    }
   }
 
   // R1b. the committed adjacent-groups fixture: two tool batches separated

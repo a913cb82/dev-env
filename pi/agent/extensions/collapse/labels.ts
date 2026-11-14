@@ -8,10 +8,11 @@
  * own message: no prototype patching, no Pi changes. If the tree shape ever
  * stops matching, everything below bails to stock behavior (never throws).
  */
-import { Container, type Component } from "@earendil-works/pi-tui";
-import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatRunDuration, isVisibleTextBlock, labelBudget, padLabel, thinkingLabelForWidth, wheelFrameAt } from "./logic.js";
+import { Container, Text, type Component } from "@earendil-works/pi-tui";
+import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatCharCount, formatRunDuration, isVisibleTextBlock, labelBudget, padLabel, thinkingLabelForWidth, thinkingPreview, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
+import { CollapsedLine } from "./line.js";
 
 /** Widget key for the invisible handle holder (renders zero lines). */
 export const WALKER_KEY = "collapse-thinking-walker";
@@ -58,13 +59,50 @@ let scannedFor = new WeakMap<object, number>();
  *  run's trace renders the live preview instead. */
 let liveHostedRows = new WeakSet<object>();
 
+/** Per-row UI state for a standalone thinking block. A row is one block:
+ *  closed shows the header; open shows the header, one preview line (or
+ *  the full text after a second click), and the footer. */
+interface StandaloneView {
+  open: boolean;
+  expanded: boolean;
+}
+let standaloneViews = new WeakMap<object, StandaloneView>();
+
+/** Current TUI theme, supplied by index from `ctx.ui.theme`. The thinking
+ *  row itself is rendered by Pi, which already has the theme; our custom
+ *  block must use the same colors instead of guessing ANSI codes. */
+let themeProvider: (() => any) | undefined;
+export function setThemeProvider(provider: (() => any) | undefined): void {
+  themeProvider = provider;
+}
+/** Test-only direct theme; production uses the provider above. */
+export function setActiveTheme(value: any): void {
+  themeProvider = () => value;
+}
+function activeTheme(): any {
+  try {
+    return themeProvider?.();
+  } catch {
+    return undefined;
+  }
+}
+const plainTheme = {
+  fg: (_color: string, text: string) => text,
+  italic: (text: string) => text,
+  style: (text: string) => text,
+};
+
 /** Mark one row as live-hosted. Detach owns the state; labels only honor it
  *  so no label pass can resurrect the line. */
 export function setRowLiveHosted(row: unknown, on: boolean): void {
   try {
     if (!row || typeof row !== "object") return;
-    if (on) liveHostedRows.add(row);
-    else liveHostedRows.delete(row);
+    if (on) {
+      liveHostedRows.add(row);
+      standaloneViews.delete(row);
+    } else {
+      liveHostedRows.delete(row);
+    }
   } catch {
     // Cosmetic only.
   }
@@ -176,6 +214,8 @@ export function resetLabelsState(): void {
   rowByMessage = new WeakMap<object, unknown>();
   scannedFor = new WeakMap<object, number>();
   liveHostedRows = new WeakSet<object>();
+  standaloneViews = new WeakMap<object, StandaloneView>();
+  themeProvider = undefined;
 }
 
 /** Thinking with nowhere to go: a streaming block before a host exists, or
@@ -196,10 +236,11 @@ export function setStandaloneThinking(message: unknown, on: boolean): void {
 }
 /** Collapsed form for homeless thinking: `▸N thinking  DURATION`, sized
  *  to the label width. The `▸` marker makes it read as one more collapsed
- *  block (a run header) rather than a stray row; Pi still toggles its full
- *  text natively. The duration is the block's total span (message start to
- *  completion, or to now while it streams), so even a sub-second block
- *  shows `0s` rather than disappearing. Pure. */
+ *  block (a run header) rather than a stray row. A pure thinking row gets
+ *  the custom block view; a mixed row still uses Pi's native toggle. The
+ *  duration is the block's total span (message start to completion, or to
+ *  now while it streams), so even a sub-second block shows `0s` rather than
+ *  disappearing. Pure. */
 export function standaloneThinkingLabel(
   count: number,
   durationMs: number | undefined,
@@ -379,37 +420,61 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
 }
 
 
+/** Non-empty thinking runs in a message; Pi groups adjacent runs into one
+ *  label, so the count is per message, not per block. */
+function thinkingRuns(message: unknown): number {
+  const msg = message as { content?: unknown } | undefined;
+  let runs = 0;
+  if (Array.isArray(msg?.content)) {
+    for (const block of msg.content as Array<{ type?: unknown; thinking?: unknown }>) {
+      if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim() !== "") runs++;
+    }
+  }
+  return runs;
+}
+
+interface StandaloneInfo {
+  runs: number;
+  complete: boolean;
+  duration?: number;
+  text: string;
+}
+
+/** The block's own clock: message timestamp to durationMs (settled) or to
+ *  `now` (streaming). First sighting is the fallback when Pi omits the
+ *  timestamp. `standaloneSeen` makes the raw block stable across renders. */
+function standaloneInfo(message: unknown, now = Date.now()): StandaloneInfo {
+  const msg = message as {
+    content?: unknown; stopReason?: unknown; timestamp?: unknown; durationMs?: unknown;
+  };
+  const runs = thinkingRuns(message);
+  const start = typeof msg?.timestamp === "number" && Number.isFinite(msg.timestamp)
+    ? msg.timestamp
+    : undefined;
+  let seen = standaloneSeen.get(message as object);
+  if (!seen) {
+    seen = { first: start ?? now };
+    standaloneSeen.set(message as object, seen);
+  }
+  if (start !== undefined) seen.first = start;
+  const complete = msg?.stopReason != null && msg.stopReason !== "pending";
+  if (complete && seen.done === undefined) seen.done = now;
+  const stated = typeof msg?.durationMs === "number" && Number.isFinite(msg.durationMs)
+    ? Math.max(0, msg.durationMs)
+    : undefined;
+  const duration = stated ?? (seen.done !== undefined
+    ? Math.max(0, seen.done - seen.first)
+    : complete ? undefined : Math.max(0, now - seen.first));
+  return { runs, complete, duration, text: extractThinkingText(message as { role?: unknown; content?: unknown }) ?? "" };
+}
+
 /** Write the collapsed form for a standalone thinking, streaming or
  *  homeless (see setStandaloneThinking). Never cached: the duration ticks
  *  until it freezes at completion. */
 function writeStandaloneLabel(row: any, message: unknown, width: number | undefined, pad: number, nowMs = Date.now()): void {
   try {
-    const msg = message as { content?: unknown; stopReason?: unknown; timestamp?: unknown; durationMs?: unknown };
-    let runs = 0;
-    if (Array.isArray(msg?.content)) {
-      for (const block of msg.content as Array<{ type?: unknown; thinking?: unknown }>) {
-        if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim() !== "") runs++;
-      }
-    }
-    const now = nowMs;
-    const start = typeof msg?.timestamp === "number" && Number.isFinite(msg.timestamp)
-      ? msg.timestamp
-      : undefined;
-    let seen = standaloneSeen.get(message as object);
-    if (!seen) {
-      seen = { first: start ?? now };
-      standaloneSeen.set(message as object, seen);
-    }
-    if (start !== undefined) seen.first = start;
-    const complete = msg?.stopReason != null && msg.stopReason !== "pending";
-    if (complete && seen.done === undefined) seen.done = now;
-    const stated = typeof msg?.durationMs === "number" && Number.isFinite(msg.durationMs)
-      ? Math.max(0, msg.durationMs)
-      : undefined;
-    const duration = stated ?? (seen.done !== undefined
-      ? Math.max(0, seen.done - seen.first)
-      : complete ? undefined : Math.max(0, now - seen.first));
-    const label = standaloneThinkingLabel(Math.max(1, runs), duration, labelBudget(width, pad), !complete);
+    const info = standaloneInfo(message, nowMs);
+    const label = standaloneThinkingLabel(Math.max(1, info.runs), info.duration, labelBudget(width, pad), !info.complete);
     if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
   } catch {
     // Cosmetic only.
@@ -511,6 +576,128 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
   }
 }
 
+function quiet(theme: any, text: string): string {
+  try {
+    return theme?.italic(theme.fg("thinkingText", text)) ?? text;
+  } catch {
+    return text;
+  }
+}
+
+function dim(theme: any, text: string): string {
+  try {
+    return theme?.fg("dim", text) ?? text;
+  } catch {
+    return text;
+  }
+}
+
+function standaloneView(row: object): StandaloneView {
+  let view = standaloneViews.get(row);
+  if (!view) {
+    view = { open: false, expanded: false };
+    standaloneViews.set(row, view);
+  }
+  return view;
+}
+
+/** A pure thinking row that owns a standalone block. Mixed rows keep their
+ *  prose and native label click: this custom block must never hide prose.
+ *  Error/abort/length rows carry extra Pi-rendered lines and stay stock. */
+function standaloneCandidate(row: any, pi?: ExtensionAPI): boolean {
+  try {
+    if (!row || typeof row !== "object") return false;
+    if (pi && !isHiddenThinking(pi)) return false;
+    if (isRowLiveHosted(row)) return false;
+    const container = row.contentContainer as { children?: unknown } | undefined;
+    if (!container || !Array.isArray(container.children)) return false;
+    const message = row.lastMessage as {
+      role?: unknown; stopReason?: unknown; content?: unknown;
+    } | undefined;
+    if (!message || message.role !== "assistant") return false;
+    if (hasVisibleProse(row)) return false;
+    const stop = message.stopReason;
+    if (stop === "aborted" || stop === "error" || stop === "length") return false;
+    if (!standaloneMessages.has(message) && (row as { isStreaming?: unknown }).isStreaming !== true) return false;
+    return (extractThinkingText(message) ?? "").length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Block lines for a standalone thinking row. Mirrors paintTrace's shape:
+ *  the header keeps the top, one preview or the expanded text follows, and
+ *  the footer closes it. Returns undefined when the row is not eligible or
+ *  rendering fails, so the row's native render is always a safe fallback. */
+function standaloneLines(row: any, width: number, pi?: ExtensionAPI): string[] | undefined {
+  try {
+    return buildStandaloneLines(row, width, pi);
+  } catch {
+    return undefined;
+  }
+}
+
+function buildStandaloneLines(row: any, width: number, pi?: ExtensionAPI): string[] | undefined {
+  if (!standaloneCandidate(row, pi)) return undefined;
+  const message = row.lastMessage;
+  const info = standaloneInfo(message);
+  const view = standaloneView(row);
+  const theme = activeTheme() ?? plainTheme;
+  const pad = liveOutputPad(pi ?? ({} as ExtensionAPI));
+  const live = !info.complete;
+  const time = info.duration === undefined ? "" : formatRunDuration(info.duration);
+  const right = time ? dim(theme, time) : "";
+  const left = quiet(theme, `${Math.max(1, info.runs)} thinking`);
+  const header = new CollapsedLine(
+    left,
+    right,
+    pad,
+    theme,
+    !view.open && live,
+    view.open ? "▾" : live ? undefined : "▸",
+  );
+  const lines = header.render(width);
+  if (!view.open) return lines;
+  if (view.expanded) {
+    lines.push(...new Text(quiet(theme, info.text), pad, 0).render(width));
+  } else {
+    const preview = new CollapsedLine(
+      quiet(theme, thinkingPreview(info.text, 240)),
+      dim(theme, formatCharCount(info.text.length)),
+      pad,
+      theme,
+      live,
+    );
+    lines.push(...preview.render(width));
+  }
+  // The footer is a control, not a second clock: the header already carries
+  // the block's time, so the close row stays as short as the sample block.
+  const footer = new CollapsedLine(quiet(theme, "Collapse"), "", pad, theme, false, "▴");
+  lines.push(...footer.render(width));
+  return lines;
+}
+
+function requestRowRender(): void {
+  try {
+    (capturedTui as { requestRender?: () => void } | undefined)?.requestRender?.();
+  } catch {
+    // Cosmetic only.
+  }
+}
+
+/** Repaint streaming standalone blocks from the 80ms breather. Without
+ *  this the wheel and elapsed time freeze between model deltas. */
+export function pokeStandaloneRows(): boolean {
+  try {
+    const live = liveRows.some((row) => standaloneCandidate(row) &&
+      (row as { isStreaming?: unknown }).isStreaming === true);
+    if (live) requestRowRender();
+    return live;
+  } catch {
+    return false;
+  }
+}
+
 const RAILED = Symbol("collapseRowRail");
 
 /** Shadow one row's render so its thinking line joins the run's left margin.
@@ -526,9 +713,52 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
     const orig = render.bind(row);
     target.render = (width: number): string[] => {
       maybeRelabel(row, pi);
+      const block = standaloneLines(row, width, pi);
+      if (block) return block;
+      standaloneViews.delete(row);
       const lines = orig(width);
       return railLines(lines, row, pi);
     };
+    // A standalone block is all ours: the row's stock MouseRegion would
+    // expand the thinking text on the first click. Route header / preview /
+    // footer clicks to the block's own depth instead. Mixed rows and rows
+    // that are not standalone keep Pi's native handler.
+    const originalHandle = target.handleMouse;
+    if (typeof originalHandle === "function") {
+      const handle = originalHandle.bind(row);
+      target.handleMouse = (event: any): unknown => {
+        if (event?.type !== "click" || event?.button !== "left" || !standaloneCandidate(row, pi)) {
+          return handle(event);
+        }
+        const width = typeof event.width === "number" ? event.width : (currentColumns() ?? 80);
+        const lines = standaloneLines(row, width, pi);
+        if (!lines) return handle(event);
+        const y = typeof event.y === "number" ? event.y : -1;
+        const view = standaloneView(row);
+        if (!view.open) {
+          if (y === 0) {
+            view.open = true;
+            view.expanded = false;
+            requestRowRender();
+            return { handled: true };
+          }
+          return handle(event);
+        }
+        const last = lines.length - 1;
+        if (y === 0 || y === last) {
+          view.open = false;
+          view.expanded = false;
+          requestRowRender();
+          return { handled: true };
+        }
+        if (y > 0 && y < last) {
+          view.expanded = !view.expanded;
+          requestRowRender();
+          return { handled: true };
+        }
+        return handle(event);
+      };
+    }
     target[RAILED] = true;
     return true;
   } catch {
