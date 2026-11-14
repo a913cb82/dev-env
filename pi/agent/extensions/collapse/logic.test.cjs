@@ -2,29 +2,15 @@
 // tool/thinking view. No pi imports; load via jiti.
 // Run: node logic.test.cjs
 const path = require("node:path");
-const fs = require("node:fs");
-const { execSync } = require("node:child_process");
 
-function findPiRoot() {
-   if (process.env.PI_ROOT) return process.env.PI_ROOT;
-   // The managed install records its version; ~/.pi/agent/bin/pi is a shell
-   // launcher, so walking up from it lands on ~/.pi rather than the package.
-   try {
-   	const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
-   	const root = path.join(process.env.HOME, ".pi/agent/install/releases", version,
-   		"node_modules/@earendil-works/pi-coding-agent");
-   	if (fs.existsSync(path.join(root, "dist", "modes"))) return root;
-   } catch { /* fall through to the legacy layout */ }
-   // Legacy: the launcher used to point into the package itself.
-   const real = fs.realpathSync(execSync("command -v pi", { encoding: "utf8" }).trim());
-   let dir = path.dirname(real);
-   while (dir !== path.dirname(dir) && !fs.existsSync(path.join(dir, "dist", "modes"))) dir = path.dirname(dir);
-   return dir;
-}
-
-const PI = findPiRoot();
+const { PI } = require("./test-pi.cjs");
 const { createJiti } = require(require.resolve("jiti", { paths: [PI] }));
-const jiti = createJiti(__filename, { interopDefault: true, fsCache: true, moduleCache: false });
+const jiti = createJiti(__filename, {
+  interopDefault: true,
+  fsCache: true,
+  moduleCache: false,
+  alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui", { paths: [PI] }) },
+});
 
 let failures = 0;
 function check(name, cond, extra) {
@@ -37,6 +23,7 @@ function check(name, cond, extra) {
 
 (async () => {
   const logic = await jiti.import(path.join(__dirname, "logic.ts"));
+  const tui = await jiti.import("@earendil-works/pi-tui");
 
   // formatCharCount: exact characters below 1000 (k-form rounded every small
   // result to 0.0k/0.1k), one decimal in k above it.
@@ -48,6 +35,33 @@ function check(name, cond, extra) {
   check("count 5300", logic.formatCharCount(5300) === "5.3k ch", logic.formatCharCount(5300));
   check("count 12345", logic.formatCharCount(12345) === "12.3k ch", logic.formatCharCount(12345));
   check("count negative", logic.formatCharCount(-5) === "0 ch", logic.formatCharCount(-5));
+
+  // branchToolIds: every toolCall in the branch, own or foreign, with or
+  // without timestamps (a reload often has none; pruning must not delete
+  // rows that are still on screen).
+  {
+    const ids = logic.branchToolIds([
+      { type: "message", message: { role: "assistant", content: [
+        { type: "toolCall", id: "a", name: "read" },
+        { type: "thinking", thinking: "mid" },
+        { type: "toolCall", id: "b", name: "mcp_thing" },
+      ] } },
+      { type: "message", message: { role: "toolResult", toolCallId: "c" } },
+      { type: "message", message: { role: "assistant", content: [{ type: "toolCall" }] } },
+      { type: "custom_message", id: "x" },
+      null,
+    ]);
+    check("branch ids include own and foreign", ids.has("a") && ids.has("b") && ids.size === 2, JSON.stringify([...ids]));
+    check("branch ids ignore results and malformed", !ids.has("c"), JSON.stringify([...ids]));
+    check("branch ids tolerate no entries", logic.branchToolIds(undefined).size === 0, "");
+  }
+
+  // isVisibleTextBlock: the one predicate shared by the planner, detach scan
+  // and labels walk.
+  check("visible text block", logic.isVisibleTextBlock({ type: "text", text: "hi" }) === true, "");
+  check("whitespace text is not visible", logic.isVisibleTextBlock({ type: "text", text: " \n\t " }) === false, "");
+  check("thinking is not visible text", logic.isVisibleTextBlock({ type: "thinking", thinking: "x" }) === false, "");
+  check("missing text is not visible", logic.isVisibleTextBlock({ type: "text" }) === false, "");
 
   // splitDirBase
   check(
@@ -77,6 +91,7 @@ function check(name, cond, extra) {
   check("range offset only", logic.formatLineRange(10, null) === ":10", logic.formatLineRange(10, null));
   check("range limit only", logic.formatLineRange(null, 20) === ":1-20", logic.formatLineRange(null, 20));
   check("range single line", logic.formatLineRange(1, 1) === ":1-1", logic.formatLineRange(1, 1));
+  check("range zero limit is one line", logic.formatLineRange(10, 0) === ":10-10", logic.formatLineRange(10, 0));
 
   // collapseWhitespace
   check("collapse basic", logic.collapseWhitespace("a\nb\tc  d") === "a b c d", JSON.stringify(logic.collapseWhitespace("a\nb\tc  d")));
@@ -158,19 +173,6 @@ function check(name, cond, extra) {
     check("huge argument summary is bounded", ms2 < 100, `${ms2}ms`);
     check("huge argument summary is still readable", args.startsWith('path="/a/b" content="') && args.length <= 80, JSON.stringify(args));
     check("small argument summary is unchanged", logic.fallbackArgsText({ a: 1, b: "x" }, false, 80) === 'a=1 b="x"', JSON.stringify(logic.fallbackArgsText({ a: 1, b: "x" }, false, 80)));
-  }
-
-  // buildThinkingLabel
-  check("label empty", logic.buildThinkingLabel("") === "Thinking… 0 ch", JSON.stringify(logic.buildThinkingLabel("")));
-  check(
-    "label short",
-    logic.buildThinkingLabel("hello") === "Thinking hello 5 ch",
-    JSON.stringify(logic.buildThinkingLabel("hello")),
-  );
-  {
-    const thinking = "a".repeat(1500);
-    const expected = `Thinking ${"a".repeat(32)}…${"a".repeat(31)} 1.5k ch`;
-    check("label long", logic.buildThinkingLabel(thinking) === expected, JSON.stringify(logic.buildThinkingLabel(thinking)).slice(0, 120));
   }
 
   // firstWord / summarizeBashCommand (no fixed cap: the row truncates to width)
@@ -345,6 +347,27 @@ function check(name, cond, extra) {
     const expectedPreview = `${"a".repeat(44)}…${"a".repeat(44)}`;
     check("label pad 0 wider", visible(logic.thinkingLabelForWidth("hello", 80, 0)).length === 79, `${visible(logic.thinkingLabelForWidth("hello", 80, 0)).length}`);
     check("label long middle exact", long.startsWith(expectedPreview), JSON.stringify(long.slice(0, 100)));
+
+    // Wide glyphs and emoji are measured in terminal cells, not UTF-16
+    // units: CJK text must not push the right-aligned count onto a second
+    // line, and a middle cut must never split a surrogate pair.
+    const cjk = "我在检查磁盘使用情况和大型目录。";
+    const cjkLabel = logic.thinkingLabelForWidth(cjk, 80);
+    check("cjk label fits the budget", tui.visibleWidth(visible(cjkLabel)) <= logic.labelBudget(80, 1),
+      `${tui.visibleWidth(visible(cjkLabel))} > ${logic.labelBudget(80, 1)}`);
+    check("cjk label ends on the count", visible(cjkLabel).trimEnd().endsWith("16 ch"), JSON.stringify(visible(cjkLabel)));
+    const emoji = "\ud83d\ude00".repeat(40);
+    const emojiPreview = logic.thinkingPreview(emoji, 10);
+    check("emoji preview keeps graphemes whole", emojiPreview === Array.from(emojiPreview).join(""), JSON.stringify(emojiPreview));
+    check("emoji preview fits the budget", tui.visibleWidth(emojiPreview) <= 10, `${tui.visibleWidth(emojiPreview)}`);
+    const emojiCut = logic.truncateMiddle(emoji, 11);
+    check("emoji middle cut keeps graphemes whole", emojiCut === Array.from(emojiCut).join(""), JSON.stringify(emojiCut));
+    check("emoji middle cut fits the budget", tui.visibleWidth(emojiCut) <= 11, `${tui.visibleWidth(emojiCut)}`);
+    // A wide glyph at the cut boundary may leave a cell unused; the result
+    // must still never exceed the budget.
+    const mixed = "ab我cd😀ef我";
+    check("mixed-width cut fits", tui.visibleWidth(logic.truncateMiddle(mixed, 5)) <= 5,
+      JSON.stringify(logic.truncateMiddle(mixed, 5)));
   }
 
   // hasLeadingVisibleContent: does anything render above this message's tools?

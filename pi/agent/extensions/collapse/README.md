@@ -3,10 +3,21 @@
 Compacts Pi's transcript into one-line tool rows and a one-line thinking
 preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 
+At rest a run is one header, live or settled. Click the header to open
+its rows; the header stays at the top (`▾` when settled, the wheel while
+live) and a `▴Collapse` footer closes it again.
+
 ```
+▸1 read · 1 bash · 1 thinking                       18s
+```
+
+After the click:
+
+```
+▾1 read · 1 bash · 1 thinking                       18s
 ▏read /home/abrai/dev-env/src/app.ts:10-20          5.3k ch
-▏$ timeout 25 ls some/dist                          0.8k ch
-▏grep flushTimers src/                              1.2k ch
+▏$ ls some/dist (timeout 25s)                       0.8k ch
+▴Collapse
 ```
 
 Three levels, one meaning each:
@@ -173,13 +184,14 @@ the deferred plan keeps its preview instead of pointing at a run that no
 longer exists.
 
 **Click depth.** Every run rests as one header line, live or settled
-(`>4 read · 1 thinking`, duration right). The header copy is Pi's grey
+(`▸4 read · 1 thinking`, duration right). The header copy is Pi's grey
 italic, the same voice as a thinking block, so every collapsed block reads
 as one quiet layer; the marker keeps the accent. A live run keeps its
-spinning wheel in column 1 and the argument text written so far on the right
-instead of expanding while it streams. Clicking the header opens the
-per-row view plus a `▏Collapse` footer; each row still opens its stock
-cell at the depth Pi currently asks for:
+spinning wheel in column 1 and the elapsed time on the right instead of
+expanding while it streams. Clicking the header opens the
+per-row view: the same header flips to `▾` and stays on top, and a
+`▴Collapse` footer is appended below. Each row still opens its stock cell at
+the depth Pi currently asks for:
 
 | Pi (ctrl+o) | At rest | After click |
 | --- | --- | --- |
@@ -272,7 +284,7 @@ still streaming is never removed whole: its prose can arrive after the
 thinking, and removing the row lost that prose (the block then started below
 it, and the header flickered between a label and the collapsed cell). And a
 thinking that precedes its OWN message's prose stays in the row as
-`>N thinking` — even when the same message carries the tool call — because Pi
+`▸N thinking` — even when the same message carries the tool call — because Pi
 mounts tool components after the whole row, so the block always sits below
 that prose. A thinking that arrives after an earlier block's tools still
 attaches backward into it.
@@ -286,7 +298,7 @@ transcript order. The whole session can be checked structurally
 (`--turns 200`); order probes are substring matches, so a transcript that
 quotes its own screenshots is only ordered on the newest `--order-turns`
 turns (default 8), where each fragment is unique. A standalone
-`>N thinking` directly under a run is the intended shape for a thinking
+`▸N thinking` directly under a run is the intended shape for a thinking
 followed by its own message's prose: the standalone line is that message's
 first line, not a second run block. The same
 invariant lives in the replay suite: the two resume orders keep the same
@@ -319,7 +331,7 @@ prose above always keeps its blank line. A thinking row means a row
 with thinking content — prose-only rows are never walked as thinking rows,
 so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
-collapses in place as `>1 thinking  1m54s` instead of lingering — same
+collapses in place as `▸1 thinking  1m54s` instead of lingering — same
 header shape, frozen at completion. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
@@ -420,9 +432,9 @@ any tool that never opted in.
 full duration on the right; a streaming one carries the time so far (ticking
 with the wheel), never arg chars — the right column is always time. The
 span is the whole block, not just its tools: a thinking lead before the
-first call and a thinking tail after the last both count. An open run shows
-the same inclusive clock in its `Collapse` footer, so the elapsed time never
-vanishes when the header does. A standalone `>N thinking` block uses its
+first call and a thinking tail after the last both count. An open run keeps
+the same inclusive clock in its top header and repeats it in the `Collapse`
+footer, so the elapsed time never vanishes when the rows open. A standalone `▸N thinking` block uses its
 message's own start and `durationMs`, so it always carries a time too
 (including `0s` for a sub-second block) instead of leaving the right column
 empty. **Failures surface at rest:** the header appends a red `N error` when
@@ -465,11 +477,15 @@ If rows show an unexpected gap, the boundary list names what split them.
 | `labels.ts` | tree-walk per-row thinking labels (settle + live preview), walker widget, reconcile |
 | `detach.ts` | thinking-row detach (on by default; `COLLAPSE_HIDE_THINKING=0` opts out) |
 | `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
+| `tree.ts` | duck-typed TUI node helpers shared by wrap/detach (`classNameOf`, `isSpacerLike`) |
 | `logic.ts` | pure helpers (summaries, truncation, label sizing) |
 
-Registry entries are never pruned: `buildTrace` reads them at render time and
-the TUI re-renders every component on resize, so dropping one would blank a row
-still on screen. Size is proportional to the transcript.
+Registry entries are pruned when `session_start` names the current branch:
+registrations from a previous session cannot blank a row that is still on
+screen, and their args/results/thinking text stop living for the rest of the
+process. The prune keeps every `toolCall` id in the branch, timed or not, so
+a history rebuild without timestamps (the common case) never drops a visible
+row. Within a session, size stays proportional to the transcript.
 
 ## Tests
 
@@ -477,10 +493,14 @@ still on screen. Size is proportional to the transcript.
 node logic.test.cjs      # pure helpers
 node collapse.test.cjs   # renderers, trace behaviour, click depth, diagnostics
 node replay.test.cjs     # headless Pi: real components, scripted transcripts
+./typecheck.sh           # strict tsc against the installed Pi release
 ```
 
-All three suites run on plain Node via `jiti`, with the installed Pi bundle
-aliased; no network and no real terminal required. The replay driver renders
+The three Node suites run on plain Node via `jiti`, with the installed Pi
+bundle aliased; no network and no real terminal required. `typecheck.sh`
+generates a temporary `tsconfig` from the current Pi install (its path is
+per-machine), so it needs `tsc` or `npx`; it is the check that catches
+undefined identifiers such as the former `isSpacerLike` reference. The replay driver renders
 with real ANSI (not the marker theme the unit tests use), because marker tags
 count as visible characters and would narrow every row.
 

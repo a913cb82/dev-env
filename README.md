@@ -27,7 +27,7 @@ After `pi update`, verify the extensions' assumptions still hold:
 
 1. `./tests/pi-internals.test.sh` pins the Pi internals the collapse view patches.
 2. `./tests/*.test.sh` covers bootstrap links, the Pi install path and the skills.
-3. `node pi/agent/extensions/collapse/*.test.cjs` and
+3. `node pi/agent/extensions/collapse/*.test.cjs`, `pi/agent/extensions/collapse/typecheck.sh`, and
    `node pi/agent/extensions/subagents/*.test.cjs` exercise the extensions directly
    (each prints `ok -` lines; any `FAIL -` is a real break).
 4. `node pi/agent/extensions/collapse/replay/parity.cjs <session.jsonl>` replays a real

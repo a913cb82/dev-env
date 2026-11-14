@@ -2,7 +2,7 @@
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { ROW_RAIL, WHEEL_FRAMES, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, formatRunDuration, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, summarizeRun, textCharCount, type BashSegment, type GenericPair } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, WHEEL_MS, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, formatRunDuration, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, summarizeRun, textCharCount, wheelFrameAt, type BashSegment, type GenericPair } from "./logic.js";
 /** Re-exported so the wheel-test surface keeps its path (rows.ts owns the
  *  timer quantum BREATHE_MS; the frames live on the shared leaf). */
 export { WHEEL_FRAMES };
@@ -33,6 +33,7 @@ import {
   traceSync,
   traceUpsert,
   type CollapseSlots,
+  type CollapseState,
   type TraceEntry,
 } from "./trace.js";
 
@@ -40,18 +41,16 @@ const COUNT_GAP = 2;
 
 /** Working-spinner quantum: Pi Loader's own 80ms cadence and braille frames.
  *  Same speed, arbitrary phase — see the note on breatheFrame. */
-export const BREATHE_MS = 80;
+export const BREATHE_MS = WHEEL_MS;
 /** Frame at a given moment: absolute wall-clock grid, no epoch, no tracking.
  *  Phase lockstep with Pi's Working spinner was tried across r66-r72 and
  *  abandoned: the tick phase is not observable through the extension API,
  *  run-boundary events do not fire reliably in harness-driven flows (so no
  *  anchor survives a session), and render-load jitter scatters the repaint
  *  phases a tracker would need. Same glyphs at the same cadence, each
- *  spinner on its own phase — occasionally aligned, never wrong-speed. */
-export function breatheFrame(nowMs: number = Date.now()): number {
-  if (nowMs < 0) return 0;
-  return Math.floor(nowMs / BREATHE_MS) % WHEEL_FRAMES.length;
-}
+ *  spinner on its own phase — occasionally aligned, never wrong-speed.
+ *  The math lives on the shared leaf so labels and rows cannot drift. */
+export const breatheFrame = wheelFrameAt;
 /** Working wheel for live rows: Pi Loader's braille frames, accent, fixed
  *  width so the count never shifts. Shape motion carries the animation. */
 export function breatheWheel(nowMs?: number): string {
@@ -86,7 +85,7 @@ export class CollapsedLine implements Component {
   ) {}
 
   /** Column 1 carries the rail — or the wheel while live, or the
-   *  run-level marker (`>` header, `|` footer). With no pad
+   *  run-level marker (`▸`/`▾` header, `▴` footer). With no pad
    *  the row starts at column 1 (stock cell with outputPad=0), so neither
    *  is drawn there: content must never shift sideways. */
   private prefix(): string {
@@ -489,22 +488,34 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   // Run-level header: every run rests as one line. Click opens the per-row
   // view below. While entries stream the header carries the live wheel
   // and the elapsed time; settled runs show the final duration.
-  if (!isRunOpen(runId)) {
-    const live = runHasLive(runId);
-    const active = live || runThinkingLive(runId);
-    const header = new CollapsedLine(summary, timeRight(active), liveOutputPad(pi), theme, live, live ? undefined : ">");
-    trace.addChild(
-      new MouseRegion(header, (event: any) => {
-        if (!event || event.type !== "click") return undefined;
-        const target = liveRun();
-        toggleRunOpen(target);
-        traceBump();
-        tracePokeOwner(target);
-        return { handled: true };
-      }),
+  const live = runHasLive(runId);
+  const active = live || runThinkingLive(runId);
+  const toggleHeader = (marker: string): Component => {
+    const header = new CollapsedLine(
+      summary,
+      timeRight(active),
+      liveOutputPad(pi),
+      theme,
+      live,
+      live ? undefined : marker,
     );
+    return new MouseRegion(header, (event: any) => {
+      if (!event || event.type !== "click") return undefined;
+      const target = liveRun();
+      toggleRunOpen(target);
+      traceBump();
+      tracePokeOwner(target);
+      return { handled: true };
+    });
+  };
+  if (!isRunOpen(runId)) {
+    trace.addChild(toggleHeader("▸"));
     return;
   }
+  // An open run keeps its header at the top: the footer is below every row,
+  // so on a long block the close control would otherwise be off-screen. The
+  // open header uses the expanded marker and collapses the block on click.
+  trace.addChild(toggleHeader("▾"));
   // Replacement for detached Pi thinking rows (fail-open: renders only
   // when the detach pass confirmed this run's rows are gone — a missed
   // detach degrades to the stock Pi row, never a duplicate). One preview
@@ -586,11 +597,12 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
     for (const item of afterMap.get(id) ?? []) addPreview(item);
   }
   // Footer collapses the run back to its header. Row-open state is preserved.
-  // The footer keeps the run rail (col 1) so the block margin stays even.
+  // The up arrow mirrors the open header's down arrow, so the block has a
+  // visible close control at both ends.
   if (ids.length >= 1) {
     // The footer mirrors the header's time column, including while a live
     // run is open (the header it replaced is not on screen then).
-    const footer = new CollapsedLine("Collapse", timeRight(runHasLive(runId) || runThinkingLive(runId)), liveOutputPad(pi), theme, false);
+    const footer = new CollapsedLine("Collapse", timeRight(runHasLive(runId) || runThinkingLive(runId)), liveOutputPad(pi), theme, false, "▴");
     trace.addChild(
       new MouseRegion(footer, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -678,7 +690,8 @@ function buildTraceFor(
     try {
       paintTrace(trace, current, toolCallId, theme, ownerNow, pi);
     } catch (error) {
-      if (process.env.ROWS_DEBUG) console.error("PAINT ERROR", toolCallId, "run", current, error?.stack ?? error);
+      const stack = (error as { stack?: unknown })?.stack;
+      if (process.env.ROWS_DEBUG) console.error("PAINT ERROR", toolCallId, "run", current, stack ?? error);
       throw error;
     }
     return true;

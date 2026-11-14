@@ -30,6 +30,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isThinkingRow, reconcileStreamingLabel, refreshThinkingRows, walkerTui } from "./labels.js";
+import { classNameOf, isSpacerLike } from "./tree.js";
 import { isHiddenThinking } from "./settings.js";
 import { traceEntries, traceOwnerId } from "./trace.js";
 
@@ -68,7 +69,7 @@ const ROW_SYNCED = Symbol("collapseRowSync");
 /** Installed row-sync shadows plus the original they replaced. */
 interface InstalledRowSync {
   shadowUpdateContent: unknown;
-  origUpdateContent: (message: unknown, streaming?: unknown) => unknown;
+  origUpdateContent: (message: unknown, streaming?: boolean) => unknown;
 }
 const installedRowSyncs = new WeakMap<object, InstalledRowSync>();
 
@@ -109,7 +110,7 @@ export function syncRowUpdates(
     const unbound = row.updateContent;
     const orig = unbound.bind(row);
     const prevOf = getPrev ?? (() => undefined);
-    row.updateContent = (message: unknown, streaming?: unknown): unknown => {
+    row.updateContent = (message: unknown, streaming?: boolean): unknown => {
       const result = orig(message, streaming);
       try {
         if (isHiddenThinking(pi)) {
@@ -196,24 +197,6 @@ export function scheduleWrappingPass(pi: ExtensionAPI): void {
 
 export function wrapStatus(): string {
   return wrapOutcome;
-}
-
-/** Class name of a node, the jiti-safe identity check (`instanceof`
- *  breaks across module instances; dist ships unminified so names hold).
- *  Unknown names fail closed: callers treat them as opaque content. */
-function classNameOf(node: unknown): string | undefined {
-  try {
-    if (!node || typeof node !== "object") return undefined;
-    const name = (node as { constructor?: { name?: unknown } }).constructor?.name;
-    return typeof name === "string" ? name : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** A pi-tui `Spacer`: renders exactly one blank line, carries no content. */
-function isSpacerLike(node: unknown): boolean {
-  return classNameOf(node) === "Spacer";
 }
 
 /** A thinking run's region: a MouseRegion wrapping hidden (`Text`) or

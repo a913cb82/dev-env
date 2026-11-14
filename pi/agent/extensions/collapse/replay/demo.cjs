@@ -1,5 +1,5 @@
 // Live demo: watch a streaming turn render, frame by frame, through the
-// real components + the real extension. Run: node /tmp/live-demo.cjs
+// real components + the real extension. Run: node replay/demo.cjs
 const driver = require("./driver.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 (async () => {
@@ -17,7 +17,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     { op: "thinking", id: "m1", text: "Looking at disk usage" },
   ]);
   show("thinking streams (delta 1)");
-  await driver.runLive(world, [{ op: "thinking", id: "m1", text: "Looking at disk usage and large directories" }]);
+  await driver.runLive(world, [{ op: "thinking", id: "m1", text: " and large directories" }]);
   show("thinking streams (delta 2)");
   await driver.runLive(world, [
     { op: "tool", id: "m1", toolId: "k1", name: "bash", args: { command: "du -sh /var/log" }, partial: true },

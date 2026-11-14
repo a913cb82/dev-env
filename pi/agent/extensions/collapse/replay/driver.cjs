@@ -24,25 +24,10 @@
 //   {op:"reload"}                       rebuild chat from entries + session_start
 //   {op:"toggle"}                       flip hideThinkingBlock (poll picks it up)
 const path = require("node:path");
-const fs = require("node:fs");
-const { execSync } = require("node:child_process");
 
-function findPiRoot() {
-  if (process.env.PI_ROOT) return process.env.PI_ROOT;
-  try {
-    const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
-    const root = path.join(process.env.HOME, ".pi/agent/install/releases", version,
-      "node_modules/@earendil-works/pi-coding-agent");
-    if (fs.existsSync(path.join(root, "dist", "bundle", "index.js"))) return root;
-  } catch { /* legacy layout */ }
-  const real = fs.realpathSync(execSync("command -v pi", { encoding: "utf8" }).trim());
-  return path.resolve(path.dirname(real), "..", "..");
-}
-
-const PI = findPiRoot();
+const { PI, vreq } = require("../test-pi.cjs");
 // Before 1.5.x the deps lived under the pi package; afterwards npm hoists them
 // to the release root. Resolve through Node so both layouts work.
-const vreq = (id) => require.resolve(id, { paths: [PI] });
 const HERE = path.join(__dirname, "..");
 let jiti;
 
@@ -201,8 +186,11 @@ function mountTool(world, name, toolCallId, args, partial) {
     handleMouse: () => undefined,
     invalidate() { ctx.invalidate(); },
     render(width) {
-      if (this.inner !== inner) this.inner = inner;
-      const lines = inner.render(width);
+      // refreshTool swaps the component on invalidate; compare against the
+      // live slot, not the mount-time closure, or every repaint is stale.
+      const current = world.toolComps.get(toolCallId)?.inner ?? inner;
+      if (this.inner !== current) this.inner = current;
+      const lines = this.inner.render(width);
       if (lines.length === 0) return lines;
       return ["", ...lines];
     },
@@ -254,6 +242,7 @@ function mountEntries(world, entries) {
       const slot = world.toolComps.get(message.toolCallId);
       if (slot) {
         const tool = world.tools.get(slot.name);
+        slot.ctx.isPartial = false;
         tool.renderResult?.({ content: message.content ?? [] }, { isPartial: false }, world.PI.theme, slot.ctx);
         refreshTool(world, message.toolCallId);
       }
@@ -326,6 +315,7 @@ async function runLive(world, ops) {
       const slot = world.toolComps.get(op.toolId);
       if (slot) {
         const tool = world.tools.get(slot.name);
+        slot.ctx.isPartial = false;
         tool.renderResult?.({ content: [{ type: "text", text: op.text ?? "" }] },
           { isPartial: false }, world.PI.theme, slot.ctx);
         refreshTool(world, op.toolId);

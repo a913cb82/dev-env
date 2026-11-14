@@ -38,6 +38,8 @@ export interface TraceEntry extends CollapseSlots {
   original: any;
   args: any;
   argsSig?: string;
+  /** The row is opened into Pi's stock cell (per-row click). */
+  rowOpen: boolean;
   expanded: boolean;
   isError: boolean;
   isPartial: boolean;
@@ -107,6 +109,13 @@ export function timingStatus(): string {
   return `timing: history=${historyTimings.size} windows; start(pi=${sPi} history=${sHist} fallback=${sFb} renderer=${sRen} unset=${sUn}); end(pi=${ePi} history=${eHist} fallback=${eFb} renderer=${eRen} unset=${eUn})`;
 }
 let traceRunId = 0;
+/** Monotonic allocator. Run ids are never reused: the join pointer may move
+ *  backwards after a re-plan, but a fresh id must never collide with one a
+ *  planned group already owns. */
+let nextRunId = 0;
+function allocRunId(): number {
+  return ++nextRunId;
+}
 
 /** True while the transcript is being rebuilt from history (startup and
  *  compaction). Nothing separates those messages, so merging would stack
@@ -163,7 +172,7 @@ let hardBoundarySeq = 0;
 const runTurnSeq = new Map<number, number>();
 export function traceBoundary(reason = "?") {
   traceBump();
-  traceRunId++;
+  traceRunId = allocRunId();
   hardBoundarySeq++;
   boundaryReasons.push(`${reason}#${traceRunId}`);
   if (boundaryReasons.length > 8) boundaryReasons.shift();
@@ -172,7 +181,7 @@ export function traceBoundary(reason = "?") {
 /** Same-turn split (leading/trailing prose): new run, same turn. */
 export function traceSoftBoundary(reason = "?") {
   traceBump();
-  traceRunId++;
+  traceRunId = allocRunId();
   boundaryReasons.push(`${reason}#${traceRunId}`);
   if (boundaryReasons.length > 8) boundaryReasons.shift();
   return reason;
@@ -204,7 +213,8 @@ export function resetTraceState(): void {
   historyTimer = undefined;
   messageSeq = 0;
   visibleBumpSeq = -1;
-  traceRunId++;
+  nextRunId = 0;
+  traceRunId = allocRunId();
   traceHistoryPhase = false;
 }
 
@@ -249,23 +259,6 @@ export function runErrorCount(runId: number): number {
   return count;
 }
 
-export function runDuration(runId: number): number | undefined {
-  let start: number | undefined;
-  let end: number | undefined;
-  for (const id of traceRuns.get(runId) ?? []) {
-    const entry = traceEntries.get(id);
-    if (!entry) continue;
-    if (typeof entry.startedAt === "number") {
-      start = start === undefined ? entry.startedAt : Math.min(start, entry.startedAt);
-    }
-    if (typeof entry.endedAt === "number") {
-      end = end === undefined ? entry.endedAt : Math.max(end, entry.endedAt);
-    }
-  }
-  if (start === undefined || end === undefined || end < start) return undefined;
-  return end - start;
-}
-
 /** History runs planned at session_start (see planToolRuns in logic): the
  *  rebuild rendered one run per tool before this event, so merge each
  *  contiguous group into one run here. Every component repaints from this
@@ -278,7 +271,17 @@ const plannedRunById = new Map<string, number>();
  *  entry to a fresh run. Modules that key state by run id (detach's stashed
  *  thinkings) register here so their state moves with the entries instead of
  *  pointing at a run that no longer exists. */
-type RunRemapHook = (oldToNew: Map<number, number>) => void;
+type RunRemapHook = (oldToNew: Map<number, number[]>) => void;
+
+/** Record that `oldId`'s state belongs under `newId`. A re-plan can split
+ *  one old run across several groups, so the target list, not a single id,
+ *  is the honest shape. */
+function noteRemap(map: Map<number, number[]>, oldId: number, newId: number): void {
+  if (oldId === newId) return;
+  const targets = map.get(oldId) ?? [];
+  if (!targets.includes(newId)) targets.push(newId);
+  map.set(oldId, targets);
+}
 let runRemapHook: RunRemapHook | undefined;
 
 export function registerRunRemap(hook: RunRemapHook): void {
@@ -290,18 +293,17 @@ export function applyPlannedRuns(groups: string[][], keepLivePointer = false): v
   plannedRunById.clear();
   const byId = new Map(traceEntries);
   const planned = new Set<string>();
-  const oldToNew = new Map<number, number>();
+  const oldToNew = new Map<number, number[]>();
   traceRuns.clear();
   traceOwnerPoke.clear();
   runTurnSeq.clear();
   for (const group of groups) {
     const ids = group.filter((id) => byId.has(id));
     if (ids.length === 0) continue;
-    traceRunId++;
-    const runId = traceRunId;
+    const runId = allocRunId();
     for (const id of ids) {
       const entry = byId.get(id)!;
-      if (entry.runId !== runId) oldToNew.set(entry.runId, runId);
+      noteRemap(oldToNew, entry.runId, runId);
       entry.runId = runId;
       planned.add(id);
       plannedRunById.set(id, runId);
@@ -324,11 +326,10 @@ export function applyPlannedRuns(groups: string[][], keepLivePointer = false): v
   let lastLiveRun: number | undefined;
   for (const ids of orphans.values()) {
     const live = ids.some((id) => byId.get(id)!.history !== true);
-    traceRunId++;
-    const runId = traceRunId;
+    const runId = allocRunId();
     for (const id of ids) {
       const entry = byId.get(id)!;
-      if (entry.runId !== runId) oldToNew.set(entry.runId, runId);
+      noteRemap(oldToNew, entry.runId, runId);
       entry.runId = runId;
     }
     traceRuns.set(runId, [...ids]);
@@ -349,13 +350,48 @@ export function applyPlannedRuns(groups: string[][], keepLivePointer = false): v
   // poll with no boundary since the history was rendered. A switch/fork/seal
   // already bounded, so those tools belong to another session and the next
   // live tool must start a fresh run.
-  if (keepLivePointer && lastLiveRun !== undefined) traceRunId = lastLiveRun;
-  else traceRunId++;
+  if (keepLivePointer && lastLiveRun !== undefined && traceRuns.has(lastLiveRun)) traceRunId = lastLiveRun;
+  else traceRunId = allocRunId();
   try {
     runRemapHook?.(oldToNew);
   } catch {
     // A remap listener must never break the re-plan.
   }
+}
+
+/** Drop registrations that are not part of the current branch. Called at
+ *  session_start after the branch's plan is known: the old session's rows
+ *  are gone, so keeping their entries only retains full args/results and
+ *  thinking text for the life of the process. Entries still on screen are
+ *  always part of the branch and survive. Returns how many were dropped. */
+export function pruneTrace(keepIds: ReadonlySet<string>): number {
+  let removed = 0;
+  for (const id of [...traceEntries.keys()]) {
+    if (keepIds.has(id)) continue;
+    traceEntries.delete(id);
+    removed++;
+  }
+  // Rebuild run -> ids from the survivors. A run with no surviving row is
+  // dead: drop its poke handle, open flag and turn stamp so a stale run id
+  // can never be poked or rejoined.
+  const runs = new Map<number, string[]>();
+  for (const [id, entry] of traceEntries) {
+    const ids = runs.get(entry.runId) ?? [];
+    ids.push(id);
+    runs.set(entry.runId, ids);
+  }
+  traceRuns.clear();
+  for (const [runId, ids] of runs) traceRuns.set(runId, ids);
+  for (const runId of [...traceOwnerPoke.keys()]) if (!runs.has(runId)) traceOwnerPoke.delete(runId);
+  for (const runId of [...runOpen]) if (!runs.has(runId)) runOpen.delete(runId);
+  for (const runId of [...runTurnSeq.keys()]) if (!runs.has(runId)) runTurnSeq.delete(runId);
+  for (const id of [...plannedRunById.keys()]) if (!traceEntries.has(id)) plannedRunById.delete(id);
+  for (const id of [...historyTimings.keys()]) if (!traceEntries.has(id)) historyTimings.delete(id);
+  // The join pointer may name a run that just died; the next live tool must
+  // start a fresh block rather than join an empty one.
+  if (!runs.has(traceRunId)) traceRunId = allocRunId();
+  if (removed > 0) traceBump();
+  return removed;
 }
 
 /** Bumped on every observable change to run state (new/updated entry, run
@@ -400,6 +436,7 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
       original,
       args: undefined,
       rowOpen: false,
+      expanded: false,
       isError: false,
       isPartial: false,
       executionStarted: false,
@@ -417,7 +454,7 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
     traceRuns.set(entry.runId, run);
     runTurnSeq.set(entry.runId, hardBoundarySeq);
     // Rebuilding from history: one run per tool (see traceHistoryPhase).
-    if (traceHistoryPhase) traceRunId++;
+    if (traceHistoryPhase) traceRunId = allocRunId();
   }
   return entry;
 }

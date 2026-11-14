@@ -56,9 +56,9 @@ import {
   detachDiag,
   detachPass,
   hiddenRunCount,
-  isMessageHidden,
   liveThinkingRunIds,
   noteSessionManager,
+  pruneDetachState,
   reconcileLiveThinking,
   resetDetachState,
   runThinkingCount,
@@ -68,7 +68,6 @@ export {
   detachDiag,
   detachPass,
   hiddenRunCount,
-  isMessageHidden,
   resetDetachState,
   runThinkingCount,
   runThinkingForTool,
@@ -91,6 +90,7 @@ export { captureWalkerTui, reconcileStreamingLabel, reconcileThinkingLabels, res
 export { collapseTick };
 import {
   planToolRuns,
+  branchToolIds,
   toolTimings,
 } from "./logic.js";
 import {
@@ -113,6 +113,7 @@ import {
   boundaryReasons,
   endHistoryPhase,
   noteHistoryTimings,
+  pruneTrace,
   traceBoundary,
   traceEntries,
   traceOnMessageStart,
@@ -120,6 +121,7 @@ import {
   traceOnToolExecutionStart,
   traceOwnerPoke,
   tracePokeOwner,
+  traceRuns,
   traceSummary,
   timingStatus,
 } from "./trace.js";
@@ -438,7 +440,16 @@ export default function (pi: ExtensionAPI) {
       // groups now so one blank line covers the block. Startup resume
       // (`pi`/`pi -r`) renders AFTER this event with an empty registry, so
       // sealing now would merge all of history into one run; defer instead.
+      // First drop registrations that are not in this branch: a previous
+      // session's rows are gone, and their args/results/thinking text must
+      // not live for the rest of the process.
+      const timings = toolTimings(entries);
       const groups = planToolRuns(entries, isOwnTool);
+      // Keep every toolCall id in the branch, not merely the timed ones:
+      // a history rebuild usually carries no timestamps, and pruning by
+      // timings would delete rows that are still on screen. An empty entry
+      // list is the pre-render resume window, not proof the branch is empty.
+      if (entries.length > 0) pruneTrace(branchToolIds(entries));
       if (traceEntries.size === 0 && groups.some((group) => group.length > 0)) {
         armHistoryPhase("session-start-restore");
         pendingHistoryPlan = groups;
@@ -453,10 +464,13 @@ export default function (pi: ExtensionAPI) {
       }
       // Recover pre-reload execution windows from persisted message
       // timestamps, so expanding a history row shows its true duration.
-      noteHistoryTimings(toolTimings(entries));
+      noteHistoryTimings(timings);
       // A rebuild drops the old rows; their live hosts must not leak into
-      // the restored transcript.
+      // the restored transcript. Restore labels BEFORE pruning: a live
+      // host's row carries an empty hidden label, and forgetting it without
+      // restoring would leave an invisible row.
       cleanupLiveHosts(pi);
+      pruneDetachState(new Set(traceRuns.keys()));
       // Detach only after planning: applyPlannedRuns reassigns run ids,
       // and the replacement preview row is keyed by the final run.
       detachPass(pi, sm);

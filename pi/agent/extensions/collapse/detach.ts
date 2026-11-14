@@ -19,13 +19,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
+import { isSpacerLike } from "./tree.js";
 import { registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent, isRunOpen } from "./trace.js";
-
-/** Entry ids whose thinking row is confirmed detached (history + adopted). */
-const hiddenEntryIds = new Set<string>();
-
-/** Live messages detached before persistence assigned an entry id. */
-let liveHidden = new WeakSet<object>();
 
 /** Full thinking texts by trace run id for the replacement rows (a run can
  *  host several thinking-only messages; each keeps its own preview row).
@@ -127,8 +122,6 @@ export function detachDiag(): string {
 }
 
 export function resetDetachState(): void {
-  hiddenEntryIds.clear();
-  liveHidden = new WeakSet<object>();
   runThinking.clear();
   hiddenRuns.clear();
   liveThinkingByRow = new WeakMap<object, LiveThinking>();
@@ -136,6 +129,29 @@ export function resetDetachState(): void {
   liveThinkingRevisions.clear();
   lastSessionManager = undefined;
   lastDetachDiag = "no pass yet";
+}
+
+/** Drop state for runs that no longer exist in the current branch. Called
+ *  at session_start after the branch plan is applied: keeping thinking text
+ *  and hidden flags for a previous session only grows the process. */
+export function pruneDetachState(validRunIds: ReadonlySet<number>): void {
+  try {
+    for (const runId of [...runThinking.keys()]) {
+      if (!validRunIds.has(runId)) runThinking.delete(runId);
+    }
+    for (const runId of [...hiddenRuns]) {
+      if (!validRunIds.has(runId)) hiddenRuns.delete(runId);
+    }
+    for (const runId of [...liveThinkingRevisions.keys()]) {
+      if (!validRunIds.has(runId)) liveThinkingRevisions.delete(runId);
+    }
+    for (const row of [...liveThinkingRows]) {
+      const info = liveThinkingByRow.get(row);
+      if (info && !validRunIds.has(info.runId)) removeLiveThinking(row);
+    }
+  } catch {
+    // Cosmetic only: a stale entry can never crash a render.
+  }
 }
 
 export function noteSessionManager(sm: unknown): void {
@@ -148,39 +164,55 @@ export function noteSessionManager(sm: unknown): void {
  *  tree, the new run reports no thinking, and the preview disappears.
  *  Merging into an existing run dedupes by text (a re-detach moves, never
  *  duplicates), and runs that no longer exist are pruned. */
-function remapRunState(oldToNew: Map<number, number>): void {
+function remapRunState(oldToNew: Map<number, number[]>): void {
   try {
-    for (const [oldId, newId] of oldToNew) {
-      if (oldId === newId) continue;
+    for (const [oldId, targets] of oldToNew) {
+      if (targets.length === 0 || (targets.length === 1 && targets[0] === oldId)) continue;
       const items = runThinking.get(oldId);
-      if (items && items.length > 0) {
+      if (!items || items.length === 0) {
         runThinking.delete(oldId);
-        const target = runThinking.get(newId) ?? [];
-        for (const item of items) {
-          const existing = target.find((candidate) => candidate.text === item.text);
-          if (!existing) target.push(item);
-          else if (item.open) existing.open = true;
-        }
-        runThinking.set(newId, target);
-      } else {
-        runThinking.delete(oldId);
+        hiddenRuns.delete(oldId);
+        continue;
       }
+      // A re-plan can split one old run across several groups. There is no
+      // honest way to choose a target for a stashed block, so drop the
+      // preview rather than show it under the wrong header. Pi re-adds a
+      // detached row on the next rebuild, and the following pass re-homes it.
+      if (targets.length > 1) {
+        runThinking.delete(oldId);
+        hiddenRuns.delete(oldId);
+        continue;
+      }
+      const newId = targets[0]!;
+      runThinking.delete(oldId);
+      const target = runThinking.get(newId) ?? [];
+      for (const item of items) {
+        const existing = target.find((candidate) => candidate.text === item.text);
+        if (!existing) target.push(item);
+        else if (item.open) existing.open = true;
+      }
+      runThinking.set(newId, target);
       if (hiddenRuns.delete(oldId)) hiddenRuns.add(newId);
     }
     // Live hosts point at a run id too: follow the same remap or the next
-    // delta would move the provisional item back to a dead run.
+    // delta would move the provisional item back to a dead run. A split is
+    // rare; the first target is deterministic and the next delta re-homes
+    // the row through its own message.
     for (const row of liveThinkingRows) {
       const info = liveThinkingByRow.get(row);
       if (!info) continue;
-      const next = oldToNew.get(info.runId);
-      if (next !== undefined) info.runId = next;
+      const targets = oldToNew.get(info.runId);
+      if (!targets || targets.length === 0) continue;
+      info.runId = targets[0]!;
     }
     const movedRevisions = new Map<number, number>();
-    for (const [oldId, newId] of oldToNew) {
+    for (const [oldId, targets] of oldToNew) {
       const revision = liveThinkingRevisions.get(oldId);
       if (revision === undefined) continue;
       liveThinkingRevisions.delete(oldId);
-      movedRevisions.set(newId, (movedRevisions.get(newId) ?? 0) + revision);
+      const target = targets[0];
+      if (target === undefined) continue;
+      movedRevisions.set(target, (movedRevisions.get(target) ?? 0) + revision);
     }
     for (const [runId, revision] of movedRevisions) {
       liveThinkingRevisions.set(runId, (liveThinkingRevisions.get(runId) ?? 0) + revision);
@@ -197,11 +229,6 @@ function remapRunState(oldToNew: Map<number, number>): void {
   }
 }
 registerRunRemap(remapRunState);
-
-/** Confirmed detached (fail-open gate for diagnostics). */
-export function isMessageHidden(entryId: string): boolean {
-  return hiddenEntryIds.has(entryId);
-}
 
 /** Runs whose replacement preview row may render (fail-open gate). */
 export function isRunHidden(runId: number): boolean {
@@ -287,7 +314,7 @@ function entriesOf(sm: unknown): Array<{ id?: string; message?: unknown }> {
  *  previous) hosts them instead. A transcript with no tools at all hosts
  *  nothing and stays stock. */
 type OrderedItem =
-  | { kind: "thinking"; parent: { removeChild?(c: unknown): void } | undefined; row: unknown }
+  | { kind: "thinking"; parent: { removeChild?(c: unknown): void } | undefined; row: any }
   | { kind: "tool"; runId: number; toolCallId: string }
   | { kind: "visible" };
 
@@ -604,7 +631,7 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
     }
     // Text-only deltas have no live thinking to host; avoid the row scan
     // that r89 removed from this per-token path.
-    if (message !== undefined && !extractThinkingText(message)) return 0;
+    if (message != null && !extractThinkingText(message)) return 0;
     const row = findStreamingRow(message);
     if (!row || !isThinkingRow(row)) return 0;
     const msg = (message ?? row.lastMessage) as { role?: unknown; stopReason?: unknown };
@@ -830,6 +857,7 @@ export function detachPass(
       const message = (row as { lastMessage?: unknown }).lastMessage as {
         role?: unknown;
         content?: Array<{ type?: string; thinking?: string; id?: unknown }>;
+        stopReason?: string;
       } | undefined;
       if (!message || message.role !== "assistant") {
         skip("role");
@@ -1017,12 +1045,6 @@ export function detachPass(
           }
         } catch { /* cosmetic */ }
       }
-      const entryId = byMessage.get(message)?.id;
-      if (typeof entryId === "string") {
-        hiddenEntryIds.add(entryId);
-      } else {
-        liveHidden.add(message);
-      }
       setStandaloneThinking(message, false);
       const texts = runThinking.get(runId) ?? [];
       // Latest placement wins: Pi rebuilds re-add removed rows, so a second
@@ -1043,8 +1065,15 @@ export function detachPass(
       const anchor = anchorFor(i, prev, runId);
       const timing = thinkingTiming(message);
       const same = texts.findIndex((item) => item.text === text);
-      if (same >= 0) texts[same] = { text, ...anchor, ...timing };
-      else texts.push({ text, ...anchor, ...timing });
+      if (same >= 0) {
+        // Keep the user's in-place expansion: a Pi rebuild re-runs this path
+        // for the same block, and silently closing the preview reads as a
+        // lost click. `live` is dropped: the completed detach owns the item.
+        const wasOpen = texts[same]!.open === true;
+        texts[same] = { text, ...anchor, ...timing, ...(wasOpen ? { open: true } : {}) };
+      } else {
+        texts.push({ text, ...anchor, ...timing });
+      }
       runThinking.set(runId, texts);
       hiddenRuns.add(runId);
       tracePokeOwner(runId);

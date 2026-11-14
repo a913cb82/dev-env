@@ -4,29 +4,10 @@
 // Run: node collapse.test.cjs
 const path = require("node:path");
 const fs = require("node:fs");
-const { execSync } = require("node:child_process");
 
-function findPiRoot() {
-   if (process.env.PI_ROOT) return process.env.PI_ROOT;
-   // The managed install records its version; ~/.pi/agent/bin/pi is a shell
-   // launcher, so walking up from it lands on ~/.pi rather than the package.
-   try {
-   	const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
-   	const root = path.join(process.env.HOME, ".pi/agent/install/releases", version,
-   		"node_modules/@earendil-works/pi-coding-agent");
-   	if (fs.existsSync(path.join(root, "dist", "modes"))) return root;
-   } catch { /* fall through to the legacy layout */ }
-   // Legacy: the launcher used to point into the package itself.
-   const real = fs.realpathSync(execSync("command -v pi", { encoding: "utf8" }).trim());
-   let dir = path.dirname(real);
-   while (dir !== path.dirname(dir) && !fs.existsSync(path.join(dir, "dist", "modes"))) dir = path.dirname(dir);
-   return dir;
-}
-
-const PI = findPiRoot();
+const { PI, vreq } = require("./test-pi.cjs");
 // Deps are nested under the pi package before 1.5.x and hoisted to the release
 // root afterwards, so resolve through Node instead of assuming a layout.
-const vreq = (id) => require.resolve(id, { paths: [PI] });
 const { createJiti } = require(vreq("jiti"));
 
 const HERE = __dirname;
@@ -149,6 +130,13 @@ function openRun(comp) {
   return comp;
 }
 
+/** Click the first row of an open run (child 0 is the header). */
+function clickFirstRow(comp) {
+  comp.children?.[1]?.onMouse?.({ type: "click", button: "left" });
+  comp.render?.(100);
+  return comp;
+}
+
 (async () => {
   const mod = await jiti.import(path.join(HERE, "index.ts"));
   resetTrace = mod.resetTraceState ?? resetTrace;
@@ -183,8 +171,8 @@ function openRun(comp) {
     const { ctx } = callContext({ args: { path: "/path/to/file", offset: 10, limit: 11 } });
     openRun(read.renderCall(ctx.args, theme, ctx));
     const lines = read.renderCall(ctx.args, theme, ctx).render(80);
-    check("read one line", lines.length === 2, JSON.stringify(lines));
-    const line = lines[0];
+    check("read one line", lines.length === 3, JSON.stringify(lines));
+    const line = lines[1];
     check("read starts at column 2", isRow(line), JSON.stringify(line));
     check("read tool bold", line.includes("<b:accent>read "), JSON.stringify(line));
     check("read dir dim", line.includes("<dim>/path/to/</>"), JSON.stringify(line));
@@ -211,8 +199,8 @@ function openRun(comp) {
     check("read result invalidates", invalidated === 1, String(invalidated));
     openRun(read.renderCall(ctx.args, ansiTheme, { ...ctx, state }));
     const lines = read.renderCall(ctx.args, ansiTheme, { ...ctx, state }).render(100);
-    check("read count shown", plainText(lines[0]).endsWith("5.3k ch"), JSON.stringify(plainText(lines[0])));
-    check("read padded to width", plainText(lines[0]).length === 98, `${plainText(lines[0]).length}: ${JSON.stringify(plainText(lines[0]))}`);
+    check("read count shown", plainText(lines[1]).endsWith("5.3k ch"), JSON.stringify(plainText(lines[1])));
+    check("read padded to width", plainText(lines[1]).length === 98, `${plainText(lines[1]).length}: ${JSON.stringify(plainText(lines[1]))}`);
   }
 
   // 4. read failure: tool name red bold
@@ -220,7 +208,7 @@ function openRun(comp) {
     const read = pi.tools.get("read");
     const { ctx } = callContext({ args: { path: "/path/to/file" }, isError: true, state: { count: 12 } });
     openRun(read.renderCall(ctx.args, theme, ctx));
-    const line = read.renderCall(ctx.args, theme, ctx).render(80)[0];
+    const line = read.renderCall(ctx.args, theme, ctx).render(80)[1];
     check("read failure red bold", line.includes("<b:error>read </b>"), JSON.stringify(line));
   }
 
@@ -229,7 +217,7 @@ function openRun(comp) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" } });
     openRun(bash.renderCall(ctx.args, theme, ctx));
-    const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
+    const line = bash.renderCall(ctx.args, theme, ctx).render(100)[1];
     check("bash starts at column 2", isRow(line), JSON.stringify(line));
     check("bash prompt accent", line.includes("<b:accent>$</b> <b>timeout</b>"), JSON.stringify(line));
     check("bash command bold", line.includes("<b>timeout</b>") && !line.includes("<error>"), JSON.stringify(line));
@@ -240,7 +228,7 @@ function openRun(comp) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "PIN=/x ls /y" } });
     openRun(bash.renderCall(ctx.args, theme, ctx));
-    const line = bash.renderCall(ctx.args, theme, ctx).render(80)[0];
+    const line = bash.renderCall(ctx.args, theme, ctx).render(80)[1];
     check("bash env name accent", line.includes("<b:accent>$</b> <b:accent>PIN</b><dim>=/x</>"), JSON.stringify(line));
     check("bash env value not accent", line.includes("=/x") && !line.includes("<b:accent>=/x"), JSON.stringify(line));
   }
@@ -250,7 +238,7 @@ function openRun(comp) {
     const bash = pi.tools.get("bash");
     const { ctx } = callContext({ args: { command: "timeout 25 ls some/dist" }, isError: true, state: { count: 100 } });
     openRun(bash.renderCall(ctx.args, theme, ctx));
-    const line = bash.renderCall(ctx.args, theme, ctx).render(100)[0];
+    const line = bash.renderCall(ctx.args, theme, ctx).render(100)[1];
     check("bash failure red bold", line.includes("<b:error>$</b> <b>timeout</b>"), JSON.stringify(line));
   }
 
@@ -260,20 +248,20 @@ function openRun(comp) {
     const args = { path: "/path/to/file", offset: 10, limit: 11 };
     const { ctx } = callContext({ args, expanded: true, isPartial: true });
     const rest = read.renderCall(args, theme, ctx).render(80);
-    check("live rest stays collapsed", rest.length === 1 && rest[0].includes(">"), JSON.stringify(rest));
+    check("live rest stays collapsed", rest.length === 1 && /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(rest[0]), JSON.stringify(rest));
     openRun(read.renderCall(args, theme, ctx));
     const open = read.renderCall(args, theme, ctx).render(80);
-    check("open shows row+footer", open.length === 2, JSON.stringify(open));
-    read.renderCall(args, theme, ctx).children[0].onMouse({ type: "click", button: "left" });
+    check("open shows row+footer", open.length === 3, JSON.stringify(open));
+    clickFirstRow(read.renderCall(args, theme, ctx));
     const lines = read.renderCall(args, theme, ctx).render(80);
-    check("opened call boxed", lines.length > 2, `${lines.length}`);
-    check("opened call pending bg", lines[0].includes("toolPendingBg"), JSON.stringify(lines[0]));
+    check("opened call boxed", lines.length > 3, `${lines.length}`);
+    check("opened call pending bg", lines[1].includes("toolPendingBg"), JSON.stringify(lines[1]));
     check("opened call keeps content", lines.some((l) => l.includes("/path/to/file")), JSON.stringify(lines).slice(0, 200));
     const { ctx: doneCtx } = callContext({ args, expanded: true, isPartial: false });
     openRun(read.renderCall(args, theme, doneCtx));
-    read.renderCall(args, theme, doneCtx).children[0].onMouse({ type: "click", button: "left" });
+    clickFirstRow(read.renderCall(args, theme, doneCtx));
     const doneLines = read.renderCall(args, theme, doneCtx).render(80);
-    check("opened call success bg", doneLines[0].includes("toolSuccessBg"), JSON.stringify(doneLines[0]));
+    check("opened call success bg", doneLines[1].includes("toolSuccessBg"), JSON.stringify(doneLines[1]));
   }
 
   // 7b. expanded result is boxed too; edit (self-shell stock) stays bare.
@@ -287,13 +275,13 @@ function openRun(comp) {
     read.renderCall(args, theme, { ...ctx, state });
     read.renderResult(textResult(5300), { expanded: true, isPartial: false }, theme, { ...ctx, state });
     openRun(read.renderCall(args, theme, { ...ctx, state }));
-    read.renderCall(args, theme, { ...ctx, state }).children[0].onMouse({ type: "click", button: "left" });
+    clickFirstRow(read.renderCall(args, theme, { ...ctx, state }));
     const lines = read.renderCall(args, theme, { ...ctx, state }).render(80);
-    check("opened result boxed", lines.length > 2 && lines[0].includes("toolSuccessBg"), JSON.stringify(lines[0]));
+    check("opened result boxed", lines.length > 3 && lines[1].includes("toolSuccessBg"), JSON.stringify(lines[1]));
     const edit = pi.tools.get("edit");
     const { ctx: ectx } = callContext({ args: { path: "/f", edits: [{ oldText: "a", newText: "b" }] }, expanded: true });
     openRun(edit.renderCall(ectx.args, theme, ectx));
-    edit.renderCall(ectx.args, theme, ectx).children[0].onMouse({ type: "click", button: "left" });
+    clickFirstRow(edit.renderCall(ectx.args, theme, ectx));
     const elines = edit.renderCall(ectx.args, theme, ectx).render(80);
     check("edit opened stays bare", !elines.some((l) => l.includes("toolSuccessBg")), JSON.stringify(elines).slice(0, 160));
   }
@@ -332,18 +320,19 @@ function openRun(comp) {
     stock.updateResult({ content: [{ type: "text", text: "hi" }], details: {} }, false);
     // Pi-expanded rest is the run header (settled); open it to reach rows.
     const beforeClick = wrapped.render(100);
-    check("wrapped rest is header", beforeClick.length === 2 && beforeClick[1].includes(">"), JSON.stringify(beforeClick));
+    check("wrapped rest is header", beforeClick.length === 2 && beforeClick[1].includes("▸"), JSON.stringify(beforeClick));
     wrapped.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
     wrapped.invalidate();
     const openedRun = wrapped.render(100);
-    check("run opens to row+footer", openedRun.length === 3, JSON.stringify(openedRun));
-    wrapped.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
+    check("run opens to row+footer", openedRun.length === 4, JSON.stringify(openedRun));
+    wrapped.callRendererComponent.children[1].onMouse({ type: "click", button: "left" });
     wrapped.invalidate();
     const wlines = wrapped.render(100);
     const slines = stock.render(100);
-    // The open run keeps its Collapse footer; the stock cell above it is stock.
-    check("expanded single box", wlines.length === slines.length + 1, `${wlines.length} vs ${slines.length}`);
-    check("expanded box aligned", JSON.stringify(wlines.slice(0, slines.length)) === JSON.stringify(slines), "wrapped differs from stock");
+    // The open run keeps its top header and Collapse footer; the stock cell
+    // between them is byte-identical.
+    check("expanded single box", wlines.length === slines.length + 2, `${wlines.length} vs ${slines.length}`);
+    check("expanded box aligned", JSON.stringify(wlines.slice(2, 2 + slines.length - 1)) === JSON.stringify(slines.slice(1)), "wrapped differs from stock");
     // second update pass: stock reuse chain must survive (no fallback)
     wrapped.updateResult({ content: [{ type: "text", text: "hi\nbye" }], details: {} }, false);
     const wlines2 = wrapped.render(100);
@@ -375,7 +364,7 @@ function openRun(comp) {
     const cmd = `run ${"x".repeat(100)} end`;
     const { ctx } = callContext({ args: { command: cmd }, state: { count: 10 } });
     openRun(bash.renderCall(ctx.args, theme, ctx));
-    const line = bash.renderCall(ctx.args, theme, ctx).render(200)[0];
+    const line = bash.renderCall(ctx.args, theme, ctx).render(200)[1];
     check("bash long kept", line.includes("end"), JSON.stringify(line).slice(-80));
     check("bash long no early ellipsis", !line.includes("…"), JSON.stringify(line).slice(-80));
   }
@@ -386,7 +375,7 @@ function openRun(comp) {
     const cmd = `run ${"x".repeat(100)} end`;
     const { ctx } = callContext({ args: { command: cmd }, state: { count: 10 } });
     openRun(bash.renderCall(ctx.args, ansiTheme, ctx));
-    const line = bash.renderCall(ctx.args, ansiTheme, ctx).render(50)[0];
+    const line = bash.renderCall(ctx.args, ansiTheme, ctx).render(50)[1];
     check("row middle keeps head", plainText(line).includes("$ ru"), JSON.stringify(plainText(line)));
     check("row middle keeps tail", line.includes("end"), JSON.stringify(line).slice(-60));
     check("row middle cuts middle", line.includes("…"), JSON.stringify(line));
@@ -454,7 +443,7 @@ function openRun(comp) {
       openRun(read.renderCall(rctx.args, ansiTheme, { ...rctx, state }));
       const rows = read.renderCall(rctx.args, ansiTheme, { ...rctx, state }).render(80);
       // Marker theme adds literal tag characters: measure what the terminal sees.
-      const visible = plainText(rows[0]);
+      const visible = plainText(rows[1]);
       check("pad 0 row fills width", visible.length === 79, `${visible.length}: ${JSON.stringify(visible)}`);
     } finally {
       pi._pad = 1;
@@ -466,12 +455,12 @@ function openRun(comp) {
     const ls = pi.tools.get("ls");
     const { ctx: lsCtx } = callContext({ args: { path: "/some/dir" }, state: { count: 300 } });
     openRun(ls.renderCall(lsCtx.args, theme, lsCtx));
-    const lsLine = ls.renderCall(lsCtx.args, theme, lsCtx).render(100)[0];
+    const lsLine = ls.renderCall(lsCtx.args, theme, lsCtx).render(100)[1];
     check("ls row", lsLine.includes("<b:accent>ls </b>") && lsLine.includes("<dim>/some/dir</>"), JSON.stringify(lsLine));
     const grep = pi.tools.get("grep");
     const { ctx: grepCtx } = callContext({ args: { pattern: "foo.*", path: "/a" }, state: { count: 300 } });
     openRun(grep.renderCall(grepCtx.args, theme, grepCtx));
-    const grepLine = grep.renderCall(grepCtx.args, theme, grepCtx).render(100)[0];
+    const grepLine = grep.renderCall(grepCtx.args, theme, grepCtx).render(100)[1];
     check(
       "grep row",
       grepLine.includes("<b:accent>grep </b>") && grepLine.includes("foo.*") && !grepLine.includes("<b>foo") && grepLine.includes("<dim>/a</>"),
@@ -480,12 +469,12 @@ function openRun(comp) {
     const find = pi.tools.get("find");
     const { ctx: findCtx } = callContext({ args: { pattern: "*.ts" }, state: { count: 300 } });
     openRun(find.renderCall(findCtx.args, theme, findCtx));
-    const findLine = find.renderCall(findCtx.args, theme, findCtx).render(100)[0];
+    const findLine = find.renderCall(findCtx.args, theme, findCtx).render(100)[1];
     check("find row", findLine.includes("<b:accent>find </b>") && findLine.includes("*.ts") && !findLine.includes("<b>*.ts"), JSON.stringify(findLine));
     const ps = pi.tools.get("powershell");
     const { ctx: psCtx } = callContext({ args: { command: "Get-ChildItem" }, state: { count: 300 } });
     openRun(ps.renderCall(psCtx.args, theme, psCtx));
-    const psLine = ps.renderCall(psCtx.args, theme, psCtx).render(100)[0];
+    const psLine = ps.renderCall(psCtx.args, theme, psCtx).render(100)[1];
     check("powershell row", psLine.includes("<b:accent>PS></b> <b>Get-ChildItem</b>"), JSON.stringify(psLine));
   }
 
@@ -515,9 +504,9 @@ function openRun(comp) {
       state: { count: 5300 },
     });
     const lines = (() => { openRun(read.renderCall(ctx.args, ansiTheme, ctx)); return read.renderCall(ctx.args, ansiTheme, ctx).render(60); })();
-    check("ansi one line", lines.length === 2, JSON.stringify(lines));
-    check("ansi padded to width", tui.visibleWidth(lines[0]) === 58, `${tui.visibleWidth(lines[0])}: ${JSON.stringify(lines[0])}`);
-    check("ansi keeps count", lines[0].endsWith("\x1b[31m5.3k ch\x1b[0m"), JSON.stringify(lines[0]).slice(-40));
+    check("ansi one line", lines.length === 3, JSON.stringify(lines));
+    check("ansi padded to width", tui.visibleWidth(lines[1]) === 58, `${tui.visibleWidth(lines[1])}: ${JSON.stringify(lines[1])}`);
+    check("ansi keeps count", lines[1].endsWith("\x1b[31m5.3k ch\x1b[0m"), JSON.stringify(lines[1]).slice(-40));
   }
 
   // 12. visibility toggle pokes settled rows into the other mode
@@ -567,10 +556,10 @@ function openRun(comp) {
     const hidden = bash.renderCall(bctx.args, theme, bctx).render(80);
     openRun(read.renderCall(rctx.args, theme, { ...rctx, state: readState }));
     const trace = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
-    check("trace has both rows", trace.length === 3, JSON.stringify(trace));
-    check("trace keeps read row", trace[0].includes("file"), JSON.stringify(trace[0]));
-    check("trace keeps bash row", trace[1].includes("echo"), JSON.stringify(trace[1]));
-    check("trace has collapse footer", trace[2].includes("Collapse"), JSON.stringify(trace[2]));
+    check("trace has both rows", trace.length === 4, JSON.stringify(trace));
+    check("trace keeps read row", trace[1].includes("file"), JSON.stringify(trace[1]));
+    check("trace keeps bash row", trace[2].includes("echo"), JSON.stringify(trace[2]));
+    check("trace has collapse footer", trace[3].includes("Collapse"), JSON.stringify(trace[3]));
     // Run-level header: settled multi-row runs rest closed. Unique ids so
     // this probe never disturbs the outer test's run.
     {
@@ -586,24 +575,25 @@ function openRun(comp) {
       pi.tools.get("bash").renderCall({ command: "echo hdr" }, theme, mkHdr("t-hdr2", { command: "echo hdr" }));
       const hdrComp = () => read.renderCall({ path: "/ha" }, theme, mkHdr("t-hdr1", { path: "/ha" }));
       const header = hdrComp().render(90);
-      check("run rests as header", header.length === 1 && header[0].includes(">") && header[0].includes("1 read"), JSON.stringify(header));
+      check("run rests as header", header.length === 1 && header[0].includes("▸") && header[0].includes("1 read"), JSON.stringify(header));
       check("collapsed header uses thinking text style",
         header[0].includes("<i>") && header[0].includes("thinkingText"), JSON.stringify(header[0]));
       openRun(hdrComp());
       const openedHdr = hdrComp().render(90);
-      check("header click opens rows+footer", openedHdr.length === 3 && openedHdr[2].includes("Collapse"), JSON.stringify(openedHdr));
-      check("footer keeps the rail", plainText(openedHdr[2]).startsWith("▏"), JSON.stringify(openedHdr[2]));
-      hdrComp().children[2].onMouse({ type: "click", button: "left" });
+      check("header click opens rows+footer", openedHdr.length === 4 && openedHdr[3].includes("Collapse"), JSON.stringify(openedHdr));
+      check("open run keeps a top header", openedHdr[0].includes("▾") && openedHdr[0].includes("1 read"), JSON.stringify(openedHdr[0]));
+      check("footer points back up", plainText(openedHdr[3]).startsWith("▴"), JSON.stringify(openedHdr[3]));
+      hdrComp().children[3].onMouse({ type: "click", button: "left" });
       const closed = hdrComp().render(90);
-      check("footer click closes to header", closed.length === 1 && closed[0].includes(">"), JSON.stringify(closed));
+      check("footer click closes to header", closed.length === 1 && closed[0].includes("▸"), JSON.stringify(closed));
       // Singleton runs also rest as a header (`>1 read`).
       await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
       const soloComp = () => read.renderCall({ path: "/solo-hdr" }, theme, mkHdr("t-hdr-solo", { path: "/solo-hdr" }));
       const soloHdr = soloComp().render(90);
-      check("singleton rests as header", soloHdr.length === 1 && soloHdr[0].includes(">") && soloHdr[0].includes("1 read"), JSON.stringify(soloHdr));
+      check("singleton rests as header", soloHdr.length === 1 && soloHdr[0].includes("▸") && soloHdr[0].includes("1 read"), JSON.stringify(soloHdr));
       openRun(soloComp());
       const soloOpen = soloComp().render(90);
-      check("singleton opens to row+footer", soloOpen.length === 2 && soloOpen[1].includes("Collapse") && plainText(soloOpen[1]).startsWith("▏"), JSON.stringify(soloOpen));
+      check("singleton opens to row+footer", soloOpen.length === 3 && soloOpen[2].includes("Collapse") && plainText(soloOpen[2]).startsWith("▴"), JSON.stringify(soloOpen));
       await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
     }
     check("non-owner renders nothing", hidden.join("") === "", JSON.stringify(hidden));
@@ -612,7 +602,7 @@ function openRun(comp) {
     const st = { ...bctx, state: bashState };
     bash.renderResult(textResult(5300), { expanded: false, isPartial: false }, theme, st);
     const trace2 = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
-    check("trace shows shared counts", trace2[1].includes("5.3k ch"), JSON.stringify(trace2[1]));
+    check("trace shows shared counts", trace2[2].includes("5.3k ch"), JSON.stringify(trace2[2]));
   }
 
   // 13b. a user message splits runs; clicking a row opens just that row
@@ -627,7 +617,7 @@ function openRun(comp) {
     const b1comp = () => bash.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-b2" });
     openRun(b1comp());
     const b1 = b1comp().render(80);
-    check("user turn renders alone", b1.length === 2 && b1[0].includes("echo"), JSON.stringify(b1));
+    check("user turn renders alone", b1.length === 3 && b1[1].includes("echo"), JSON.stringify(b1));
     // click the bash row inside the read-owned trace from test 13's run? fresh run:
     resetTrace();
     const { ctx: rctx } = callContext({ args: { path: "/p" }, state: {} });
@@ -636,7 +626,7 @@ function openRun(comp) {
     bash.renderCall({ command: "ls" }, theme, { ...rctx, args: { command: "ls" }, state: bState, toolCallId: "t-click" });
     openRun(read.renderCall(rctx.args, theme, rctx));
     const traceComp = read.renderCall(rctx.args, theme, rctx);
-    const row2 = traceComp.children[1];
+    const row2 = traceComp.children[2];
     check("row region clickable", !!row2?.onMouse, typeof row2?.onMouse);
     const res = row2.onMouse({ type: "click", button: "left" });
     check("click handled", !!res?.handled, JSON.stringify(res));
@@ -657,9 +647,9 @@ function openRun(comp) {
     check("pi-expand run rests as header", lines.length === 1 && lines[0].includes("read"), JSON.stringify(lines));
     openRun(read.renderCall(rctx.args, theme, rctx));
     const openLines = read.renderCall(rctx.args, theme, rctx).render(100);
-    check("pi-expand rows stay one-line", openLines.length === 3, JSON.stringify(openLines));
+    check("pi-expand rows stay one-line", openLines.length === 4, JSON.stringify(openLines));
     check("pi-expand rows unboxed", !openLines.some((l) => l.includes("toolSuccessBg")), JSON.stringify(openLines[0]));
-    check("pi-expand keeps both", openLines[0].includes("read") && openLines[1].includes("ls"), JSON.stringify(openLines).slice(0, 200));
+    check("pi-expand keeps both", openLines[1].includes("read") && openLines[2].includes("ls"), JSON.stringify(openLines).slice(0, 200));
   }
 
   // 13d. foreign tools split runs
@@ -674,7 +664,7 @@ function openRun(comp) {
     const aloneComp = () => ls.renderCall(bctx.args, theme, { ...bctx, toolCallId: "t-after-foreign" });
     openRun(aloneComp());
     const alone = aloneComp().render(80);
-    check("foreign tool splits run", alone.length === 2 && alone[0].includes("/b"), JSON.stringify(alone));
+    check("foreign tool splits run", alone.length === 3 && alone[1].includes("/b"), JSON.stringify(alone));
   }
 
   // 14. cross-turn merging: no line gaps between tool rows in consecutive turns
@@ -716,8 +706,8 @@ function openRun(comp) {
     render("x2", "echo two");
     openRun(render("x1", "echo one"));
     const merged = render("x1", "echo one").render(90);
-    check("cross-turn tool-only rows merge", merged.length === 3, JSON.stringify(merged));
-    check("merged keeps both rows", merged[0].includes("one") && merged[1].includes("two"), JSON.stringify(merged));
+    check("cross-turn tool-only rows merge", merged.length === 4, JSON.stringify(merged));
+    check("merged keeps both rows", merged[1].includes("one") && merged[2].includes("two"), JSON.stringify(merged));
 
     // 14a2. consecutive think→tool messages merge: hidden thinking is not
     // a breakpoint, so adjacent headers can never happen without prose.
@@ -735,8 +725,8 @@ function openRun(comp) {
     await thinkTool("q3", "echo three", "t3");
     openRun(render("q1", "echo one"));
     const consecutive = render("q1", "echo one").render(90);
-    check("think-tool turns merge into one block", consecutive.length === 4, JSON.stringify(consecutive));
-    check("merged block keeps all three", consecutive[0].includes("one") && consecutive[1].includes("two") && consecutive[2].includes("three"), JSON.stringify(consecutive));
+    check("think-tool turns merge into one block", consecutive.length === 5, JSON.stringify(consecutive));
+    check("merged block keeps all three", consecutive[1].includes("one") && consecutive[2].includes("two") && consecutive[3].includes("three"), JSON.stringify(consecutive));
 
     // 14b. visible text between turns still splits the run
     resetTrace();
@@ -749,7 +739,7 @@ function openRun(comp) {
     const splitComp = () => render("y2", "echo two");
     openRun(splitComp());
     const split = splitComp().render(90);
-    check("visible text splits runs", split.length === 2 && split[0].includes("two"), JSON.stringify(split));
+    check("visible text splits runs", split.length === 3 && split[1].includes("two"), JSON.stringify(split));
 
     // 14c. a leading-content turn (text before its tool call) also splits
     resetTrace();
@@ -765,7 +755,7 @@ function openRun(comp) {
     const leadComp = () => render("z2", "echo two");
     openRun(leadComp());
     const lead = leadComp().render(90);
-    check("leading content splits runs", lead.length === 2 && lead[0].includes("two"), JSON.stringify(lead));
+    check("leading content splits runs", lead.length === 3 && lead[1].includes("two"), JSON.stringify(lead));
 
     // 14d. empty/whitespace-only thinking is not visible content
     resetTrace();
@@ -778,7 +768,7 @@ function openRun(comp) {
     render("w2", "echo two");
     openRun(render("w1", "echo one"));
     const emptyThinking = render("w1", "echo one").render(90);
-    check("empty thinking still merges", emptyThinking.length === 3, JSON.stringify(emptyThinking));
+    check("empty thinking still merges", emptyThinking.length === 4, JSON.stringify(emptyThinking));
 
 
   // 14c. history rebuild must not stack past tools into one row (teleport)
@@ -807,7 +797,7 @@ function openRun(comp) {
     const h2 = hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2"));
     check("history rows stay separate", h1.render(90).length === 1 && h2.render(90).length === 1, `${h1.render(90).length}/${h2.render(90).length}`);
     openRun(h2);
-    check("history row keeps its own text", hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2")).render(90)[0].includes("past2"), JSON.stringify(hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2")).render(90)));
+    check("history row keeps its own text", hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2")).render(90)[1].includes("past2"), JSON.stringify(hist.renderCall({ command: "echo past2" }, theme, ctxFor("past2", "echo past2")).render(90)));
     // After session_start, live tools merge again.
     await handlers.get("session_start")[0](
       {},
@@ -819,8 +809,8 @@ function openRun(comp) {
     const l1b = hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1"));
     openRun(l1b);
     const l1open = hist.renderCall({ command: "echo live1" }, theme, ctxFor("live1", "echo live1"));
-    check("live rows merge after start", l1open.render(90).length === 3, `${l1open.render(90).length}`);
-    check("merged row keeps order", l1open.render(90)[0].includes("live1") && l1open.render(90)[1].includes("live2"), JSON.stringify(l1open.render(90)));
+    check("live rows merge after start", l1open.render(90).length === 4, `${l1open.render(90).length}`);
+    check("merged row keeps order", l1open.render(90)[1].includes("live1") && l1open.render(90)[2].includes("live2"), JSON.stringify(l1open.render(90)));
     check("non-owner after merge renders empty", l2.render(90).length === 0, `${l2.render(90).length}`);
   }
 
@@ -880,13 +870,13 @@ function openRun(comp) {
     read.renderCall(args, realTheme, ctxA);
     read.renderResult(result, { expanded: false, isPartial: false }, realTheme, { ...ctxA, lastComponent: undefined });
     const rest = read.renderCall(args, realTheme, ctxA).render(100);
-    check("depth0 rest is header", rest.length === 1 && rest[0].includes(">"), JSON.stringify(rest));
+    check("depth0 rest is header", rest.length === 1 && rest[0].includes("▸"), JSON.stringify(rest));
     openRun(read.renderCall(args, realTheme, ctxA));
-    const rowA = read.renderCall(args, realTheme, ctxA).children[0];
+    const rowA = read.renderCall(args, realTheme, ctxA).children[1];
     rowA.onMouse({ type: "click", button: "left" });
     const openedA = read.renderCall(args, realTheme, ctxA).render(100);
     const stA = stockLines(false);
-    check("collapsed click matches stock collapsed", JSON.stringify(openedA.slice(0, stA.length)) === JSON.stringify(stA), JSON.stringify(openedA[1] ?? openedA[0]) + " VS " + JSON.stringify(stA[1] ?? stA[0]));
+    check("collapsed click matches stock collapsed", JSON.stringify(openedA.slice(1, 1 + stA.length)) === JSON.stringify(stA), JSON.stringify(openedA[2] ?? openedA[0]) + " VS " + JSON.stringify(stA[1] ?? stA[0]));
     check("collapsed click hides full body", !openedA.join("").includes("line 14"), JSON.stringify(openedA).slice(0, 160));
 
     // 15b. Pi expanded: rest is STILL one line; click == stock expanded cell
@@ -895,21 +885,21 @@ function openRun(comp) {
     readB.renderCall(args, realTheme, ctxB);
     readB.renderResult(result, { expanded: true, isPartial: false }, realTheme, { ...ctxB, lastComponent: undefined });
     const restB = readB.renderCall(args, realTheme, ctxB).render(100);
-    check("expanded rest is header", restB.length === 1 && restB[0].includes(">"), JSON.stringify(restB));
+    check("expanded rest is header", restB.length === 1 && restB[0].includes("▸"), JSON.stringify(restB));
     openRun(readB.renderCall(args, realTheme, ctxB));
-    const rowB = readB.renderCall(args, realTheme, ctxB).children[0];
+    const rowB = readB.renderCall(args, realTheme, ctxB).children[1];
     rowB.onMouse({ type: "click", button: "left" });
     const openedB = readB.renderCall(args, realTheme, ctxB).render(100);
     const stB = stockLines(true);
-    const firstDiff = openedB.findIndex((l, i) => l !== stB[i]);
-    check("expanded click matches stock expanded", JSON.stringify(openedB.slice(0, stB.length)) === JSON.stringify(stB), `line ${firstDiff}: ${JSON.stringify(openedB[firstDiff])} VS ${JSON.stringify(stB[firstDiff])}`);
+    const firstDiff = openedB.slice(1, 1 + stB.length).findIndex((l, i) => l !== stB[i]);
+    check("expanded click matches stock expanded", JSON.stringify(openedB.slice(1, 1 + stB.length)) === JSON.stringify(stB), `line ${firstDiff}: ${JSON.stringify(openedB[1 + firstDiff])} VS ${JSON.stringify(stB[firstDiff])}`);
     check("expanded click shows full body", openedB.join("").includes("line 14"), JSON.stringify(openedB).slice(0, 160));
 
     // 15c. clicking again closes the row back to the open run view.
-    const rowClose = readB.renderCall(args, realTheme, ctxB).children[0];
+    const rowClose = readB.renderCall(args, realTheme, ctxB).children[1];
     rowClose.onMouse({ type: "click", button: "left" });
     const closed = readB.renderCall(args, realTheme, ctxB).render(100);
-    check("second click returns to rows", closed.length === 2 && closed[1].includes("Collapse"), JSON.stringify(closed));
+    check("second click returns to rows", closed.length === 3 && closed[2].includes("Collapse"), JSON.stringify(closed));
   }
 
   // 16. /collapse reports WHY runs split (live diagnostics)
@@ -962,7 +952,7 @@ function openRun(comp) {
     mk("tr2", "echo two");
     openRun(mk("tr1", "echo one"));
     const merged = mk("tr1", "echo one").render(90);
-    check("toolResult does not split", merged.length === 3, JSON.stringify(merged));
+    check("toolResult does not split", merged.length === 4, JSON.stringify(merged));
     // A real user turn still splits.
     await pi.handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
     mk("tr3", "echo three");
@@ -998,21 +988,21 @@ function openRun(comp) {
     mk("s1", "echo one");
     mk("s2", "echo two");
     openRun(mk("s1", "echo one"));
-    check("switch: baseline merges", mk("s1", "echo one").render(90).length === 3, JSON.stringify(mk("s1", "echo one").render(90)));
+    check("switch: baseline merges", mk("s1", "echo one").render(90).length === 4, JSON.stringify(mk("s1", "echo one").render(90)));
     // resume another session: its history renders before session_start
     await handlers.get("session_before_switch")[0]({ reason: "resume" }, {});
     const h1 = mk("other1", "echo old one");
     const h2 = mk("other2", "echo old two");
     check("switch: other branch rows stay separate", h1.render(90).length === 1 && h2.render(90).length === 1, `${h1.render(90).length}/${h2.render(90).length}`);
     openRun(h2);
-    check("switch: other branch row keeps its own text", mk("other2", "echo old two").render(90)[0].includes("old two"), JSON.stringify(mk("other2", "echo old two").render(90)));
+    check("switch: other branch row keeps its own text", mk("other2", "echo old two").render(90)[1].includes("old two"), JSON.stringify(mk("other2", "echo old two").render(90)));
     // after the switch settles, live turns merge again
     await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [] } });
     mk("n1", "echo new one");
     mk("n2", "echo new two");
     openRun(mk("n1", "echo new one"));
     const merged = mk("n1", "echo new one").render(90);
-    check("switch: live turns merge after settle", merged.length === 3, JSON.stringify(merged));
+    check("switch: live turns merge after settle", merged.length === 4, JSON.stringify(merged));
   }
 
   // 18b. tree navigation arms the history phase too
@@ -1045,7 +1035,7 @@ function openRun(comp) {
     mk("tree4", "echo live two");
     openRun(mk("tree3", "echo live one"));
     const live2 = mk("tree3", "echo live one").render(90);
-    check("tree: live merges after settle", live.length === 1 && live2.length === 3, `${live.length}/${live2.length}`);
+    check("tree: live merges after settle", live.length === 1 && live2.length === 4, `${live.length}/${live2.length}`);
   }
 
   // 18c. a transcript rebuild re-registers the SAME ids: rows must keep their
@@ -1072,12 +1062,12 @@ function openRun(comp) {
     mk("rb1", "echo one");
     mk("rb2", "echo two");
     openRun(mk("rb1", "echo one"));
-    check("rebuild: baseline merged", mk("rb1", "echo one").render(90).length === 3, "");
+    check("rebuild: baseline merged", mk("rb1", "echo one").render(90).length === 4, "");
     // Simulate outputPad/cache-notice rebuild: same ids rendered again.
     mk("rb1", "echo one");
     mk("rb2", "echo two");
     const again = mk("rb1", "echo one").render(90);
-    check("rebuild: rows keep their own runs", again.length === 3, JSON.stringify(again));
+    check("rebuild: rows keep their own runs", again.length === 4, JSON.stringify(again));
   }
 
   // 19. sync must not re-serialize args on every render pass (same object
@@ -1148,7 +1138,7 @@ function openRun(comp) {
     read.renderCall(args, theme, base);
     read.renderResult({ content: [{ type: "text", text: body }], details: {} }, { expanded: false, isPartial: false }, theme, { ...base, lastComponent: undefined });
     openRun(read.renderCall(args, theme, base));
-    read.renderCall(args, theme, base).children[0].onMouse({ type: "click", button: "left" });
+    read.renderCall(args, theme, base).children[1].onMouse({ type: "click", button: "left" });
     const atCollapsed = read.renderCall(args, theme, base).render(100).join("\n");
     check("depth follows: collapsed cell first", !atCollapsed.includes("line 14"), "");
     // Pi expands (ctrl+o): same row, no click, must now show the expanded cell.
@@ -1191,21 +1181,21 @@ function openRun(comp) {
     const args = { name: "api-check", prompt: "Check the API\nmore text" };
     openRun(wrapped.renderCall(args, theme, ctx("e1", args)));
     const row = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
-    check("generic tool collapses to one row", row.length === 2 && isRow(row[0]), JSON.stringify(row));
-    check("generic row names the tool", row[0].includes("spawn_agent"), JSON.stringify(row[0]));
-    check("generic row shows the argument", row[0].includes("api-check"), JSON.stringify(row[0]));
+    check("generic tool collapses to one row", row.length === 3 && isRow(row[1]), JSON.stringify(row));
+    check("generic row names the tool", row[1].includes("spawn_agent"), JSON.stringify(row[1]));
+    check("generic row shows the argument", row[1].includes("api-check"), JSON.stringify(row[1]));
     // Two different extension tools in one message share a run.
     const other = rows.collapseDefinition({ ...bare, name: "check_subagents" }, piE);
     const oargs = { target: "api-check" };
     other.renderCall(oargs, theme, ctx("e2", oargs));
     openRun(wrapped.renderCall(args, theme, ctx("e1", args)));
     const merged = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
-    check("generic tools share a run", merged.length === 3, JSON.stringify(merged));
+    check("generic tools share a run", merged.length === 4, JSON.stringify(merged));
     // Result count flows into the row.
     wrapped.renderResult({ content: [{ type: "text", text: "x".repeat(2400) }], details: {} },
       { expanded: false, isPartial: false }, theme, ctx("e1", args));
     const withCount = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
-    check("generic row shows count", withCount[0].includes("2.4k ch"), JSON.stringify(withCount[0]));
+    check("generic row shows count", withCount[1].includes("2.4k ch"), JSON.stringify(withCount[1]));
   }
 
   // 21b. The opt-in slot: collapse publishes a wrapper other extensions can
@@ -1280,7 +1270,7 @@ function openRun(comp) {
     mk(checker, "t-cs", { target: "demo" });
     openRun(mk(read, "r1", { path: "/a" }));
     const lines = mk(read, "r1", { path: "/a" }).render(80);
-    check("wrapped foreign tools share the run", lines.length === 4, JSON.stringify(lines));
+    check("wrapped foreign tools share the run", lines.length === 5, JSON.stringify(lines));
     let said = "";
     await commands.get("collapse").handler("", { ui: { notify: (m) => { said = m; } } });
     check("no foreign boundary for wrapped tools", !said.includes("foreign-tool:spawn_agent") && !said.includes("foreign-tool:check_subagents"), said);
@@ -1309,7 +1299,7 @@ function openRun(comp) {
     openRun(wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })));
     const row = wrapped.renderCall({ wait: true, timeoutMs: 120000 }, theme, ctx("e1", { wait: true })).render(90);
     // No telling argument: show Pi's own key=value line, not an empty row.
-    check("unspecified args show the args line", row.length === 2 && plainText(row[0]) === "▏check_subagents wait=true timeoutMs=120000", JSON.stringify(row));
+    check("unspecified args show the args line", row.length === 3 && plainText(row[1]) === "▏check_subagents wait=true timeoutMs=120000", JSON.stringify(row));
     // opened (clicked) rows show the same call line
     const opened = wrapped.renderCall({ wait: true }, theme, { ...ctx("e1", { wait: true }), state: {} }).render(90);
     check("opened args-line row has no ellipsis", !opened.some((l) => l.includes("…")), JSON.stringify(opened));
@@ -1364,14 +1354,22 @@ function openRun(comp) {
     const merged = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
     openRun(read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })));
     const mergedOpen = read.renderCall({ path: "/a" }, theme, ctxFor("h1", { path: "/a" })).render(80);
-    check("contiguous history merges", mergedOpen.length === 3, JSON.stringify(mergedOpen));
+    check("contiguous history merges", mergedOpen.length === 4, JSON.stringify(mergedOpen));
     check("thinking between tools merges history",
-      plainText(mergedOpen[0]).endsWith("/a") && plainText(mergedOpen[1]).endsWith("/b"), JSON.stringify(mergedOpen));
+      plainText(mergedOpen[1]).endsWith("/a") && plainText(mergedOpen[2]).endsWith("/b"), JSON.stringify(mergedOpen));
     check("merged history keeps order",
-      plainText(mergedOpen[0]).endsWith("/a") && plainText(mergedOpen[1]).endsWith("/b"), JSON.stringify(mergedOpen));
+      plainText(mergedOpen[1]).endsWith("/a") && plainText(mergedOpen[2]).endsWith("/b"), JSON.stringify(mergedOpen));
     openRun(bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })));
     const alone = bash.renderCall({ command: "ls" }, theme, ctxFor("h3", { command: "ls" })).render(80);
-    check("prose-split history stays separate", alone.length === 2 && alone[0].includes("ls"), JSON.stringify(alone));
+    check("prose-split history stays separate", alone.length === 3 && alone[1].includes("ls"), JSON.stringify(alone));
+    // A later branch with only h1 must drop h2/h3 (and their run state)
+    // instead of retaining a previous session's args/results forever.
+    await handlers.get("session_start")[0]({}, { hasUI: false, sessionManager: { getEntries: () => [
+      { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "h1", name: "read", arguments: {} }] } },
+    ] } });
+    check("session_start prunes other branch rows",
+      mod.traceEntries.has("h1") && !mod.traceEntries.has("h2") && !mod.traceEntries.has("h3"),
+      [...mod.traceEntries.keys()].join(","));
   }
 
   // 25b. startup resume renders history AFTER session_start (`pi -r`):
@@ -1427,7 +1425,7 @@ function openRun(comp) {
     bash.renderCall({ command: "echo live2" }, theme, ctxFor("n2", "echo live2"));
     openRun(bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1")));
     const live = bash.renderCall({ command: "echo live1" }, theme, ctxFor("n1", "echo live1")).render(80);
-    check("live turns merge after restore", live.length === 3, JSON.stringify(live));
+    check("live turns merge after restore", live.length === 4, JSON.stringify(live));
   }
 
   // 25c. settling the deferred merge repaints: contiguous history tools
@@ -1470,7 +1468,7 @@ function openRun(comp) {
     openRun(bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")));
     const owner = bash.renderCall({ command: "echo one" }, theme, ctxFor("m1", "echo one")).render(80);
     const nonOwner = bash.renderCall({ command: "echo two" }, theme, ctxFor("m2", "echo two")).render(80);
-    check("merged owner shows both rows", owner.length === 3, JSON.stringify(owner));
+    check("merged owner shows both rows", owner.length === 4, JSON.stringify(owner));
     check("merged non-owner renders empty", nonOwner.length === 0, JSON.stringify(nonOwner));
   }
 
@@ -1629,9 +1627,6 @@ function openRun(comp) {
     check("SAFE+hosted row detached", !chat.children.includes(rowSafe), chat.children.length);
     check("text row stays mounted", chat.children.includes(rowText), "");
     check("lonely thinking attaches to prev run", !chat.children.includes(rowLonely), chat.children.length);
-    check("detach recorded", detach.isMessageHidden("e1") === true, "");
-    check("lonely recorded too", detach.isMessageHidden("e3") === true, "");
-    check("others not recorded", detach.isMessageHidden("e2") === false, "");
     delete process.env.COLLAPSE_HIDE_THINKING;
     detach.resetDetachState?.();
   }
@@ -1952,7 +1947,7 @@ function openRun(comp) {
     const r = detach.detachPass(piQ);
     check("homeless thinking stays mounted", r.detached === 0 && chat.children.includes(rowThink), JSON.stringify(r));
     mod.reconcileThinkingLabels(piQ);
-    check("homeless thinking collapses in place", (rowThink.hiddenThinkingLabel ?? "").includes(">1 thinking"), rowThink.hiddenThinkingLabel);
+    check("homeless thinking collapses in place", (rowThink.hiddenThinkingLabel ?? "").includes("▸1 thinking"), rowThink.hiddenThinkingLabel);
     detach.resetDetachState?.();
   }
 
@@ -2050,10 +2045,10 @@ function openRun(comp) {
   {
     const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
     const short = labelsLib.standaloneThinkingLabel(1, 500, 100);
-    check("standalone shows sub-second time", short.startsWith(">1 thinking") && short.endsWith("0s") && short.length === 100,
+    check("standalone shows sub-second time", short.startsWith("▸1 thinking") && short.endsWith("0s") && short.length === 100,
       short);
     const long = labelsLib.standaloneThinkingLabel(1, 114000, 100);
-    check("standalone shows 1m54s", long.startsWith(">1 thinking") && long.includes("1m54s"), long);
+    check("standalone shows 1m54s", long.startsWith("▸1 thinking") && long.includes("1m54s"), long);
     check("standalone fits its width", long.length === 100, `${long.length}`);
   }
 
@@ -3141,9 +3136,9 @@ function openRun(comp) {
     edit.renderCall(args, realTheme, ctx);
     edit.renderResult(result, { expanded: false, isPartial: false }, realTheme, { ...ctx, lastComponent: undefined });
     const rest = edit.renderCall(args, realTheme, ctx).render(100);
-    check("edit rest is header", rest.length === 1 && rest[0].includes(">"), JSON.stringify(rest));
+    check("edit rest is header", rest.length === 1 && rest[0].includes("▸"), JSON.stringify(rest));
     openRun(edit.renderCall(args, realTheme, ctx));
-    const row = edit.renderCall(args, realTheme, ctx).children[0];
+    const row = edit.renderCall(args, realTheme, ctx).children[1];
     row.onMouse({ type: "click", button: "left" });
     const opened = edit.renderCall(args, realTheme, ctx).render(100);
     const stock = (() => {
@@ -3159,15 +3154,15 @@ function openRun(comp) {
     })();
     const joined = opened.join("\n");
     check("edit expanded shows the change", /beta/.test(joined), joined.slice(0, 200));
-    const firstDiff = opened.findIndex((line, i) => line !== stock[i]);
-    check("edit expanded matches stock", JSON.stringify(opened.slice(0, stock.length)) === JSON.stringify(stock), `line ${firstDiff}: ${JSON.stringify(opened[firstDiff])} VS ${JSON.stringify(stock[firstDiff])}`);
+    const firstDiff = opened.slice(1, 1 + stock.length).findIndex((line, i) => line !== stock[i]);
+    check("edit expanded matches stock", JSON.stringify(opened.slice(1, 1 + stock.length)) === JSON.stringify(stock), `line ${firstDiff}: ${JSON.stringify(opened[1 + firstDiff])} VS ${JSON.stringify(stock[firstDiff])}`);
 
     // ctrl+o (Pi expanded) must hold the same line, at the deeper cell.
     const ctxX = { ...callContext({ args, toolCallId: "t-edit-x", expanded: true }).ctx };
     edit.renderCall(args, realTheme, ctxX);
     edit.renderResult(result, { expanded: true, isPartial: false }, realTheme, { ...ctxX, lastComponent: undefined });
     openRun(edit.renderCall(args, realTheme, ctxX));
-    edit.renderCall(args, realTheme, ctxX).children[0].onMouse({ type: "click", button: "left" });
+    edit.renderCall(args, realTheme, ctxX).children[1].onMouse({ type: "click", button: "left" });
     const openedX = edit.renderCall(args, realTheme, ctxX).render(100);
     const stockX = (() => {
       const c = new agent.ToolExecutionComponent(
@@ -3181,7 +3176,8 @@ function openRun(comp) {
       return c.render(100).slice(1);
     })();
     check("edit deep cell shows the change", /beta/.test(openedX.join("\n")), openedX.join("\n").slice(0, 200));
-    check("edit deep cell matches stock", JSON.stringify(openedX.slice(0, stockX.length)) === JSON.stringify(stockX), `line ${openedX.findIndex((l, i) => l !== stockX[i])}`);
+    const xDiff = openedX.slice(1, 1 + stockX.length).findIndex((l, i) => l !== stockX[i]);
+    check("edit deep cell matches stock", JSON.stringify(openedX.slice(1, 1 + stockX.length)) === JSON.stringify(stockX), `line ${xDiff}: ${JSON.stringify(openedX[1 + xDiff])} VS ${JSON.stringify(stockX[xDiff])}`);
   }
 
   // 61. generalization matrix: EVERY builtin opens byte-identical to stock
@@ -3226,7 +3222,7 @@ function openRun(comp) {
           continue;
         }
         openRun(rest);
-        tool.renderCall(args, realTheme, ctx).children[0].onMouse({ type: "click", button: "left" });
+        tool.renderCall(args, realTheme, ctx).children[1].onMouse({ type: "click", button: "left" });
         const ours = tool.renderCall(args, realTheme, ctx).render(100);
         const stockComp = new agent.ToolExecutionComponent(
           name, `stock-${name}-${expanded}`, args, { showImages: true, imageWidthCells: 60 },
@@ -3237,11 +3233,11 @@ function openRun(comp) {
         stockComp.setArgsComplete();
         stockComp.updateResult(result, false);
         const stock = stockComp.render(100).slice(1);
-        const at = ours.findIndex((line, i) => line !== stock[i]);
+        const at = ours.slice(1, 1 + stock.length).findIndex((line, i) => line !== stock[i]);
         check(
           `${name} opens like stock (${expanded ? "deep" : "shallow"})`,
-          ours.length === stock.length + 1 && JSON.stringify(ours.slice(0, stock.length)) === JSON.stringify(stock),
-          `line ${at}: ${JSON.stringify(ours[at])} VS ${JSON.stringify(stock[at])}`,
+          ours.length === stock.length + 2 && JSON.stringify(ours.slice(1, 1 + stock.length)) === JSON.stringify(stock),
+          `line ${at}: ${JSON.stringify(ours[1 + at])} VS ${JSON.stringify(stock[at])}`,
         );
       }
     }
@@ -3288,7 +3284,7 @@ function openRun(comp) {
     const rest = wrapped.renderCall(args, theme, ctx);
     check("custom row rests as header", rest.render(100).length === 1, JSON.stringify(rest.render(100)));
     openRun(rest);
-    wrapped.renderCall(args, theme, ctx).children[0].onMouse({ type: "click", button: "left" });
+    wrapped.renderCall(args, theme, ctx).children[1].onMouse({ type: "click", button: "left" });
     const opened = wrapped.renderCall(args, theme, ctx).render(100).join("\n");
     check("custom opened shows header", /custom header/.test(opened), opened.slice(0, 160));
     check("custom opened shows result-injected body", /PAYLOAD/.test(opened), opened.slice(0, 160));
@@ -3325,7 +3321,7 @@ function openRun(comp) {
     check("final count lands", /4\.2k ch/.test(settled), settled);
     check("settled row parks the wheel", !/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(settled), settled.slice(0, 120));
     const restLines = bash.renderCall(ctx.args, theme, ctx).render(80);
-    check("row stays one line", restLines.length === 2 && /4\.2k ch/.test(restLines[0]), JSON.stringify(restLines));
+    check("row stays one line", restLines.length === 3 && /4\.2k ch/.test(restLines[1]), JSON.stringify(restLines));
   }
 
   // 64. formatting hierarchy: BOLD = identity (tool / command), PLAIN = the
@@ -3338,7 +3334,7 @@ function openRun(comp) {
       const { ctx } = callContext({ args, toolCallId: `fmt-${name}`, state });
       const c = { ...ctx, state };
       openRun(tool.renderCall(ctx.args, theme, c));
-      return tool.renderCall(ctx.args, theme, c).render(100)[0];
+      return tool.renderCall(ctx.args, theme, c).render(100)[1];
     };
     // dim prefix on every row
     for (const [name, args] of [
@@ -3372,12 +3368,12 @@ function openRun(comp) {
     const { ctx: cctx } = callContext({ args: { query: "find the thing" }, toolCallId: "fmt-custom" });
     const cargs = { ...cctx, args: { query: "find the thing" } };
     openRun(wrapped.renderCall(cctx.args, theme, cargs));
-    const customRow = wrapped.renderCall(cctx.args, theme, cargs).render(100)[0];
+    const customRow = wrapped.renderCall(cctx.args, theme, cargs).render(100)[1];
     check("generic primary plain", customRow.includes("find the thing") && !customRow.includes("<dim>find the thing"), customRow);
     const { ctx: pctx } = callContext({ args: { query: "find the thing", limit: 5 }, toolCallId: "fmt-pair" });
     const pargs = { ...pctx, args: { query: "find the thing", limit: 5 } };
     openRun(wrapped.renderCall(pctx.args, theme, pargs));
-    const pairRow = wrapped.renderCall(pctx.args, theme, pargs).render(100)[0];
+    const pairRow = wrapped.renderCall(pctx.args, theme, pargs).render(100)[1];
     check("generic pairs dim", pairRow.includes("<dim>limit=5</>"), pairRow);
   }
 
@@ -3390,7 +3386,7 @@ function openRun(comp) {
       const { ctx } = callContext({ args, toolCallId: `bash-${name}-${args.command ?? ""}` });
       const c = { ...ctx, args };
       openRun(tool.renderCall(ctx.args, theme, c));
-      return tool.renderCall(ctx.args, theme, c).render(400)[0];
+      return tool.renderCall(ctx.args, theme, c).render(400)[1];
     };
     const A = "<dim>▏</><b:accent>$</b>";
     const PS = "<dim>▏</><b:accent>PS></b>";
@@ -3508,7 +3504,7 @@ function openRun(comp) {
         const { ctx } = callContext({ args: { command: "ls" }, toolCallId: `edge-${cols}-${renderWidth}-${pad}`, state: { count: 5300 } });
         const c = { ...ctx, args: { command: "ls" } };
         openRun(tool.renderCall(ctx.args, ansiTheme, c));
-        const line = tool.renderCall(ctx.args, ansiTheme, c).render(renderWidth)[0];
+        const line = tool.renderCall(ctx.args, ansiTheme, c).render(renderWidth)[1];
         const expected = labelEnd(cols, pad);
         check(
           `count column matches thinking at cols=${cols} render=${renderWidth} pad=${pad}`,
@@ -3896,12 +3892,12 @@ function openRun(comp) {
     .renderCall(spawnArgs, theme, ctx("s1", spawnArgs))
     .render(120)
     .map(plainText);
-  check("spawn row names the agent", lines[0]?.includes("spawn_agent review"), lines[0]);
-  check("spawn row shows the task as a dim pair", lines[0]?.includes("spawn_agent review ") && lines[0]?.includes('task="Review the collapse extension'), lines[0]);
-  check("check row lists targets", lines[1]?.includes("check_subagents review, tester"), lines[1]);
-  check("send row names the target", lines[2]?.includes("send_to_subagent review"), lines[2]);
-  check("send row names the target, then the message", lines[2]?.includes('send_to_subagent review message="Stop and report"'), lines[2]);
-  check("cancel row names the target", lines[3]?.includes("cancel_subagent review"), lines[3]);
+  check("spawn row names the agent", lines[1]?.includes("spawn_agent review"), lines[1]);
+  check("spawn row shows the task as a dim pair", lines[1]?.includes("spawn_agent review ") && lines[1]?.includes('task="Review the collapse extension'), lines[1]);
+  check("check row lists targets", lines[2]?.includes("check_subagents review, tester"), lines[2]);
+  check("send row names the target", lines[3]?.includes("send_to_subagent review"), lines[3]);
+  check("send row names the target, then the message", lines[3]?.includes('send_to_subagent review message="Stop and report"'), lines[3]);
+  check("cancel row names the target", lines[4]?.includes("cancel_subagent review"), lines[4]);
 }
 
 // ---------------------------------------------------------------------------
@@ -3955,22 +3951,22 @@ function openRun(comp) {
     const ours = cell(wrapped, "w1");
     const stock = cell(bare, "s1");
     const rest = ours.render(100);
-    check("bare rest is header", rest.length === 2 && rest[1].includes(">"), JSON.stringify(rest.map(plainText)));
+    check("bare rest is header", rest.length === 2 && rest[1].includes("▸"), JSON.stringify(rest.map(plainText)));
     check("bare header names the tool", plainText(rest[1]).includes("check_subagents"), plainText(rest[1]));
     ours.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
     ours.invalidate();
     const openView = ours.render(100);
     check("bare row keeps the other args", openView.some((l) => plainText(l).includes("check_subagents review wait=true")), JSON.stringify(openView.map(plainText)));
-    ours.callRendererComponent.children[0].onMouse({ type: "click", button: "left" });
+    ours.callRendererComponent.children[1].onMouse({ type: "click", button: "left" });
     ours.invalidate();
-    // The open run appends its Collapse footer after the stock cell.
+    // The open run keeps its top header and appends its Collapse footer.
     const openedRender = ours.render(100);
-    check("bare opened cell is stock (collapsed)", JSON.stringify(openedRender.slice(0, -1)) === JSON.stringify(stock.render(100)),
-      `\nours:\n${plainText(openedRender.slice(0, -1).join("\n"))}\nstock:\n${plainText(stock.render(100).join("\n"))}`);
+    check("bare opened cell is stock (collapsed)", JSON.stringify(openedRender.slice(2, -1)) === JSON.stringify(stock.render(100).slice(1)),
+      `\nours:\n${JSON.stringify(openedRender.map(plainText))}\nstock:\n${JSON.stringify(stock.render(100).map(plainText))}`);
     stock.setExpanded(true);
     ours.setExpanded(true);
     const openedXRender = ours.render(100);
-    check("bare opened cell is stock (expanded)", JSON.stringify(openedXRender.slice(0, -1)) === JSON.stringify(stock.render(100)),
+    check("bare opened cell is stock (expanded)", JSON.stringify(openedXRender.slice(2, -1)) === JSON.stringify(stock.render(100).slice(1)),
       `\nours:\n${plainText(openedXRender.slice(0, -1).join("\n"))}\nstock:\n${plainText(stock.render(100).join("\n"))}`);
   }
 
@@ -4003,7 +3999,7 @@ function openRun(comp) {
     const rest = wrapped.renderCall(longArgs, realTheme, ctx(false));
     rest.handleMouse({ type: "click", x: 1, y: 0, width: 100, height: 1 });
     // First click opens the run; second opens the row's result preview.
-    wrapped.renderCall(longArgs, realTheme, ctx(false)).handleMouse({ type: "click", x: 1, y: 0, width: 100, height: 1 });
+    wrapped.renderCall(longArgs, realTheme, ctx(false)).children[1]?.onMouse({ type: "click", button: "left" });
     const shown = plainText(wrapped.renderCall(longArgs, realTheme, ctx(false)).render(100).join("\n"))
       .split("\n").map((line) => line.trim());
     check("huge result previews ten lines", shown.includes("line 9") && !shown.includes("line 10") && shown.some((l) => l.includes("4990 more lines")), JSON.stringify(shown.slice(-3)));
@@ -4048,7 +4044,7 @@ function openRun(comp) {
     if (result) tool.renderResult({ content: [{ type: "text", text: result }], details: {} }, { expanded: false, isPartial: false }, realTheme, c);
     const comp = tool.renderCall(args, realTheme, c);
     openRun(comp);
-    return tool.renderCall(args, realTheme, c).render(width)[0] ?? "";
+    return tool.renderCall(args, realTheme, c).render(width)[1] ?? "";
   };
   const spawnArgs = { task: "Review the collapse extension for performance regressions", name: "review", model: "anthropic/claude-sonnet-4", thinking: "high", tools: ["read", "bash", "grep"], maxDepth: 2 };
   try {
@@ -4161,7 +4157,9 @@ function openRun(comp) {
   // Live runs rest closed; open the run so the streaming rows are visible.
   owner.render(120);
   owner.callRendererComponent.children[0]?.onMouse?.({ type: "click", button: "left" });
-  const rows = () => owner.render(120).map(plainText).filter(isRow).filter((l) => !l.includes("Collapse"));
+  const rows = () => owner.render(120).map(plainText)
+    .filter((l) => !/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\d+ \w/.test(l))
+    .filter(isRow).filter((l) => !l.includes("Collapse"));
 
   check("every live tool has a row", rows().length === cases.length, `${rows().length}`);
   check("live write row streams the body", rows()[0].includes('content="export function f()'), rows()[0]);
@@ -4721,6 +4719,12 @@ function openRun(comp) {
     check("re-plan changes the run id", newRun !== oldRun, `${oldRun} -> ${newRun}`);
     check("thinking moved to the new run", mod.runThinkingCount(newRun) === 1, String(mod.runThinkingCount(newRun)));
     check("old run holds no thinking", mod.runThinkingCount(oldRun) === 0, String(mod.runThinkingCount(oldRun)));
+    // A boundary after a re-plan must allocate a fresh id, never rewind onto
+    // one a planned group already owns.
+    await handlers.get("message_start")[0]({ message: { role: "user", content: [] } }, {});
+    bash.renderCall({ command: "echo fresh" }, t, mk("rm-fresh", { command: "echo fresh" }));
+    const freshRun = mod.traceEntries.get("rm-fresh").runId;
+    check("new run id is monotonic", freshRun !== oldRun && freshRun !== newRun && freshRun > newRun, `${oldRun}/${newRun}/${freshRun}`);
     const comp = bash.renderCall({ command: "echo remap" }, t, mk("rm1", { command: "echo remap" }));
     openRun(comp);
     check("preview still renders after the re-plan",
@@ -5022,12 +5026,12 @@ function openRun(comp) {
     labelsLib.captureWalkerTui({ children: [row] });
     labelsLib.setStandaloneThinking(message, true);
     labelsLib.reconcileThinkingLabels(pi);
-    check("standalone label written", /^>1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
+    check("standalone label written", /^▸1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
     row.render(100);
-    check("first render keeps the standalone label", /^>1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
+    check("first render keeps the standalone label", /^▸1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
     Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true, writable: true });
     row.render(80);
-    check("resize keeps the standalone label", /^>1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
+    check("resize keeps the standalone label", /^▸1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
     if (before === undefined) delete process.stdout.columns;
     else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
   }

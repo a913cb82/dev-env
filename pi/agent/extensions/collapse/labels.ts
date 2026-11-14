@@ -9,7 +9,7 @@
  * stops matching, everything below bails to stock behavior (never throws).
  */
 import { Container, type Component } from "@earendil-works/pi-tui";
-import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatRunDuration, labelBudget, padLabel, thinkingLabelForWidth, wheelFrameAt } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatRunDuration, isVisibleTextBlock, labelBudget, padLabel, thinkingLabelForWidth, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 
@@ -41,14 +41,14 @@ let labeledFor = new WeakMap<object, LabeledFor>();
  *  Walking the whole transcript on every token is O(all components); the
  *  settle/event walks refresh this cache, and streaming only scans when a
  *  live row is missing (a row mounted after the last scan). */
-let rowCache: unknown[] = [];
+let rowCache: any[] = [];
 /** Rows flagged streaming at the last scan (usually one). The per-delta
  *  path labels these directly: iterating every row per token made the
  *  cost O(transcript), not O(live). */
-let liveRows: unknown[] = [];
+let liveRows: any[] = [];
 /** Last row seen for a message object, for the handler-ordering case where
  *  the event message is one delta ahead of the row's own `lastMessage`. */
-let rowByMessage = new WeakMap<object, unknown>();
+let rowByMessage = new WeakMap<object, any>();
 /** Last extra scan attempt per streaming message, so a row that mounts a
  *  tick late gets found without scanning per token forever. */
 let scannedFor = new WeakMap<object, number>();
@@ -186,16 +186,16 @@ export function setStandaloneThinking(message: unknown, on: boolean): void {
     // Cosmetic only.
   }
 }
-/** Collapsed form for homeless thinking: `>N thinking  DURATION`, sized
- *  to the label width. The `>` marker makes it read as one more collapsed
+/** Collapsed form for homeless thinking: `▸N thinking  DURATION`, sized
+ *  to the label width. The `▸` marker makes it read as one more collapsed
  *  block (a run header) rather than a stray row; Pi still toggles its full
  *  text natively. The duration is the block's total span (message start to
  *  completion, or to now while it streams), so even a sub-second block
  *  shows `0s` rather than disappearing. Pure. */
 export function standaloneThinkingLabel(count: number, durationMs: number | undefined, width: number): string {
-  // A standalone thinking is a block of its own: same `>` marker as a run
+  // A standalone thinking is a block of its own: same `▸` marker as a run
   // header, so it reads as one more collapsed block rather than a stray row.
-  const left = `>${count} thinking`;
+  const left = `▸${count} thinking`;
   if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return left;
   return padLabel(left, formatRunDuration(durationMs), width);
 }
@@ -263,10 +263,7 @@ export function hasVisibleProse(node: unknown): boolean {
   if (!lastMessage || typeof lastMessage !== "object") return false;
   if ((lastMessage as { role?: unknown }).role !== "assistant") return false;
   const content = (lastMessage as { content?: unknown }).content;
-  return Array.isArray(content) && content.some((block) =>
-    (block as { type?: unknown })?.type === "text" &&
-    typeof (block as { text?: unknown }).text === "string" &&
-    (block as { text: string }).text.trim() !== "");
+  return Array.isArray(content) && content.some(isVisibleTextBlock);
 }
 
 
@@ -342,10 +339,10 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
       // the remaining pad, the label and its style stay where Pi put them.
       // A streaming row is still live: spin the wheel in that same cell.
       const streaming = (row as { isStreaming?: unknown })?.isStreaming === true;
-      // A standalone thinking already carries its own `>` marker in the
+      // A standalone thinking already carries its own `▸` marker in the
       // label; adding a rail would double the marker.
       const rowLabel = String((row as { hiddenThinkingLabel?: unknown })?.hiddenThinkingLabel ?? "");
-      if (/^\s*>\d+ thinking\b/.test(rowLabel)) continue;
+      if (/^\s*▸\d+ thinking\b/.test(rowLabel)) continue;
       const glyph = streaming ? WHEEL_FRAMES[wheelFrameAt()]! : ROW_RAIL;
       const out = lines.slice();
       out[i] =
@@ -474,7 +471,7 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
     const thinking = extractThinkingText(message);
     if (!thinking) return;
     const pad = liveOutputPad(pi);
-    // A standalone thinking wears the `>N thinking` block label; the preview
+    // A standalone thinking wears the `▸N thinking` block label; the preview
     // is a different rendering and must not replace it on the first render
     // after install (r88: a resumed mixed row showed a preview where live
     // showed the standalone label).
@@ -637,7 +634,7 @@ export function reconcileStreamingLabel(
         (message !== undefined && own === message);
     };
     let candidates = liveRows.filter(isLive);
-    if (message !== undefined) {
+    if (message != null) {
       const text = extractThinkingText(message);
       // A text-only message has no thinking row worth finding.
       if (!text && candidates.length === 0) return 0;

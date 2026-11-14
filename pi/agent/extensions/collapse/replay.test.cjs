@@ -1,9 +1,10 @@
 // Replay tests for collapse: real Pi components, scripted transcripts.
 //
 // Instead of hand-built fake rows, the replay driver mounts the REAL
-// AssistantMessageComponent / ToolExecutionComponent classes, feeds them a
-// scripted transcript (restore + live ops + reload, like a real session),
-// and screenshots the chat with component.render(width). If the extension
+// AssistantMessageComponent / UserMessageComponent classes and the
+// extension's wrapped tool renderers (in a minimal self-shell host that
+// mirrors Pi's separator blank), feeds them a scripted transcript, and
+// screenshots the chat with component.render(width). If the extension
 // misplaces a thinking with real components, it fails here — no mock can
 // hide it.
 //
@@ -42,14 +43,31 @@ const loadFixture = (name) =>
       standalones.length === 2 && standalones.every((l) => shot.lines.indexOf(l) < at("Rule confirmed")),
       shot.lines.join("\n"));
     check("tools block renders after the prose",
-      at(">2 bash") > at("Rule confirmed"),
+      at("▸2 bash") > at("Rule confirmed"),
       shot.lines.join("\n"));
     check("no thinking preview inside the tools block",
-      !shot.lines.slice(at(">2 bash")).some((l) => l.includes("Designing") || l.includes("Evaluating")),
+      !shot.lines.slice(at("▸2 bash")).some((l) => l.includes("Designing") || l.includes("Evaluating")),
       shot.lines.join("\n"));
     check("thinking text stays hidden (count only, expands on click)",
       !shot.text.includes("Designing") && !shot.text.includes("Evaluating"),
       shot.lines.join("\n"));
+  }
+
+  // R1b. the committed adjacent-groups fixture: two tool batches separated
+  // only by a thinking-only message must share one run (no visible message
+  // means no breakpoint).
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, loadFixture("adjacent-groups").live);
+    driver.tickOnce(world);
+    const lines = driver.dump(world).lines;
+    const header = lines.find((l) => l.trim().startsWith("▸"));
+    check("adjacent groups share one header",
+      !!header && header.includes("4 bash") && header.includes("1 thinking"), lines.join("\n"));
+    driver.openRun(world, "a1");
+    const opened = driver.dump(world).lines.filter((l) => l.includes("echo "));
+    check("adjacent groups keep all four rows", opened.length === 4, opened.join("\n"));
   }
 
   // R2. restore + reload stability: persisted history renders one header
@@ -61,11 +79,44 @@ const loadFixture = (name) =>
     await driver.restore(world, entries);
     const before = driver.dump(world).lines.join("\n");
     check("restore splits on the user boundary",
-      before.split("\n").filter((l) => l.startsWith(">")).length === 2, before);
+      before.split("\n").filter((l) => l.startsWith("▸")).length === 2, before);
     await driver.reload(world);
     const after = driver.dump(world).lines.join("\n");
     check("reload reproduces the restore screenshot", after === before,
       `--- before ---\n${before}\n--- after ---\n${after}`);
+  }
+
+  // R2b. a settled transcript must not keep the live wheel: mountTool used
+  // to pass `isPartial: false` as render options while leaving the render
+  // context's flag true, so every restored row spun forever.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, loadFixture("history-split").restore);
+    const restored = driver.dump(world).lines;
+    check("settled replay has no live wheel",
+      !restored.some((l) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(l)), restored.join("\n"));
+    // A live call that received its result must settle too: the render
+    // context's isPartial flag drives the wheel, not the render options.
+    const live = driver.createWorld(PI, { width: 100 });
+    await driver.restore(live, []);
+    // A call mounted while args are still partial: the option says settled
+    // later, but the render context must settle too.
+    await driver.runLive(live, [
+      { op: "user", text: "go" },
+      { op: "start", id: "pm1" },
+      { op: "tool", id: "pm1", toolId: "p1", name: "bash", args: { command: "sleep 1" }, partial: true },
+      { op: "result", toolId: "p1", text: "done" },
+      { op: "end", id: "pm1", stop: "toolUse" },
+      { op: "turn" },
+      { op: "tick" },
+    ]);
+    driver.tickOnce(live);
+    const settled = driver.dump(live).lines;
+    check("a live result clears the wheel",
+      !settled.some((l) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(l)), settled.join("\n"));
+    driver.openRun(live, "p1");
+    const opened = driver.dump(live).lines;
+    check("a live result updates the row", opened.some((l) => l.includes("4 ch")), opened.join("\n"));
   }
 
   // R3. mid-stream the prose is mounted but unpersisted: entries cannot
@@ -121,7 +172,7 @@ const loadFixture = (name) =>
     await driver.runLive(world, loadFixture("live-consecutive-turns").live.slice(9));
     driver.tickOnce(world);
     const shot = driver.dump(world);
-    const headers = shot.lines.filter((l) => l.trim().startsWith(">"));
+    const headers = shot.lines.filter((l) => l.trim().startsWith("▸"));
     check("mid-turn settle keeps one header for the live segment",
       headers.length === 3 && headers[2].includes("3 bash") && headers[2].includes("1 write"),
       shot.lines.join("\n"));
@@ -134,13 +185,20 @@ const loadFixture = (name) =>
     await driver.restore(world, loadFixture("prose-blank-trailing-thinking").restore);
     const lines = driver.dump(world).lines;
     const prose = lines.findIndex((l) => l.includes("That's a faithful live session"));
-    const header = lines.findIndex((l, i) => i > prose && l.trim().startsWith(">"));
+    const header = lines.findIndex((l, i) => i > prose && l.trim().startsWith("▸"));
     check("blank line between prose and the header below it",
       prose >= 0 && header > prose && lines.slice(prose + 1, header).some((l) => l.trim() === ""),
       JSON.stringify(lines.slice(Math.max(0, prose - 2), header + 2)));
+    // Open the run: the header must sit directly on its rows, with the
+    // separator blank only above the header.
+    driver.openRun(world, "x1");
+    const opened = driver.dump(world).lines;
+    const openHeader = opened.findIndex((l) => l.trim().startsWith("▾"));
+    const footer = opened.findIndex((l) => l.includes("Collapse"));
     check("no blank between the block's own header and rows",
-      lines.filter((l) => l.trim() === "").length > 0,
-      JSON.stringify(lines));
+      openHeader >= 0 && footer > openHeader &&
+        opened.slice(openHeader + 1, footer).every((l) => l.trim() !== ""),
+      JSON.stringify(opened.slice(Math.max(0, openHeader - 1), footer + 1)));
   }
 
   // R7. a thinking followed by ITS OWN message's prose must not be hoisted
@@ -151,11 +209,11 @@ const loadFixture = (name) =>
     await driver.restore(world, []);
     await driver.runLive(world, loadFixture("thinking-prose-same-message").live);
     const lines = driver.dump(world).lines;
-    const standalone = lines.findIndex((l) => /^\s*>\d+ thinking\b/.test(l));
+    const standalone = lines.findIndex((l) => /^\s*▸\d+ thinking\b/.test(l));
     const prose = lines.findIndex((l) => l.includes("Real Pi confirms the blank fix"));
     // A standalone thinking is itself `>N thinking`; the run header is the
     // `>` line that is not one.
-    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking\b/.test(l));
+    const header = lines.findIndex((l) => l.trim().startsWith("▸") && !/^\s*▸\d+ thinking\b/.test(l));
     check("thinking stands alone above its own message's prose",
       standalone >= 0 && prose > standalone && header > prose, lines.join("\n"));
     check("the block below the prose takes no thinking",
@@ -190,9 +248,9 @@ const loadFixture = (name) =>
     await driver.restore(world, []);
     await driver.runLive(world, loadFixture("own-prose-with-tool").live);
     const lines = driver.dump(world).lines;
-    const standalone = lines.findIndex((l) => /^\s*>\d+ thinking\b/.test(l));
+    const standalone = lines.findIndex((l) => /^\s*▸\d+ thinking\b/.test(l));
     const prose = lines.findIndex((l) => l.includes("Order is right, so the gate"));
-    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking\b/.test(l));
+    const header = lines.findIndex((l) => l.trim().startsWith("▸") && !/^\s*▸\d+ thinking\b/.test(l));
     check("own-prose mixed row: thinking stands alone", standalone >= 0 && prose > standalone, lines.join("\n"));
     check("own-prose mixed row: block below takes no thinking",
       header > prose && !lines[header].includes("thinking"), JSON.stringify(lines[header]));
@@ -207,12 +265,12 @@ const loadFixture = (name) =>
     const world = driver.createWorld(PI, { width: 100 });
     await driver.restore(world, loadFixture("thinking-after-tools-own-prose").restore);
     const lines = driver.dump(world).lines;
-    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking\b/.test(l));
+    const header = lines.findIndex((l) => l.trim().startsWith("▸") && !/^\s*▸\d+ thinking\b/.test(l));
     check("thinking after tools attaches to the block above",
       header >= 0 && lines[header].includes("2 bash") && lines[header].includes("1 thinking"),
       JSON.stringify(lines[header]));
     check("thinking after tools has no standalone row",
-      !lines.some((l) => /^\s*>\d+ thinking\b/.test(l)), lines.join("\n"));
+      !lines.some((l) => /^\s*▸\d+ thinking\b/.test(l)), lines.join("\n"));
     check("thinking after tools keeps the prose below",
       lines.some((l) => l.includes("harness should have caught this")), lines.join("\n"));
   }
@@ -253,8 +311,9 @@ const loadFixture = (name) =>
       lines.some((l) => l.includes("All green. Documenting")), lines.join("\n"));
     check("abort: the next turn keeps its prose",
       lines.some((l) => l.includes("Header check done.")), lines.join("\n"));
-    const header = lines.findIndex((l) => l.trim().startsWith(">") && !/^\s*>\d+ thinking/.test(l));
-    check("abort: the aborted tool has no false duration", header >= 0 && !/\d+s\b/.test(lines[header]), JSON.stringify(lines[header]));
+    const header = lines.findIndex((l) => l.trim().startsWith("▸") && !/^\s*▸\d+ thinking/.test(l));
+    const secs = /\b(\d+)s\b/.exec(lines[header] ?? "");
+    check("abort: the aborted tool has no false duration", header >= 0 && (!secs || secs[1] === "0"), JSON.stringify(lines[header]));
     // A message aborted WITHOUT tool calls: Pi appends the abort text itself.
     check("abort: abort text renders for a tool-less message",
       lines.some((l) => l.includes("Operation aborted")), lines.join("\n"));
@@ -311,7 +370,7 @@ const loadFixture = (name) =>
       { op: "thinking", id: "b", text: "LIVEBETA" },
     ]);
     const shot = driver.dump(world);
-    const header = shot.lines.findIndex((l) => l.trim().startsWith(">"));
+    const header = shot.lines.findIndex((l) => l.trim().startsWith("▸"));
     check("streaming thinking joins the block count",
       header >= 0 && shot.lines[header].includes("1 bash") && shot.lines[header].includes("1 thinking"),
       shot.lines.join("\n"));
@@ -366,7 +425,7 @@ const loadFixture = (name) =>
       { op: "tick" },
     ]);
     const lines = driver.dump(world).lines;
-    const header = lines.findIndex((l) => l.trim().startsWith(">"));
+    const header = lines.findIndex((l) => l.trim().startsWith("▸"));
     check("mixed streaming row is not hoisted into the block",
       header >= 0 && lines[header].includes("1 bash") && !lines[header].includes("thinking"),
       lines.join("\n"));
@@ -446,7 +505,7 @@ const loadFixture = (name) =>
     check("first-turn live thinking keeps a row",
       lines.some((l) => l.includes("LIVEALONE")), lines.join("\n"));
     check("first-turn live thinking has no empty block",
-      !lines.some((l) => l.trim().startsWith(">")), lines.join("\n"));
+      !lines.some((l) => l.trim().startsWith("▸")), lines.join("\n"));
   }
 
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);

@@ -1,5 +1,8 @@
 // Pure formatting helpers for the collapse extension (collapsed tool and
-// thinking rows). Dependency-free so tests load it without the Pi bundle.
+// thinking rows). Only the width primitives come from pi-tui: terminal width
+// is grapheme/cell based, and every label budget must agree with the cell
+// count Pi actually renders.
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 
 /** One-cell left rule that groups a run of collapsed rows. It lives in
  *  column 1 and replaces the leading pad cell, so content still starts on
@@ -10,13 +13,14 @@ export const ROW_RAIL = "\u258f";
  *  (rows.ts) and the streaming thinking row (labels.ts). Lives here, on
  *  the import-free leaf, so both consumers read one grid. */
 export const WHEEL_FRAMES = ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"] as const;
-/** Frame index on the absolute wall-clock grid. The 80ms quantum
- *  intentionally duplicates rows.ts BREATHE_MS (which the timer owns) —
- *  same epoch, same quantum, so every spinner shows the same glyph at the
- *  same moment. A deterministic function of time cannot drift. */
+/** Working-spinner quantum: Pi Loader's own 80ms cadence. One constant
+ *  for the frame math and the repaint timer, so they cannot drift. */
+export const WHEEL_MS = 80;
+
+/** Frame index on the absolute wall-clock grid, no epoch or tracking. */
 export function wheelFrameAt(nowMs: number = Date.now()): number {
   if (nowMs < 0) return 0;
-  return Math.floor(nowMs / 80) % WHEEL_FRAMES.length;
+  return Math.floor(nowMs / WHEEL_MS) % WHEEL_FRAMES.length;
 }
 
 /** Per-tool execution windows recovered from persisted history. Starts
@@ -74,6 +78,29 @@ export function toolTimings(
   return out;
 }
 
+/** Every toolCall id in the current branch, own or foreign. Used to drop
+ *  registrations from a previous session without depending on timestamps:
+ *  a history rebuild often has none, and pruning by timing keys would delete
+ *  rows that are still on screen. */
+export function branchToolIds(
+  entries: Array<{ type?: unknown; message?: unknown }> | undefined | null,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(entries)) return ids;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || entry.type !== "message") continue;
+    const message = entry.message as { role?: unknown; content?: unknown } | undefined;
+    if (!message || typeof message !== "object" || message.role !== "assistant") continue;
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!block || typeof block !== "object") continue;
+      const call = block as { type?: unknown; id?: unknown };
+      if (call.type === "toolCall" && typeof call.id === "string" && call.id) ids.add(call.id);
+    }
+  }
+  return ids;
+}
+
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
   // Below 1000 the k-form rounds every small result to "0.0k ch"/"0.1k ch",
@@ -93,7 +120,10 @@ export function formatLineRange(offset?: number | null, limit?: number | null): 
   if (offset == null && limit == null) return "";
   const start = offset ?? 1;
   if (limit == null) return `:${start}`;
-  return `:${start}-${start + limit - 1}`;
+  // A zero/negative limit is not a range: show the single start line rather
+  // than an impossible `:10-9`.
+  const span = Math.max(1, Math.floor(limit));
+  return `:${start}-${start + span - 1}`;
 }
 
 export function collapseWhitespace(text: string): string {
@@ -101,11 +131,22 @@ export function collapseWhitespace(text: string): string {
 }
 
 export function truncateMiddle(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  if (maxChars < 2) return text.slice(0, maxChars);
-  const start = Math.ceil((maxChars - 1) / 2);
-  const end = maxChars - 1 - start;
-  return `${text.slice(0, start)}…${text.slice(text.length - end)}`;
+  const limit = Math.max(0, Math.floor(maxChars));
+  if (visibleWidth(text) <= limit) return text;
+  if (limit < 2) return sliceByColumn(text, 0, limit, true);
+  const keep = limit - 1;
+  const start = Math.ceil(keep / 2);
+  const end = keep - start;
+  const head = sliceByColumn(text, 0, start, true);
+  const tail = end > 0 ? sliceByColumn(text, Math.max(0, visibleWidth(text) - end), end, true) : "";
+  return `${head}…${tail}`;
+}
+
+/** Drop a surrogate half left at a slice boundary, so a windowed preview can
+ *  never emit a lone surrogate (renders as a replacement glyph). */
+function dropSplitSurrogate(text: string, side: "head" | "tail"): string {
+  if (side === "tail") return /[\uD800-\uDBFF]$/.test(text) ? text.slice(0, -1) : text;
+  return /^[\uDC00-\uDFFF]/.test(text) ? text.slice(1) : text;
 }
 
 
@@ -118,26 +159,25 @@ export function truncateMiddle(text: string, maxChars: number): string {
  *  keeps the result byte-identical to the exact path and never costs more
  *  than the old behaviour. */
 export function thinkingPreview(text: string, maxChars = 64): string {
-  if (maxChars < 2) return truncateMiddle(collapseWhitespace(text), maxChars);
-  const start = Math.ceil((maxChars - 1) / 2);
-  const end = Math.max(0, maxChars - 1 - start);
-  let window = Math.max(256, maxChars * 4);
+  const cells = Math.max(1, Math.floor(maxChars));
+  if (cells < 2) return truncateMiddle(collapseWhitespace(text), cells);
+  const start = Math.ceil((cells - 1) / 2);
+  const end = Math.max(0, cells - 1 - start);
+  let window = Math.max(256, cells * 4);
   for (;;) {
-    if (text.length <= window * 2) return truncateMiddle(collapseWhitespace(text), maxChars);
-    const head = collapseWhitespace(text.slice(0, window));
-    const tail = collapseWhitespace(text.slice(-window));
-    if (head.length >= start && tail.length >= end) {
-      return `${head.slice(0, start)}\u2026${end > 0 ? tail.slice(tail.length - end) : ""}`;
+    if (text.length <= window * 2) return truncateMiddle(collapseWhitespace(text), cells);
+    const head = collapseWhitespace(dropSplitSurrogate(text.slice(0, window), "tail"));
+    const tail = collapseWhitespace(dropSplitSurrogate(text.slice(-window), "head"));
+    const headWidth = visibleWidth(head);
+    const tailWidth = visibleWidth(tail);
+    if (headWidth >= start && tailWidth >= end) {
+      const headText = sliceByColumn(head, 0, start, true);
+      const tailText = end > 0 ? sliceByColumn(tail, Math.max(0, tailWidth - end), end, true) : "";
+      return `${headText}\u2026${tailText}`;
     }
+    if (window >= text.length) return truncateMiddle(collapseWhitespace(text), cells);
     window *= 2;
   }
-}
-
-export function buildThinkingLabel(thinking: string, maxPreview = 64): string {
-  const count = formatCharCount(thinking.length);
-  const collapsed = collapseWhitespace(thinking);
-  if (!collapsed) return `Thinking… ${count}`;
-  return `Thinking ${truncateMiddle(collapsed, maxPreview)} ${count}`;
 }
 
 export function firstWord(command: string): string {
@@ -449,9 +489,9 @@ export function labelBudget(stdoutColumns?: unknown, outputPad = 1): number {
 
 /** Right-align `right` within `width` after `left`, truncating left if needed. */
 export function padLabel(left: string, right: string, width: number): string {
-  const gap = width - left.length - right.length;
+  const gap = width - visibleWidth(left) - visibleWidth(right);
   if (gap >= 1) return `${left}${" ".repeat(gap)}${right}`;
-  const maxLeft = Math.max(1, width - right.length - 4);
+  const maxLeft = Math.max(1, width - visibleWidth(right) - 4);
   return `${truncateMiddle(left, maxLeft)} ${right}`;
 }
 
@@ -486,9 +526,11 @@ const ITALIC_OFF = "\x1b[23;23m";
 export function thinkingLabelForWidth(thinking: string, stdoutColumns?: unknown, outputPad = 1): string {
   const width = labelBudget(stdoutColumns, outputPad);
   const count = formatCharCount(thinking.length);
-  const preview = thinkingPreview(thinking, Math.max(8, width - count.length - 1));
+  const preview = thinkingPreview(thinking, Math.max(8, width - visibleWidth(count) - 1));
   const padded = padLabel(preview, count, width);
-  // padLabel always ends with the count; re-insert it after the italic off.
+  // padLabel always ends with the ASCII count; re-insert it after the italic
+  // off. The count is ASCII, so slicing by its length is safe even when the
+  // preview is CJK/emoji.
   return `${padded.slice(0, padded.length - count.length)}${ITALIC_OFF}${count}`;
 }
 
@@ -651,12 +693,7 @@ export function planToolRuns(
   // Split ONLY on messages to the user (user messages, agent prose,
   // visible customs). Hidden thinking is never a breakpoint: it detaches
   // into the run, so consecutive think→tool turns merge into one block.
-  const visible = (part: unknown): boolean => {
-    if (!part || typeof part !== "object") return false;
-    const block = part as { type?: unknown; text?: unknown };
-    if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0;
-    return false;
-  };
+  const visible = (part: unknown): boolean => isVisibleTextBlock(part);
   if (!Array.isArray(entries)) return groups;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
@@ -717,6 +754,16 @@ export function planToolRuns(
   return groups;
 }
 
+/** Whether a content block renders visible text. One predicate for the
+ *  planner, the detach scan, and the labels walk: three copies of this test
+ *  disagreed on whitespace-only blocks before. */
+export function isVisibleTextBlock(block: unknown): boolean {
+  const candidate = block as { type?: unknown; text?: unknown } | null | undefined;
+  return candidate?.type === "text" &&
+    typeof candidate.text === "string" &&
+    candidate.text.trim() !== "";
+}
+
 /** Content facts shared by both detach predicates: one pass over the
  *  message mirroring AssistantMessageComponent.updateContent. Text renders
  *  per non-blank block; consecutive thinking blocks coalesce into runs
@@ -746,7 +793,7 @@ function scanThinkingContent(
   let allHidden = true;
   for (let i = 0; i < content.length; i++) {
     const block = content[i];
-    if (block?.type === "text" && (block.text ?? "").trim() !== "") {
+    if (isVisibleTextBlock(block)) {
       hasVisibleText = true;
     } else if (block?.type === "toolCall") {
       hasToolCalls = true;
@@ -771,6 +818,29 @@ function scanThinkingContent(
   return { hasVisibleText, hasToolCalls, hiddenRuns, allHidden };
 }
 
+/** Shared veto chain for both detach modes. Whole-row detach also refuses
+ *  visible text; partial detach keeps the prose and only removes the hidden
+ *  thinking children. Requiring a terminal stop reason keeps a streaming
+ *  row's prose from being lost after the thinking. */
+function detachSafety(
+  message: {
+    content?: Array<{ type?: string; text?: string; thinking?: string }>;
+    stopReason?: string;
+  } | null | undefined,
+  hideThinkingBlock: boolean,
+  thinkingVisibilityOverrides: Map<number, boolean> | Record<number, boolean> | null | undefined,
+  allowVisibleText: boolean,
+): boolean {
+  const scan = scanThinkingContent(message, hideThinkingBlock, thinkingVisibilityOverrides);
+  if (!scan) return false;
+  if (!allowVisibleText && scan.hasVisibleText) return false;
+  if (scan.hiddenRuns === 0 || !scan.allHidden) return false;
+  const stop = message?.stopReason;
+  if (stop == null || stop === "" || stop === "pending" || stop === "length") return false;
+  if (!scan.hasToolCalls && (stop === "aborted" || stop === "error")) return false;
+  return true;
+}
+
 /** Detach-safety predicate: detaching this assistant component from the
  *  transcript tree hides nothing but hidden-thinking label rows (plus the
  *  ignorable blank spacers Pi puts around them). Requires at least one
@@ -784,18 +854,7 @@ export function isSafeToDetach(
   hideThinkingBlock: boolean,
   thinkingVisibilityOverrides?: Map<number, boolean> | Record<number, boolean> | null,
 ): boolean {
-  const scan = scanThinkingContent(message, hideThinkingBlock, thinkingVisibilityOverrides);
-  if (!scan) return false;
-  if (scan.hasVisibleText) return false;
-  if (scan.hiddenRuns === 0 || !scan.allHidden) return false;
-  if (message?.stopReason === "length") return false;
-  // A row that is still streaming can gain prose after its thinking, and the
-  // prose would be lost with the row (the run then splits and the block
-  // flickers between a label and the collapsed cell). Pi reports "pending"
-  // while streaming; only a terminal stop reason counts as completed.
-  if (!message?.stopReason || message.stopReason === "pending") return false;
-  if (!scan.hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
-  return true;
+  return detachSafety(message, hideThinkingBlock, thinkingVisibilityOverrides, false);
 }
 
 /** Strip SGR color codes plus OSC hyperlink sequences. Rows carry both. */
@@ -819,13 +878,7 @@ export function isPartialSafeToDetach(
   hideThinkingBlock: boolean,
   thinkingVisibilityOverrides?: Map<number, boolean> | Record<number, boolean> | null,
 ): boolean {
-  const scan = scanThinkingContent(message, hideThinkingBlock, thinkingVisibilityOverrides);
-  if (!scan) return false;
-  if (message?.stopReason == null || message.stopReason === "pending") return false;
-  if (scan.hiddenRuns === 0 || !scan.allHidden) return false;
-  if (message?.stopReason === "length") return false;
-  if (!scan.hasToolCalls && (message?.stopReason === "aborted" || message?.stopReason === "error")) return false;
-  return true;
+  return detachSafety(message, hideThinkingBlock, thinkingVisibilityOverrides, true);
 }
 
 /** Run-level header: `4 read · 1 thinking`. Groups tool names in first-seen
