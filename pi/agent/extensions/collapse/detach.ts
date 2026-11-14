@@ -20,7 +20,7 @@ import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, 
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
 import { isSpacerLike } from "./tree.js";
-import { registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent, isRunOpen } from "./trace.js";
+import { registerRunClose, registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent, isRunOpen } from "./trace.js";
 
 /** Full thinking texts by trace run id for the replacement rows (a run can
  *  host several thinking-only messages; each keeps its own preview row).
@@ -229,6 +229,12 @@ function remapRunState(oldToNew: Map<number, number[]>): void {
   }
 }
 registerRunRemap(remapRunState);
+
+/** Closing a run returns every hosted thinking preview to its one-line form;
+ *  the run-open toggle is the only place that knows the user closed it. */
+registerRunClose((runId) => {
+  for (const item of runThinking.get(runId) ?? []) item.open = false;
+});
 
 /** Runs whose replacement preview row may render (fail-open gate). */
 export function isRunHidden(runId: number): boolean {

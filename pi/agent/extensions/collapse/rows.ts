@@ -18,6 +18,7 @@ import {
   type ThinkingItem,
 } from "./detach.js";
 import {
+  entryIsLive,
   isRunOpen,
   runErrorCount,
   runHasLive,
@@ -85,19 +86,18 @@ export class CollapsedLine implements Component {
   ) {}
 
   /** Column 1 carries the rail — or the wheel while live, or the
-   *  run-level marker (`▸`/`▾` header, `▴` footer). With no pad
-   *  the row starts at column 1 (stock cell with outputPad=0), so neither
-   *  is drawn there: content must never shift sideways. */
+   *  run-level marker (`▸`/`▾` header, `▴` footer). With no pad there is
+   *  no free cell before the content, but a marker/live control still owns
+   *  column 1 and the content moves one cell in: an affordance the user can
+   *  see beats preserving alignment on a header/footer-only line. A plain
+   *  data row at outputPad=0 still starts on column 1. */
   private prefix(): string {
     const pad = " ".repeat(Math.max(0, this.pad));
-    if (this.pad < 1) return pad;
-    if (this.marker !== undefined) {
-      const glyph = this.marker;
-      return (this.theme ? this.theme.fg("accent", glyph) : glyph) + pad.slice(1);
-    }
-    const glyph = this.live ? breatheWheel() : ROW_RAIL;
-    const color = this.live ? "accent" : "dim";
-    return (this.theme ? this.theme.fg(color, glyph) : glyph) + pad.slice(1);
+    const glyph = this.marker ?? (this.live ? breatheWheel() : this.pad < 1 ? undefined : ROW_RAIL);
+    if (glyph === undefined) return pad;
+    const color = this.marker !== undefined ? "accent" : this.live ? "accent" : "dim";
+    const styled = this.theme ? this.theme.fg(color, glyph) : glyph;
+    return this.pad < 1 ? styled : styled + pad.slice(1);
   }
 
   render(width: number): string[] {
@@ -416,17 +416,25 @@ export function liveCountSuffix(theme: Theme, chars: number): string {
   return chars > 0 ? theme.fg("dim", formatCharCount(chars)) : "";
 }
 
-/** Whole-block span: the tools' execution windows plus every hosted
- *  thinking's own message span. A run with a thinking lead or tail is timed
- *  from the first item, not from the first tool. */
+/** Whole-block span: the first visible tool call or thinking block through
+ *  the last tool result or completed thinking. A live call starts when it
+ *  first renders (arguments can stream long before execution); a thinking
+ *  lead or tail extends the same span. */
 function runSpan(runId: number): { startedAt?: number; endedAt?: number } {
   let startedAt: number | undefined;
   let endedAt: number | undefined;
   for (const id of traceRuns.get(runId) ?? []) {
     const entry = traceEntries.get(id);
     if (!entry) continue;
-    if (typeof entry.startedAt === "number") {
-      startedAt = startedAt === undefined ? entry.startedAt : Math.min(startedAt, entry.startedAt);
+    // A live call starts at its first visible frame (arguments can stream
+    // for a long time before execution starts); history uses its recovered
+    // window instead, never this rebuild's wall clock.
+    const starts = [
+      entry.startedAt,
+      entry.history ? undefined : entry.firstSeenAt,
+    ];
+    for (const at of starts) {
+      if (typeof at === "number") startedAt = startedAt === undefined ? at : Math.min(startedAt, at);
     }
     if (typeof entry.endedAt === "number") {
       endedAt = endedAt === undefined ? entry.endedAt : Math.max(endedAt, entry.endedAt);
@@ -486,18 +494,23 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
     ? `${styledSummary}${styledSummary ? " · " : ""}${italic(theme.fg("error", `${errors} error`))}`
     : styledSummary;
   // Run-level header: every run rests as one line. Click opens the per-row
-  // view below. While entries stream the header carries the live wheel
-  // and the elapsed time; settled runs show the final duration.
+  // view below. While a tool or thinking is active the resting header carries
+  // the live wheel and elapsed time; an open header keeps its arrow and the
+  // active rows carry the spinner. Settled runs show the final duration.
   const live = runHasLive(runId);
   const active = live || runThinkingLive(runId);
-  const toggleHeader = (marker: string): Component => {
+  // One clock read for the header and footer: the two times can never
+  // disagree at a second boundary. The header is not replaced while open;
+  // the footer repeats the same value for long blocks.
+  const time = timeRight(active);
+  const toggleHeader = (marker: string | undefined, liveHeader = false): Component => {
     const header = new CollapsedLine(
       summary,
-      timeRight(active),
+      time,
       liveOutputPad(pi),
       theme,
-      live,
-      live ? undefined : marker,
+      liveHeader,
+      marker,
     );
     return new MouseRegion(header, (event: any) => {
       if (!event || event.type !== "click") return undefined;
@@ -509,12 +522,15 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
     });
   };
   if (!isRunOpen(runId)) {
-    trace.addChild(toggleHeader("▸"));
+    // The single visible line carries the live wheel while anything in the
+    // run is active; when settled it carries the static closed marker.
+    trace.addChild(toggleHeader(active ? undefined : "▸", active));
     return;
   }
   // An open run keeps its header at the top: the footer is below every row,
   // so on a long block the close control would otherwise be off-screen. The
-  // open header uses the expanded marker and collapses the block on click.
+  // open header always uses the expanded marker; live spinners belong to the
+  // rows that are actually active, never to the control that closes them.
   trace.addChild(toggleHeader("▾"));
   // Replacement for detached Pi thinking rows (fail-open: renders only
   // when the detach pass confirmed this run's rows are gone — a missed
@@ -523,9 +539,10 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   // transcript order via each thinking's anchor (before/after a tool of
   // this run); unanchored entries keep the legacy top position.
   const addPreview = (item: ThinkingItem): void => {
+    const thinkingLive = item.live !== undefined;
     const thinkingRow = item.open
       ? new Text(italic(theme.fg("thinkingText", item.text)), liveOutputPad(pi), 0)
-      : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme);
+      : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme, thinkingLive);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -565,10 +582,11 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
     const row = entry.rowOpen
       ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
       : (() => {
-          // Live while Pi still streams (isPartial): partial renderResults
-          // already carry output sizes, so count==null must NOT gate liveness.
-          // The wheel in column 1 is the only live signal; counts stay dim.
-          const live = entry.isPartial && !entry.isError;
+          // Live while Pi still streams or writes the call: partial
+          // renderResults already carry output sizes, so count==null must
+          // NOT gate liveness. The wheel in column 1 is the only live signal;
+          // counts stay dim.
+          const live = entryIsLive(entry);
           const count = countSuffix(theme, entry);
           // No result yet: the row streams the arguments its summary hides.
           // When they do not all fit, the right column says how much text the
@@ -596,13 +614,13 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
     );
     for (const item of afterMap.get(id) ?? []) addPreview(item);
   }
-  // Footer collapses the run back to its header. Row-open state is preserved.
-  // The up arrow mirrors the open header's down arrow, so the block has a
-  // visible close control at both ends.
+  // Footer collapses the run back to its header. The collapse resets any
+  // row the user opened (see toggleRunOpen), so reopening restores the
+  // one-line view. The up arrow mirrors the open header's down arrow.
   if (ids.length >= 1) {
-    // The footer mirrors the header's time column, including while a live
-    // run is open (the header it replaced is not on screen then).
-    const footer = new CollapsedLine("Collapse", timeRight(runHasLive(runId) || runThinkingLive(runId)), liveOutputPad(pi), theme, false, "▴");
+    // Same clock as the header; long blocks keep the time visible at the
+    // bottom even when the top header has scrolled out of the viewport.
+    const footer = new CollapsedLine("Collapse", time, liveOutputPad(pi), theme, false, "▴");
     trace.addChild(
       new MouseRegion(footer, (event: any) => {
         if (!event || event.type !== "click") return undefined;

@@ -4,8 +4,9 @@ Compacts Pi's transcript into one-line tool rows and a one-line thinking
 preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 
 At rest a run is one header, live or settled. Click the header to open
-its rows; the header stays at the top (`▾` when settled, the wheel while
-live) and a `▴Collapse` footer closes it again.
+its rows; the header stays at the top (always `▾` once open, with the
+spinner on the rows that are still active) and a `▴Collapse` footer closes
+it again.
 
 ```
 ▸1 read · 1 bash · 1 thinking                       18s
@@ -17,7 +18,7 @@ After the click:
 ▾1 read · 1 bash · 1 thinking                       18s
 ▏read /home/abrai/dev-env/src/app.ts:10-20          5.3k ch
 ▏$ ls some/dist (timeout 25s)                       0.8k ch
-▴Collapse
+▴Collapse                                          18s
 ```
 
 Three levels, one meaning each:
@@ -32,12 +33,14 @@ Three levels, one meaning each:
   flags, numbers, `$VAR` expansions, line ranges, timeouts, output sizes
   (right-aligned), and the summary of any tool without a dedicated renderer.
 
-Live rows swap the rail for a spinning braille wheel
-(⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, Pi Loader's own frames) in column 1: the wheel
-is the only live-vs-settled distinction, and the count column never
-shifts. The wheel runs on the wall clock at Pi's 80ms cadence — same
-glyphs at the same speed, but on its own phase. An 80ms timer pokes live
-rows so the wheel keeps turning even when Pi's own cycle is quiet.
+A resting live run shows a spinning braille wheel
+(⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, Pi Loader's own frames) in column 1; an open
+run keeps the `▾` header and puts the wheel on each row whose tool is being
+written or run, or whose thinking is streaming. The wheel is the
+live-vs-settled distinction, and the count column never shifts. It runs on the wall
+clock at Pi's 80ms cadence — same glyphs at the same speed, but on its own
+phase. An 80ms timer pokes live runs so the wheel keeps turning even when
+Pi's own cycle is quiet, including while one of their rows is open.
 Phase lockstep with Pi's Working spinner was tried across r66-r72
 (turn-anchored epoch, tick-phase tracking loop) and abandoned: Pi's tick
 phase is not observable through the extension API, run-boundary events
@@ -77,9 +80,11 @@ are Pi's `Text`, so the rule replaces that row's pad cell at render time
 (instance-only shadow, current label only, fail-open): same width, label
 still on column 2, and the rule takes the row's own style — Pi styles the
 whole label with `thinkingText`, so the margin stays visually even. Rows
-carrying Pi's OSC 133 marks keep them. With `outputPad = 0` no rule is
-drawn: content already starts on column 1, and a rule would push it out of
-alignment. A row is identified by its label appearing byte-for-byte (the
+carrying Pi's OSC 133 marks keep them. With `outputPad = 0` a data row
+draws no rule: content already starts on column 1, and a rule would push it
+out of alignment. Header and footer controls still draw their marker in
+column 1 at `outputPad = 0`; losing the only visible close/open affordance
+is worse than shifting that control line one cell. A row is identified by its label appearing byte-for-byte (the
 label carries the extension's own italic-off escape), so prose that repeats
 the same visible text is left alone; the line must also end after the label,
 so a wrapped or stale label simply loses the rule for a frame.
@@ -184,14 +189,17 @@ the deferred plan keeps its preview instead of pointing at a run that no
 longer exists.
 
 **Click depth.** Every run rests as one header line, live or settled
-(`▸4 read · 1 thinking`, duration right). The header copy is Pi's grey
-italic, the same voice as a thinking block, so every collapsed block reads
-as one quiet layer; the marker keeps the accent. A live run keeps its
-spinning wheel in column 1 and the elapsed time on the right instead of
-expanding while it streams. Clicking the header opens the
-per-row view: the same header flips to `▾` and stays on top, and a
-`▴Collapse` footer is appended below. Each row still opens its stock cell at
-the depth Pi currently asks for:
+(`▸4 read · 1 thinking`, duration right; a live run shows its wheel in
+column 1 while it streams). The header copy is Pi's grey italic, the same
+voice as a thinking block, so every collapsed block reads as one quiet
+layer; the marker keeps the accent. Clicking the header opens the
+per-row view: the header always flips to `▾` and stays on top, active rows
+spin their own wheels, and a `▴Collapse` footer is appended below. Closing
+the run resets any row or thinking preview the user had opened, so opening
+it again starts from the one-line view. A one-row run is the same block in
+every state: settled or live, tool or thinking, it still has a header and
+the same click depth.
+Each row opens its stock cell at the depth Pi currently asks for:
 
 | Pi (ctrl+o) | At rest | After click |
 | --- | --- | --- |
@@ -284,9 +292,9 @@ still streaming is never removed whole: its prose can arrive after the
 thinking, and removing the row lost that prose (the block then started below
 it, and the header flickered between a label and the collapsed cell). And a
 thinking that precedes its OWN message's prose stays in the row as
-`▸N thinking` — even when the same message carries the tool call — because Pi
-mounts tool components after the whole row, so the block always sits below
-that prose. A thinking that arrives after an earlier block's tools still
+`▸N thinking` (a wheel while it streams) — even when the same message carries
+the tool call — because Pi mounts tool components after the whole row, so the
+block always sits below that prose. A thinking that arrives after an earlier block's tools still
 attaches backward into it.
 
 Parity on a real transcript: `node replay/parity.cjs <session.jsonl>
@@ -298,9 +306,9 @@ transcript order. The whole session can be checked structurally
 (`--turns 200`); order probes are substring matches, so a transcript that
 quotes its own screenshots is only ordered on the newest `--order-turns`
 turns (default 8), where each fragment is unique. A standalone
-`▸N thinking` directly under a run is the intended shape for a thinking
-followed by its own message's prose: the standalone line is that message's
-first line, not a second run block. The same
+`▸N thinking` (wheel while streaming) directly under a run is the intended
+shape for a thinking followed by its own message's prose: the standalone line
+is that message's first line, not a second run block. The same
 invariant lives in the replay suite: the two resume orders keep the same
 spacing (Pi appends on rebuild, so a remounted row could carry two leading
 spacers instead of one).
@@ -332,7 +340,8 @@ with thinking content — prose-only rows are never walked as thinking rows,
 so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
 collapses in place as `▸1 thinking  1m54s` instead of lingering — same
-header shape, frozen at completion. Detach runs on
+header shape, frozen at completion; while it streams the marker is the
+wheel. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
 are never edited, so history, replay, compaction, and reload backfill keep
@@ -431,15 +440,17 @@ any tool that never opted in.
 **Live headers show elapsed time.** A resting header carries the block's
 full duration on the right; a streaming one carries the time so far (ticking
 with the wheel), never arg chars — the right column is always time. The
-span is the whole block, not just its tools: a thinking lead before the
-first call and a thinking tail after the last both count. An open run keeps
-the same inclusive clock in its top header and repeats it in the `Collapse`
-footer, so the elapsed time never vanishes when the rows open. A standalone `▸N thinking` block uses its
-message's own start and `durationMs`, so it always carries a time too
-(including `0s` for a sub-second block) instead of leaving the right column
-empty. **Failures surface at rest:** the header appends a red `N error` when
-any row in the run failed, so a broken tool is visible without opening the
-block.
+span runs from the first visible tool call or thinking block to the end of
+the last tool result or completed thinking. A call being written starts the
+clock before execution does; a thinking lead before the first tool and a
+thinking tail after the last both count. The open header and the `Collapse`
+footer read the same clock once per paint, so they cannot disagree at a
+second boundary. A standalone `▸N thinking` block uses its message's own
+start and `durationMs`, so it always carries a time too (including `0s` for
+a sub-second block) instead of leaving the right column empty; while it
+streams, its marker is the wheel. **Failures surface at rest:** the header
+appends a red `N error` when any row in the run failed, so a broken tool is
+visible without opening the block.
 `/collapse` reports the last detach pass (`walked N (T thinking, M tools);
 attached A; skipped S`) with one counter per outcome, including `streaming`
 and `ownprose`: a `nohome` that never drops to zero means the poll is not

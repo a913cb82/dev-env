@@ -192,13 +192,24 @@ export function setStandaloneThinking(message: unknown, on: boolean): void {
  *  text natively. The duration is the block's total span (message start to
  *  completion, or to now while it streams), so even a sub-second block
  *  shows `0s` rather than disappearing. Pure. */
-export function standaloneThinkingLabel(count: number, durationMs: number | undefined, width: number): string {
-  // A standalone thinking is a block of its own: same `▸` marker as a run
-  // header, so it reads as one more collapsed block rather than a stray row.
-  const left = `▸${count} thinking`;
+export function standaloneThinkingLabel(
+  count: number,
+  durationMs: number | undefined,
+  width: number,
+  live = false,
+): string {
+  // A standalone thinking is a block of its own: same marker grammar as a
+  // run header. While it streams it carries the wheel, exactly like a live
+  // run header; settled it keeps the static `▸`.
+  const marker = live ? WHEEL_FRAMES[wheelFrameAt()]! : "▸";
+  const left = `${marker}${count} thinking`;
   if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return left;
   return padLabel(left, formatRunDuration(durationMs), width);
 }
+
+/** Standalone thinking labels are already blocks: the row-rail pass must not
+ *  add a second wheel/marker in the pad cell. */
+const STANDALONE_THINKING_LABEL = /^\s*(?:▸|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏])\d+ thinking\b/;
 
 export function walkerStatus(): string {
   return walkStatus;
@@ -342,7 +353,7 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
       // A standalone thinking already carries its own `▸` marker in the
       // label; adding a rail would double the marker.
       const rowLabel = String((row as { hiddenThinkingLabel?: unknown })?.hiddenThinkingLabel ?? "");
-      if (/^\s*▸\d+ thinking\b/.test(rowLabel)) continue;
+      if (STANDALONE_THINKING_LABEL.test(rowLabel)) continue;
       const glyph = streaming ? WHEEL_FRAMES[wheelFrameAt()]! : ROW_RAIL;
       const out = lines.slice();
       out[i] =
@@ -389,7 +400,7 @@ function writeStandaloneLabel(row: any, message: unknown, width: number | undefi
     const duration = stated ?? (seen.done !== undefined
       ? Math.max(0, seen.done - seen.first)
       : complete ? undefined : Math.max(0, now - seen.first));
-    const label = standaloneThinkingLabel(Math.max(1, runs), duration, labelBudget(width, pad));
+    const label = standaloneThinkingLabel(Math.max(1, runs), duration, labelBudget(width, pad), !complete);
     if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
   } catch {
     // Cosmetic only.

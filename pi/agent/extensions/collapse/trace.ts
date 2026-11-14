@@ -52,6 +52,11 @@ export interface TraceEntry extends CollapseSlots {
   // and completion renders. Seeds land on first observation, not on expand.
   startedAt?: number;
   endedAt?: number;
+  // Wall-clock first sighting of a live call, for the run header's start.
+  // A call can be written long before execution starts; the header times
+  // from the first visible call, not from the first executed byte. History
+  // entries never use this (a rebuild's wall clock is not their start).
+  firstSeenAt?: number;
   // Provenance ranks later upgrades: pi (exact live stamps) beats history
   // (persisted windows) beats fallback (wall clock at observation). Absent
   // means a renderer stamped it outside traceSync (expand-time ??=).
@@ -219,17 +224,42 @@ export function resetTraceState(): void {
 }
 
 /** Run-level header: every run rests closed (one header line), live or
- *  settled; a click opens the per-row view. The header carries the live
- *  wheel while any entry streams, so progress stays visible collapsed. */
+ *  settled; a click opens the per-row view. The resting header carries the
+ *  live wheel while any tool or thinking is active, so progress stays
+ *  visible collapsed. */
 const runOpen = new Set<number>();
+
+/** Per-line state owned by another module (detach's thinking previews) must
+ *  return to its one-line form when the run closes, exactly like a tool
+ *  row. A small hook keeps trace free of a detach import cycle. */
+type RunCloseHook = (runId: number) => void;
+let runCloseHook: RunCloseHook | undefined;
+export function registerRunClose(hook: RunCloseHook): void {
+  runCloseHook = hook;
+}
 
 export function isRunOpen(runId: number): boolean {
   return runOpen.has(runId);
 }
 
 export function toggleRunOpen(runId: number): void {
-  if (runOpen.has(runId)) runOpen.delete(runId);
-  else runOpen.add(runId);
+  if (runOpen.has(runId)) {
+    runOpen.delete(runId);
+    // Closing the block is an explicit return to the one-line view. Every
+    // line the user had opened inside it must not survive the collapse and
+    // turn the next open into a surprise stock cell or full thinking text.
+    for (const id of traceRuns.get(runId) ?? []) {
+      const entry = traceEntries.get(id);
+      if (entry) entry.rowOpen = false;
+    }
+    try {
+      runCloseHook?.(runId);
+    } catch {
+      // Cosmetic only: a missed reset leaves the old per-line depth.
+    }
+  } else {
+    runOpen.add(runId);
+  }
 }
 
 export function runToolNames(runId: number): string[] {
@@ -241,10 +271,19 @@ export function runToolNames(runId: number): string[] {
   return out;
 }
 
+/** A tool call is live while Pi streams it, executes it, or streams its
+ *  partial result. `isPartial` is the normal signal; the second arm covers
+ *  a call being written before Pi flips that flag. History rows never count:
+ *  their missing result is not live progress.
+ */
+export function entryIsLive(entry: TraceEntry | undefined): boolean {
+  if (!entry || entry.isError) return false;
+  return entry.isPartial || (!entry.history && !entry.argsComplete && !entry.hasResult);
+}
+
 export function runHasLive(runId: number): boolean {
   for (const id of traceRuns.get(runId) ?? []) {
-    const entry = traceEntries.get(id);
-    if (entry && entry.isPartial && !entry.isError) return true;
+    if (entryIsLive(traceEntries.get(id))) return true;
   }
   return false;
 }
@@ -435,6 +474,9 @@ export function traceUpsert(toolName: string, toolCallId: unknown, original: any
       toolName,
       original,
       args: undefined,
+      // History's first sighting is the rebuild, not the call. Live runs
+      // time from the first visible call, including argument streaming.
+      firstSeenAt: traceHistoryPhase || plannedRunById.has(toolCallId) ? undefined : Date.now(),
       rowOpen: false,
       expanded: false,
       isError: false,

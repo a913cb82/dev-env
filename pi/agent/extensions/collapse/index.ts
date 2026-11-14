@@ -112,6 +112,7 @@ import {
   armHistoryPhase,
   boundaryReasons,
   endHistoryPhase,
+  entryIsLive,
   noteHistoryTimings,
   pruneTrace,
   traceBoundary,
@@ -133,7 +134,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 91;
+const COLLAPSE_REVISION = 92;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -153,10 +154,11 @@ let breatheLastError = "";
 function liveRunIds(): number[] {
   const runs = new Set<number>();
   for (const entry of traceEntries.values()) {
-    if (entry.rowOpen || entry.isError) continue;
-    // isPartial stays true through streaming partials (which already carry
-    // output sizes), so count/hasResult must NOT gate liveness.
-    if (!entry.isPartial) continue;
+    // An open row still belongs to a live run: its header wheel and elapsed
+    // clock remain on screen, so excluding it here freezes the header during
+    // quiet periods. The signature gate in the trace view keeps the poke
+    // from repainting an unchanged open cell.
+    if (!entryIsLive(entry)) continue;
     runs.add(entry.runId);
   }
   // A streaming thinking keeps its run active even when every tool settled:

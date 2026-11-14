@@ -3309,13 +3309,13 @@ function clickFirstRow(comp) {
     openRun(bash.renderCall(ctx.args, theme, ctx));
     const during = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("partial output shows a count", /120 ch/.test(during), during);
-    const spinning = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80).join("");
-    check("live row spins the wheel in column 1", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(spinning), spinning.slice(0, 120));
+    const spinning = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80);
+    check("live row spins the wheel in column 1", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(spinning[1]), spinning[1].slice(0, 120));
     partial(2500, true);
     const grown = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("count grows while output streams", /2\.5k ch/.test(grown), grown);
-    const liveRow = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80).join("");
-    check("streaming row stays live (wheel in column 1, dim count)", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(liveRow) && /<dim>2\.5k ch<\/>/.test(liveRow), liveRow.slice(0, 160));
+    const liveRow = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80);
+    check("streaming row stays live (wheel in column 1, dim count)", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(liveRow[1]) && /<dim>2\.5k ch<\/>/.test(liveRow[1]), liveRow[1].slice(0, 160));
     partial(4200, false);
     const settled = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
     check("final count lands", /4\.2k ch/.test(settled), settled);
@@ -5034,6 +5034,239 @@ function clickFirstRow(comp) {
     check("resize keeps the standalone label", /^▸1 thinking\b/.test(row.hiddenThinkingLabel), JSON.stringify(row.hiddenThinkingLabel));
     if (before === undefined) delete process.stdout.columns;
     else Object.defineProperty(process.stdout, "columns", { value: before, configurable: true, writable: true });
+  }
+
+  // 100. Live marker/time grammar. A run is one block in every state:
+  // a call being written spins the resting header; an open run always
+  // shows the down arrow and spins the active rows; the header time spans
+  // the first call write through the last result; a singleton is not a
+  // special case; the footer reuses the header's exact clock.
+  {
+    const mod = await reuseIndex();
+    const piX = createMockPi();
+    (mod.default ?? mod)(piX);
+    const bash = piX.tools.get("bash");
+    const realNow = Date.now;
+    let now = 1700000000000;
+    Date.now = () => now;
+    try {
+      let invalidated = 0;
+      const ctx = {
+        args: { command: "echo live" }, toolCallId: "grammar1",
+        invalidate: () => { invalidated++; }, lastComponent: undefined,
+        state: {}, cwd: "/repo", executionStarted: false,
+        // Pi can still be writing the arguments before its partial flag
+        // flips; the header must already be live.
+        argsComplete: false, isPartial: false, expanded: false,
+        showImages: true, isError: false,
+      };
+      const doneCtx = { ...ctx, executionStarted: true, argsComplete: true, isPartial: false };
+      const comp = (c = ctx) => bash.renderCall(c.args, theme, c);
+      const closed = comp().render(100).map(plainText);
+      check("call being written rests as one spinning header",
+        closed.length === 1 && /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(closed[0]) && closed[0].includes("1 bash"),
+        JSON.stringify(closed));
+      now += 3000;
+      const elapsed = comp().render(100).map(plainText);
+      check("collapsed header times from the call write start",
+        elapsed[0].includes("3s"), JSON.stringify(elapsed));
+      openRun(comp());
+      const open = comp().render(100).map(plainText);
+      check("open live header keeps the down arrow",
+        open[0].startsWith("▾") && open[0].includes("1 bash"), JSON.stringify(open));
+      check("open live row spins",
+        /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(open[1]), JSON.stringify(open));
+      const lastToken = (line) => line.trimEnd().split(/\s+/).pop();
+      check("footer reuses the header clock",
+        lastToken(open[0]) === lastToken(open[2]) && /\d/.test(lastToken(open[0]) ?? ""),
+        `${lastToken(open[0])} vs ${lastToken(open[2])}`);
+      now += 2000;
+      bash.renderResult(textResult(120), { expanded: false, isPartial: false }, theme, doneCtx);
+      const doneOpen = comp(doneCtx).render(100).map(plainText);
+      check("open completed run still shows the down arrow",
+        doneOpen[0].startsWith("▾"), JSON.stringify(doneOpen));
+      check("header spans call write through the final result",
+        doneOpen[0].includes("5s"), JSON.stringify(doneOpen[0]));
+      comp(doneCtx).children[comp(doneCtx).children.length - 1]
+        .onMouse({ type: "click", button: "left" });
+      const doneClosed = comp(doneCtx).render(100).map(plainText);
+      check("singleton completed tool rests as one header",
+        doneClosed.length === 1 && doneClosed[0].startsWith("▸") && doneClosed[0].includes("5s"),
+        JSON.stringify(doneClosed));
+      check("completed header drops the spinner",
+        !/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(doneClosed[0]), JSON.stringify(doneClosed));
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  // 101. An explicit run collapse resets row depth. Reopening shows the
+  // run's one-line rows again, not the stock cell the user had opened.
+  {
+    const mod = await reuseIndex();
+    const piX = createMockPi();
+    (mod.default ?? mod)(piX);
+    const bash = piX.tools.get("bash");
+    const ctx = {
+      args: { command: "echo reset" }, toolCallId: "reset1",
+      invalidate: () => {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true,
+      argsComplete: true, isPartial: false, expanded: false,
+      showImages: true, isError: false,
+    };
+    const comp = () => bash.renderCall(ctx.args, theme, ctx);
+    bash.renderCall(ctx.args, theme, ctx);
+    bash.renderResult(textResult(40), { expanded: false, isPartial: false }, theme, ctx);
+    openRun(comp());
+    clickFirstRow(comp());
+    const opened = comp().render(100);
+    check("row opens to its stock cell", opened.length > 3, `${opened.length}`);
+    comp().children[comp().children.length - 1].onMouse({ type: "click", button: "left" });
+    // Commit the close before the helper decides whether to click again.
+    comp().render(100);
+    openRun(comp());
+    const reopened = comp().render(100).map(plainText);
+    check("reopening restores one-line rows",
+      reopened.length === 3 && reopened[1].startsWith("▏") && reopened[1].includes("echo reset"),
+      JSON.stringify(reopened));
+  }
+
+  // 102. outputPad 0 still shows the header/footer arrows; only data rows
+  // keep starting on column 1.
+  {
+    const mod = await reuseIndex();
+    const piX = createMockPi();
+    piX._pad = 0;
+    (mod.default ?? mod)(piX);
+    const bash = piX.tools.get("bash");
+    const ctx = {
+      args: { command: "echo pad0" }, toolCallId: "pad0",
+      invalidate: () => {}, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true,
+      argsComplete: true, isPartial: false, expanded: false,
+      showImages: true, isError: false,
+    };
+    const comp = () => bash.renderCall(ctx.args, theme, ctx);
+    openRun(comp());
+    const lines = comp().render(100).map(plainText);
+    check("pad 0 header keeps the arrow", lines[0].startsWith("▾"), JSON.stringify(lines[0]));
+    check("pad 0 data row starts on column 1", lines[1].startsWith("$"), JSON.stringify(lines[1]));
+    check("pad 0 footer keeps the arrow", lines[2].startsWith("▴") && lines[2].includes("Collapse"), JSON.stringify(lines[2]));
+  }
+
+  // 103. A live row opened into its stock cell must not stop the header
+  // clock/wheel: the breathe tick still pokes the run.
+  {
+    const mod = await reuseIndex();
+    const piX = createMockPi();
+    (mod.default ?? mod)(piX);
+    const bash = piX.tools.get("bash");
+    let invalidated = 0;
+    const ctx = {
+      args: { command: "sleep 1" }, toolCallId: "breathe-open",
+      invalidate: () => { invalidated++; }, lastComponent: undefined,
+      state: {}, cwd: "/repo", executionStarted: true,
+      argsComplete: true, isPartial: true, expanded: false,
+      showImages: true, isError: false,
+    };
+    const comp = () => bash.renderCall(ctx.args, theme, ctx);
+    openRun(comp());
+    clickFirstRow(comp());
+    const before = invalidated;
+    mod.breatheTick(piX);
+    check("breathe pokes a live run with an open row", invalidated > before, `${before} -> ${invalidated}`);
+  }
+
+  // 104. A streaming thinking row is live in the run, so a collapsed header
+  // spins and an open run spins the thinking line while the header keeps
+  // its arrow.
+  {
+    const mod = await reuseIndex();
+    const piX = createMockPi();
+    (mod.default ?? mod)(piX);
+    const bash = piX.tools.get("bash");
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    try {
+      const ctx = {
+        args: { command: "echo think" }, toolCallId: "think-live",
+        invalidate: () => {}, lastComponent: undefined,
+        state: {}, cwd: "/repo", executionStarted: true,
+        argsComplete: true, isPartial: false, expanded: false,
+        showImages: true, isError: false,
+      };
+      const comp = () => bash.renderCall(ctx.args, theme, ctx);
+      comp();
+      const msg = {
+        role: "assistant", timestamp: now - 2000, stopReason: "pending",
+        content: [
+          { type: "thinking", thinking: "live thought" },
+          { type: "toolCall", id: "think-live", name: "bash", arguments: {} },
+        ],
+      };
+      const row = {
+        lastMessage: msg, hiddenThinkingLabel: "Thinking...", isStreaming: true,
+        updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; },
+      };
+      const chat = {
+        children: [row],
+        removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); },
+      };
+      mod.captureWalkerTui({ children: [chat] });
+      mod.detachPass(piX);
+      const closed = comp().render(100).map(plainText);
+      check("collapsed thinking-only activity spins the header",
+        closed.length === 1 && /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(closed[0]) && closed[0].includes("1 thinking"),
+        JSON.stringify(closed));
+      check("collapsed thinking header times the thinking start",
+        closed[0].includes("2s"), JSON.stringify(closed[0]));
+      openRun(comp());
+      const open = comp().render(100).map(plainText);
+      check("open thinking run keeps the down arrow", open[0].startsWith("▾"), JSON.stringify(open));
+      check("streaming thinking row spins",
+        /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(open[1]), JSON.stringify(open));
+      // Opening the thinking preview and then closing the run resets the
+      // per-line depth just like a tool row: reopening starts one-line.
+      comp().children[1].onMouse({ type: "click", button: "left" });
+      comp().render(100);
+      comp().children[0].onMouse({ type: "click", button: "left" });
+      comp().render(100);
+      openRun(comp());
+      const reopened = comp().render(100).map(plainText);
+      check("closing the run resets an open thinking preview",
+        /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(reopened[1]), JSON.stringify(reopened));
+      // Completing the thinking extends the block through its own end: the
+      // tool sits at now, the thinking started 2s earlier and ran 6s.
+      msg.stopReason = "stop";
+      msg.durationMs = 6000;
+      row.isStreaming = false;
+      mod.detachPass(piX);
+      const finished = comp().render(100).map(plainText);
+      check("thinking tail extends the header span",
+        finished[0].startsWith("▾") && finished[0].includes("6s"),
+        JSON.stringify(finished));
+      comp().children[0].onMouse({ type: "click", button: "left" });
+      const finishedClosed = comp().render(100).map(plainText);
+      check("finished thinking block closes with the final span",
+        finishedClosed.length === 1 && finishedClosed[0].startsWith("▸") && finishedClosed[0].includes("6s"),
+        JSON.stringify(finishedClosed));
+    } finally {
+      Date.now = realNow;
+      mod.resetDetachState?.();
+    }
+  }
+
+  // 105. Standalone thinking labels are collapsed blocks too: a streaming
+  // one spins, a finished one keeps the static marker and final time.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const live = labelsLib.standaloneThinkingLabel(1, 2000, 100, true);
+    check("standalone streaming thinking spins",
+      /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]1 thinking\b/.test(live) && live.includes("2s"), JSON.stringify(live));
+    const done = labelsLib.standaloneThinkingLabel(1, 2000, 100, false);
+    check("standalone finished thinking keeps the marker",
+      done.startsWith("▸1 thinking") && done.includes("2s"), JSON.stringify(done));
   }
 
   if (failures > 0) {

@@ -370,7 +370,7 @@ const loadFixture = (name) =>
       { op: "thinking", id: "b", text: "LIVEBETA" },
     ]);
     const shot = driver.dump(world);
-    const header = shot.lines.findIndex((l) => l.trim().startsWith("▸"));
+    const header = shot.lines.findIndex((l) => /^[▸⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(l.trim()));
     check("streaming thinking joins the block count",
       header >= 0 && shot.lines[header].includes("1 bash") && shot.lines[header].includes("1 thinking"),
       shot.lines.join("\n"));
