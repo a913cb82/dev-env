@@ -382,10 +382,13 @@ async function main() {
     await driver.restore(world, worlds.live.entries);
     worlds.resume = world;
   }
-  // /reload on an existing session (mount, then start)
+  // /reload on an existing session: shutdown the old runner, load a fresh
+  // extension module, mount the rebuilt chat, then session_start(reason
+  // reload). A reused module would hide fresh-instance state bugs.
   {
     const world = driver.createWorld(PI, { width });
-    await driver.restoreLate(world, worlds.live.entries);
+    await driver.restore(world, worlds.live.entries);
+    await driver.reload(world);
     worlds.reload = world;
   }
 
