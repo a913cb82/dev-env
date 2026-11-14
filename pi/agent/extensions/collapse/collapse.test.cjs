@@ -1830,7 +1830,7 @@ function clickFirstRow(comp) {
     const prevLine = bash.renderCall({ command: "echo w" }, theme, mk("w1", { command: "echo w" }))
       .render(100).map(plainText).find((l) => l.includes("word")) ?? "";
     check("preview fills the row width", (prevLine.match(/word/g) ?? []).length > 13, JSON.stringify(prevLine.slice(0, 80)));
-    check("preview ends with its count", prevLine.trimEnd().endsWith("300 ch"), JSON.stringify(prevLine.slice(-24)));
+    check("preview ends with its count", prevLine.trimEnd().endsWith("0.3k ch"), JSON.stringify(prevLine.slice(-24)));
     detach.resetDetachState?.();
   }
 
@@ -2462,7 +2462,7 @@ function clickFirstRow(comp) {
     const lines2 = out2comp().render(100);
     check("preview appears after confirmed detach", lines2.some((l) => l.includes("plan for one")), lines2.join("|").slice(0, 160));
     const prevLine2 = lines2.map(plainText).find((l) => l.includes("plan for one")) ?? "";
-    check("preview row carries its count", /12 ch\s*$/.test(prevLine2.trimEnd()), JSON.stringify(prevLine2));
+    check("preview row carries its count", /0\.0k ch\s*$/.test(prevLine2.trimEnd()), JSON.stringify(prevLine2));
     delete process.env.COLLAPSE_HIDE_THINKING;
     detach.resetDetachState?.();
   }
@@ -3319,7 +3319,7 @@ function clickFirstRow(comp) {
     partial(120, true);
     openRun(bash.renderCall(ctx.args, theme, ctx));
     const during = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
-    check("partial output shows a count", /120 ch/.test(during), during);
+    check("partial output shows a count", /0\.1k ch/.test(during), during);
     const spinning = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80);
     check("live row spins the wheel in column 1", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(spinning[1]), spinning[1].slice(0, 120));
     partial(2500, true);
@@ -3374,6 +3374,8 @@ function clickFirstRow(comp) {
     check("read range dim", row("read", { path: "/a/b.txt", offset: 5, limit: 6 }).includes("<dim>:5-10</>"), row("read", { path: "/a/b.txt", offset: 5, limit: 6 }));
     check("bash timeout dim", row("bash", { command: "ls", timeout: 25 }).includes("<dim> (timeout 25s)</>"), row("bash", { command: "ls", timeout: 25 }));
     check("size dim", row("bash", { command: "ls" }, { count: 1200 }).includes("<dim>1.2k ch</>"), row("bash", { command: "ls" }, { count: 1200 }));
+    check("short size uses k units", row("bash", { command: "ls" }, { count: 500 }).includes("<dim>0.5k ch</>"), row("bash", { command: "ls" }, { count: 500 }));
+    check("tiny size uses k units", row("bash", { command: "ls" }, { count: 42 }).includes("<dim>0.0k ch</>"), row("bash", { command: "ls" }, { count: 42 }));
     const custom = globalThis.__collapseWrapTool;
     const wrapped = custom({ name: "mcp_thing", parameters: {}, async execute() {} });
     const { ctx: cctx } = callContext({ args: { query: "find the thing" }, toolCallId: "fmt-custom" });

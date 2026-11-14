@@ -63,9 +63,10 @@ it never promotes the following word to a command. Styling stops at 192
 tokens / 2048 characters (the row can never show more), so a pathological
 command cannot slow a repaint.
 
-Long rows cut in the middle, so the head and the count survive. Counts
-below 1000 read as exact characters (`42 ch`); the k-form starts where it
-carries information (`1.2k ch`).
+Long rows cut in the middle, so the head and the count survive. Every count
+uses k units with one decimal, including short rows (`500 ch` reads
+`0.5k ch`, `42 ch` reads `0.0k ch`); the column therefore has one grammar
+and a stable width.
 
 Every row's first glyph lands on column 2 — the same column as Pi's prose
 (`outputPad`), hidden-thinking rows (`Text` pad) and stock tool cells

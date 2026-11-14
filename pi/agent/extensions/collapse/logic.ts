@@ -129,10 +129,8 @@ export function sessionContextEntries(source: unknown): any[] {
 
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
-  // Below 1000 the k-form rounds every small result to "0.0k ch"/"0.1k ch",
-  // which reads as noise. Exact characters are more useful there; the k-form
-  // starts where it actually carries information.
-  if (n < 1000) return `${n} ch`;
+  // Always k units: one grammar for short and long rows, and a stable width
+  // for the right-aligned column. One decimal rounds 999 up to 1.0k.
   return `${(n / 1000).toFixed(1)}k ch`;
 }
 
