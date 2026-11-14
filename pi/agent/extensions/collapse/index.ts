@@ -57,6 +57,7 @@ import {
   detachPass,
   hiddenRunCount,
   isMessageHidden,
+  liveThinkingRunIds,
   noteSessionManager,
   reconcileLiveThinking,
   resetDetachState,
@@ -130,7 +131,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 90;
+const COLLAPSE_REVISION = 91;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -156,6 +157,9 @@ function liveRunIds(): number[] {
     if (!entry.isPartial) continue;
     runs.add(entry.runId);
   }
+  // A streaming thinking keeps its run active even when every tool settled:
+  // the header's all-inclusive clock must keep ticking.
+  for (const runId of liveThinkingRunIds()) runs.add(runId);
   return [...runs];
 }
 function breatheTick(pi: ExtensionAPI): void {

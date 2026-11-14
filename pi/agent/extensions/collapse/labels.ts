@@ -189,13 +189,14 @@ export function setStandaloneThinking(message: unknown, on: boolean): void {
 /** Collapsed form for homeless thinking: `>N thinking  DURATION`, sized
  *  to the label width. The `>` marker makes it read as one more collapsed
  *  block (a run header) rather than a stray row; Pi still toggles its full
- *  text natively. The duration shows once a full second elapsed; younger
- *  or untimed messages render the bare `>N thinking`. Pure. */
+ *  text natively. The duration is the block's total span (message start to
+ *  completion, or to now while it streams), so even a sub-second block
+ *  shows `0s` rather than disappearing. Pure. */
 export function standaloneThinkingLabel(count: number, durationMs: number | undefined, width: number): string {
   // A standalone thinking is a block of its own: same `>` marker as a run
   // header, so it reads as one more collapsed block rather than a stray row.
   const left = `>${count} thinking`;
-  if (durationMs === undefined || !(durationMs >= 1000)) return left;
+  if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return left;
   return padLabel(left, formatRunDuration(durationMs), width);
 }
 
@@ -366,7 +367,7 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
  *  Never cached: the duration ticks until it freezes at completion. */
 function writeStandaloneLabel(row: any, message: unknown, width: number | undefined, pad: number): void {
   try {
-    const msg = message as { content?: unknown; stopReason?: unknown };
+    const msg = message as { content?: unknown; stopReason?: unknown; timestamp?: unknown; durationMs?: unknown };
     let runs = 0;
     if (Array.isArray(msg?.content)) {
       for (const block of msg.content as Array<{ type?: unknown; thinking?: unknown }>) {
@@ -374,13 +375,23 @@ function writeStandaloneLabel(row: any, message: unknown, width: number | undefi
       }
     }
     const now = Date.now();
+    const start = typeof msg?.timestamp === "number" && Number.isFinite(msg.timestamp)
+      ? msg.timestamp
+      : undefined;
     let seen = standaloneSeen.get(message as object);
     if (!seen) {
-      seen = { first: now };
+      seen = { first: start ?? now };
       standaloneSeen.set(message as object, seen);
     }
-    if (msg?.stopReason != null && seen.done === undefined) seen.done = now;
-    const duration = seen.done === undefined ? undefined : Math.max(0, seen.done - seen.first);
+    if (start !== undefined) seen.first = start;
+    const complete = msg?.stopReason != null && msg.stopReason !== "pending";
+    if (complete && seen.done === undefined) seen.done = now;
+    const stated = typeof msg?.durationMs === "number" && Number.isFinite(msg.durationMs)
+      ? Math.max(0, msg.durationMs)
+      : undefined;
+    const duration = stated ?? (seen.done !== undefined
+      ? Math.max(0, seen.done - seen.first)
+      : complete ? undefined : Math.max(0, now - seen.first));
     const label = standaloneThinkingLabel(Math.max(1, runs), duration, labelBudget(width, pad));
     if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
   } catch {
@@ -670,6 +681,12 @@ export function reconcileStreamingLabel(
       installRowRail(row, pi);
       const own = row.lastMessage as { role?: unknown; content?: unknown };
       if (own?.role !== "assistant") continue;
+      // Standalone thinking blocks carry their own total time; never let the
+      // generic streaming preview replace that label with a bare preview.
+      if (standaloneMessages.has(own)) {
+        writeStandaloneLabel(row, own, width, pad);
+        continue;
+      }
       const live =
         (row as { isStreaming?: unknown }).isStreaming === true ||
         (message !== undefined && own === message);

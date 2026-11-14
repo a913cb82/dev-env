@@ -173,8 +173,10 @@ the deferred plan keeps its preview instead of pointing at a run that no
 longer exists.
 
 **Click depth.** Every run rests as one header line, live or settled
-(`>4 read · 1 thinking`, duration right). A live run keeps its spinning
-wheel in column 1 and the argument text written so far on the right
+(`>4 read · 1 thinking`, duration right). The header copy is Pi's grey
+italic, the same voice as a thinking block, so every collapsed block reads
+as one quiet layer; the marker keeps the accent. A live run keeps its
+spinning wheel in column 1 and the argument text written so far on the right
 instead of expanding while it streams. Clicking the header opens the
 per-row view plus a `▏Collapse` footer; each row still opens its stock
 cell at the depth Pi currently asks for:
@@ -247,7 +249,7 @@ gains prose, loses its turn, or completes; the completed detach then
 replaces the provisional item, so live, resume, and restore agree and no
 thinking is counted twice. Any failure restores the stock row (fail-open).
 The count updates while streaming; a closed header repaints only when the
-count changes, an open one on every delta.
+count or its all-inclusive clock changes, an open one on every delta.
 
 Every mounted member of a run gets a self-healing view: it resolves its
 run and owner on each render and repaints when they move, so a history
@@ -414,13 +416,18 @@ the row, so a collapsed row is never emptier than stock. Definitions with
 their own renderers keep them, wrapped in the shared chrome. `/collapse` lists
 any tool that never opted in.
 
-**Live headers show elapsed time.** A resting header carries the final
-duration on the right; a streaming one carries the time so far (ticking
-with the wheel), never arg chars — the right column is always time. An open
-run shows the same clock in its `Collapse` footer, so the elapsed time never
-vanishes when the header does. **Failures surface at rest:** the header
-appends a red `N error` when any row in the run failed, so a broken tool is
-visible without opening the block.
+**Live headers show elapsed time.** A resting header carries the block's
+full duration on the right; a streaming one carries the time so far (ticking
+with the wheel), never arg chars — the right column is always time. The
+span is the whole block, not just its tools: a thinking lead before the
+first call and a thinking tail after the last both count. An open run shows
+the same inclusive clock in its `Collapse` footer, so the elapsed time never
+vanishes when the header does. A standalone `>N thinking` block uses its
+message's own start and `durationMs`, so it always carries a time too
+(including `0s` for a sub-second block) instead of leaving the right column
+empty. **Failures surface at rest:** the header appends a red `N error` when
+any row in the run failed, so a broken tool is visible without opening the
+block.
 `/collapse` reports the last detach pass (`walked N (T thinking, M tools);
 attached A; skipped S`) with one counter per outcome, including `streaming`
 and `ownprose`: a `nohome` that never drops to zero means the poll is not

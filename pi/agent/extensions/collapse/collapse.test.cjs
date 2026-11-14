@@ -587,6 +587,8 @@ function openRun(comp) {
       const hdrComp = () => read.renderCall({ path: "/ha" }, theme, mkHdr("t-hdr1", { path: "/ha" }));
       const header = hdrComp().render(90);
       check("run rests as header", header.length === 1 && header[0].includes(">") && header[0].includes("1 read"), JSON.stringify(header));
+      check("collapsed header uses thinking text style",
+        header[0].includes("<i>") && header[0].includes("thinkingText"), JSON.stringify(header[0]));
       openRun(hdrComp());
       const openedHdr = hdrComp().render(90);
       check("header click opens rows+footer", openedHdr.length === 3 && openedHdr[2].includes("Collapse"), JSON.stringify(openedHdr));
@@ -1954,6 +1956,59 @@ function openRun(comp) {
     detach.resetDetachState?.();
   }
 
+  // 86g. A run header times the whole block, not just its tools: a thinking
+  // lead counts, and the block copy is grey italic like every collapsed block.
+  {
+    const mod = await reuseIndex();
+    resetTrace = mod.resetTraceState ?? resetTrace;
+    mod.resetTraceState?.();
+    const tools = new Map(), handlers = new Map();
+    const piT = {
+      registerTool: (t) => tools.set(t.name, t),
+      registerCommand: () => {},
+      on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h); },
+      getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }),
+    };
+    (mod.default ?? mod)(piT);
+    const detach = mod;
+    detach.resetDetachState?.();
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    try {
+      const widgets = [];
+      const ui = { setWidget: (_k, f) => widgets.push(f), setHiddenThinkingLabel: () => {} };
+      await handlers.get("session_start")[0]({}, { hasUI: true, ui, sessionManager: { getEntries: () => [] } });
+      const bash = tools.get("bash");
+      const mk = (id) => ({ args: { command: "echo inc" }, toolCallId: id, invalidate() {}, lastComponent: undefined,
+        state: {}, cwd: "/repo", executionStarted: true, argsComplete: true, isPartial: false,
+        expanded: false, showImages: true, isError: false });
+      const comp = () => bash.renderCall({ command: "echo inc" }, theme, mk("inc1"));
+      comp();
+      // Tool ran for 2s after a 10s thinking lead: the block is 12s.
+      const entry = detach.traceEntries.get("inc1");
+      entry.startedAt = now;
+      entry.endedAt = now + 2000;
+      const msg = { role: "assistant", timestamp: now - 10000, durationMs: 10000,
+        stopReason: "toolUse", content: [
+          { type: "thinking", thinking: "inclusive lead" },
+          { type: "toolCall", id: "inc1", name: "bash", arguments: {} },
+        ] };
+      const row = { lastMessage: msg, hiddenThinkingLabel: "Thinking...",
+        updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
+      const chat = { children: [row],
+        removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
+      mod.captureWalkerTui({ children: [chat] });
+      detach.detachPass(piT);
+      const header = comp().render(100).join("");
+      check("header time includes the thinking lead", header.includes("12s"), JSON.stringify(header));
+      check("header copy is grey italic", header.includes("<i>") && header.includes("thinkingText"), JSON.stringify(header));
+    } finally {
+      Date.now = realNow;
+      detach.resetDetachState?.();
+    }
+  }
+
   // 86d. a live header shows elapsed time on the right, never arg chars.
   {
     const mod = await reuseIndex();
@@ -1989,15 +2044,61 @@ function openRun(comp) {
     detach.resetDetachState?.();
   }
 
-  // 86e. standalone header format: bare below one second, padded with
-  // duration after (the user's `1 thinking  1m54s` case).
+  // 86e. standalone header format: the total block time always rides on
+  // the right (including a sub-second `0s`); it is the block's own span,
+  // not the time since the label first appeared.
   {
     const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
-    check("standalone bare below one second", labelsLib.standaloneThinkingLabel(1, 500, 100) === ">1 thinking",
-      labelsLib.standaloneThinkingLabel(1, 500, 100));
+    const short = labelsLib.standaloneThinkingLabel(1, 500, 100);
+    check("standalone shows sub-second time", short.startsWith(">1 thinking") && short.endsWith("0s") && short.length === 100,
+      short);
     const long = labelsLib.standaloneThinkingLabel(1, 114000, 100);
     check("standalone shows 1m54s", long.startsWith(">1 thinking") && long.includes("1m54s"), long);
     check("standalone fits its width", long.length === 100, `${long.length}`);
+  }
+
+  // 86f. standalone duration comes from the message: durationMs when it is
+  // complete, wall-clock since the message timestamp while it streams.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const realNow = Date.now;
+    let mockNow = 1700000000000;
+    Date.now = () => mockNow;
+    try {
+      const doneMsg = {
+        role: "assistant",
+        stopReason: "stop",
+        timestamp: mockNow - 12000,
+        durationMs: 12000,
+        content: [{ type: "thinking", thinking: "done thinking" }],
+      };
+      const doneRow = {
+        lastMessage: doneMsg, hiddenThinkingLabel: "Thinking...", isStreaming: false,
+        setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; }, updateContent() {},
+      };
+      labelsLib.captureWalkerTui({ children: [doneRow] });
+      labelsLib.setStandaloneThinking(doneMsg, true);
+      labelsLib.reconcileThinkingLabels(piS);
+      check("standalone uses the message duration", /12s\s*$/.test(doneRow.hiddenThinkingLabel), doneRow.hiddenThinkingLabel);
+
+      const liveMsg = {
+        role: "assistant",
+        timestamp: mockNow - 2500,
+        durationMs: null,
+        content: [{ type: "thinking", thinking: "live thinking" }],
+      };
+      const liveRow = {
+        lastMessage: liveMsg, hiddenThinkingLabel: "Thinking...", isStreaming: true,
+        setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; }, updateContent() {},
+      };
+      labelsLib.captureWalkerTui({ children: [liveRow] });
+      labelsLib.setStandaloneThinking(liveMsg, true);
+      labelsLib.reconcileThinkingLabels(piS);
+      check("standalone counts live time from message start", /2s\s*$/.test(liveRow.hiddenThinkingLabel), liveRow.hiddenThinkingLabel);
+    } finally {
+      Date.now = realNow;
+    }
   }
 
   // 29f. partial detach: a MIXED message (prose + thinking + tools) keeps

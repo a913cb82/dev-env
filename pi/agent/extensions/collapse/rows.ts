@@ -12,12 +12,13 @@ import {
   liveThinkingRevision,
   runThinkingCount,
   runThinkingItems,
+  runThinkingLive,
+  runThinkingSpan,
   thinkingRowPreview,
   type ThinkingItem,
 } from "./detach.js";
 import {
   isRunOpen,
-  runDuration,
   runErrorCount,
   runHasLive,
   runToolNames,
@@ -416,9 +417,39 @@ export function liveCountSuffix(theme: Theme, chars: number): string {
   return chars > 0 ? theme.fg("dim", formatCharCount(chars)) : "";
 }
 
+/** Whole-block span: the tools' execution windows plus every hosted
+ *  thinking's own message span. A run with a thinking lead or tail is timed
+ *  from the first item, not from the first tool. */
+function runSpan(runId: number): { startedAt?: number; endedAt?: number } {
+  let startedAt: number | undefined;
+  let endedAt: number | undefined;
+  for (const id of traceRuns.get(runId) ?? []) {
+    const entry = traceEntries.get(id);
+    if (!entry) continue;
+    if (typeof entry.startedAt === "number") {
+      startedAt = startedAt === undefined ? entry.startedAt : Math.min(startedAt, entry.startedAt);
+    }
+    if (typeof entry.endedAt === "number") {
+      endedAt = endedAt === undefined ? entry.endedAt : Math.max(endedAt, entry.endedAt);
+    }
+  }
+  const thinking = runThinkingSpan(runId);
+  if (thinking.startedAt !== undefined) {
+    startedAt = startedAt === undefined ? thinking.startedAt : Math.min(startedAt, thinking.startedAt);
+  }
+  if (thinking.endedAt !== undefined) {
+    endedAt = endedAt === undefined ? thinking.endedAt : Math.max(endedAt, thinking.endedAt);
+  }
+  return { startedAt, endedAt };
+}
+
 /** Paint one run into `trace`: header or rows + footer. Re-runs whenever
  *  the owner or the run changes (see buildTrace). */
 function paintTrace(trace: Container, runId: number, toolCallId: string, theme: Theme, ownerCtx: any, pi: ExtensionAPI): void {
+  const italic = (text: string): string =>
+    typeof (theme as { italic?: unknown }).italic === "function"
+      ? (theme as { italic: (text: string) => string }).italic(text)
+      : text;
   // A click must act on the run the registry currently assigns: a re-plan
   // can move this tool between paints, and the header closure would then
   // open the old id while the next sync paints the new run closed.
@@ -431,33 +462,37 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   // so the detach walk (neighbors, anchors, segment gate) sees the tools.
   (trace as { traceToolIds?: string[] }).traceToolIds = [...ids];
   // Time column: elapsed while live, frozen duration once settled. Never arg
-  // chars — the right column is always time.
+  // chars — the right column is always time. The span is the whole block:
+  // thinking before/between/after tools counts, not just the tool rows.
   const timeRight = (live: boolean): string => {
+    const span = runSpan(runId);
     if (!live) {
-      const duration = formatRunDuration(runDuration(runId));
-      return duration ? theme.fg("dim", duration) : "";
+      const duration = span.startedAt !== undefined && span.endedAt !== undefined && span.endedAt >= span.startedAt
+        ? span.endedAt - span.startedAt
+        : undefined;
+      const text = duration === undefined ? "" : formatRunDuration(duration);
+      return text ? theme.fg("dim", text) : "";
     }
-    let start: number | undefined;
-    for (const id of ids) {
-      const s = traceEntries.get(id)?.startedAt;
-      if (typeof s === "number") start = start === undefined ? s : Math.min(start, s);
-    }
-    const elapsed = start === undefined ? undefined : Date.now() - start;
+    const elapsed = span.startedAt === undefined ? undefined : Date.now() - span.startedAt;
     return elapsed !== undefined && elapsed >= 0 ? theme.fg("dim", formatRunDuration(elapsed)) : "";
   };
   const baseSummary = summarizeRun(runToolNames(runId), runThinkingCount(runId));
   const errors = runErrorCount(runId);
+  // Collapsed blocks share one voice: the same grey italic as Pi's thinking
+  // label. Rows keep their identity styling; only the block header is quiet.
+  const styledSummary = baseSummary ? italic(theme.fg("thinkingText", baseSummary)) : "";
   // Errors must be visible while the block rests closed: opening every run to
   // discover a failure defeats the one-line view.
   const summary = errors > 0
-    ? `${baseSummary}${baseSummary ? " · " : ""}${theme.fg("error", `${errors} error`)}`
-    : baseSummary;
+    ? `${styledSummary}${styledSummary ? " · " : ""}${italic(theme.fg("error", `${errors} error`))}`
+    : styledSummary;
   // Run-level header: every run rests as one line. Click opens the per-row
   // view below. While entries stream the header carries the live wheel
   // and the elapsed time; settled runs show the final duration.
   if (!isRunOpen(runId)) {
     const live = runHasLive(runId);
-    const header = new CollapsedLine(summary, timeRight(live), liveOutputPad(pi), theme, live, live ? undefined : ">");
+    const active = live || runThinkingLive(runId);
+    const header = new CollapsedLine(summary, timeRight(active), liveOutputPad(pi), theme, live, live ? undefined : ">");
     trace.addChild(
       new MouseRegion(header, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -478,7 +513,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   // this run); unanchored entries keep the legacy top position.
   const addPreview = (item: ThinkingItem): void => {
     const thinkingRow = item.open
-      ? new Text(theme.italic(theme.fg("thinkingText", item.text)), liveOutputPad(pi), 0)
+      ? new Text(italic(theme.fg("thinkingText", item.text)), liveOutputPad(pi), 0)
       : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme);
     trace.addChild(
       new MouseRegion(thinkingRow, (event: any) => {
@@ -555,7 +590,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   if (ids.length >= 1) {
     // The footer mirrors the header's time column, including while a live
     // run is open (the header it replaced is not on screen then).
-    const footer = new CollapsedLine("Collapse", timeRight(runHasLive(runId)), liveOutputPad(pi), theme, false);
+    const footer = new CollapsedLine("Collapse", timeRight(runHasLive(runId) || runThinkingLive(runId)), liveOutputPad(pi), theme, false);
     trace.addChild(
       new MouseRegion(footer, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -598,6 +633,7 @@ function buildTraceFor(
     const isOwner = ids[0] === toolCallId || (ids.length === 0 && traceOwnerId(current) === toolCallId);
     if (process.env.COLLAPSE_TRACE_DEBUG) console.error("SYNC", toolCallId, "run", current, "ids", JSON.stringify(ids), "owner", isOwner, "open", isRunOpen(current));
     const live = runHasLive(current);
+    const active = live || runThinkingLive(current);
     const now = Date.now();
     // renderCall updates this on every reuse (Pi hands a fresh context when
     // ctrl+o flips); paint with the latest one, not the creation closure.
@@ -625,13 +661,13 @@ function buildTraceFor(
     const liveRev = openRun ? liveThinkingRevision(current) : 0;
     const shape = [
       current, isOwner, openRun, runThinkingCount(current),
-      isRunHidden(current), live, currentColumns(), liveOutputPad(pi),
+      isRunHidden(current), live, active, currentColumns(), liveOutputPad(pi),
       !!(ownerNow as { expanded?: unknown })?.expanded, rowFlags, thinkFlags,
       liveRev,
     ].join("|");
-    const signature = `${shape}|${traceRevisionCount()}|${live ? Math.floor(now / 1000) : 0}`;
+    const signature = `${shape}|${traceRevisionCount()}|${active ? Math.floor(now / 1000) : 0}`;
     if (signature === painted) return false;
-    if (live && shape === paintedShape && lastPaintAt !== 0 && now - lastPaintAt < 70) return false;
+    if ((live || active) && shape === paintedShape && lastPaintAt !== 0 && now - lastPaintAt < 70) return false;
     painted = signature;
     paintedShape = shape;
     lastPaintAt = now;

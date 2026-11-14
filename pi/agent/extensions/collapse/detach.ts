@@ -43,6 +43,11 @@ export type ThinkingItem = {
    *  lets an update find/move this item across a run re-plan; it is dropped
    *  when the completed detach replaces the item. */
   live?: object;
+  /** The thinking block's own wall-clock span: message start, and completion
+   *  for a settled item. A run header times the whole block, so a thinking
+   *  lead or tail is included, not just the tool rows. */
+  startedAt?: number;
+  endedAt?: number;
 };
 const runThinking = new Map<number, ThinkingItem[]>();
 
@@ -221,6 +226,37 @@ export function runThinkingForTool(toolCallId: string): string | undefined {
   return items.map((item) => item.text).join("\n\n");
 }
 
+/** Inclusive thinking span of a run: earliest message start to latest
+ *  completion. A live item has no end yet, so the header times it to now. */
+export function runThinkingSpan(runId: number): { startedAt?: number; endedAt?: number } {
+  let startedAt: number | undefined;
+  let endedAt: number | undefined;
+  for (const item of runThinking.get(runId) ?? []) {
+    if (typeof item.startedAt === "number") {
+      startedAt = startedAt === undefined ? item.startedAt : Math.min(startedAt, item.startedAt);
+    }
+    if (typeof item.endedAt === "number") {
+      endedAt = endedAt === undefined ? item.endedAt : Math.max(endedAt, item.endedAt);
+    }
+  }
+  return { startedAt, endedAt };
+}
+
+/** A provisional thinking is still streaming; its run is active even when
+ *  every tool in it has already settled. */
+export function runThinkingLive(runId: number): boolean {
+  return (runThinking.get(runId) ?? []).some((item) => item.live !== undefined);
+}
+
+/** Runs with a streaming thinking, for the breathe timer. */
+export function liveThinkingRunIds(): number[] {
+  const out: number[] = [];
+  for (const [runId, items] of runThinking) {
+    if (items.some((item) => item.live !== undefined)) out.push(runId);
+  }
+  return out;
+}
+
 export function hiddenRunCount(): number {
   return hiddenRuns.size;
 }
@@ -373,6 +409,23 @@ function messageVisibleToUser(message: unknown): boolean {
   return false;
 }
 
+/** The thinking message's own span. Pi stamps the assistant message at
+ *  generation start and records `durationMs` at completion; a streaming
+ *  message only has the start, so the caller times it to now. */
+function thinkingTiming(message: unknown): { startedAt?: number; endedAt?: number } {
+  const msg = message as { timestamp?: unknown; durationMs?: unknown; stopReason?: unknown } | undefined;
+  if (!msg || typeof msg !== "object") return {};
+  const startedAt = typeof msg.timestamp === "number" && Number.isFinite(msg.timestamp)
+    ? msg.timestamp
+    : undefined;
+  if (startedAt === undefined) return {};
+  if (msg.stopReason == null || msg.stopReason === "pending") return { startedAt };
+  const duration = typeof msg.durationMs === "number" && Number.isFinite(msg.durationMs)
+    ? Math.max(0, msg.durationMs)
+    : undefined;
+  return { startedAt, endedAt: duration === undefined ? Date.now() : startedAt + duration };
+}
+
 /** A persisted visible block after the newest tool. Live messages are not
  *  persisted yet; a prose-only assistant (or a user message) is, and vetoes
  *  a backward attach across it. */
@@ -484,7 +537,9 @@ function upsertLiveThinking(
   host: { runId: number; before?: string; after?: string },
   text: string,
   pi: ExtensionAPI,
+  message?: unknown,
 ): void {
+  const timing = thinkingTiming(message ?? (row as { lastMessage?: unknown }).lastMessage);
   let info = liveThinkingByRow.get(row);
   const isNewRow = !info;
   if (!info) {
@@ -505,6 +560,8 @@ function upsertLiveThinking(
     found.item.text = text;
     found.item.before = host.before;
     found.item.after = host.after;
+    found.item.startedAt = timing.startedAt;
+    found.item.endedAt = timing.endedAt;
     if (found.runId !== host.runId) {
       // A re-plan moved the item's run without touching this token.
       moved = true;
@@ -521,7 +578,7 @@ function upsertLiveThinking(
   } else {
     added = true;
     const target = runThinking.get(host.runId) ?? [];
-    target.push({ text, before: host.before, after: host.after, live: info.token });
+    target.push({ text, before: host.before, after: host.after, live: info.token, ...timing });
     runThinking.set(host.runId, target);
   }
   hiddenRuns.add(host.runId);
@@ -591,7 +648,7 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
         restoreThinkingLabel(row, pi);
         return 0;
       }
-      upsertLiveThinking(row, host, text, pi);
+      upsertLiveThinking(row, host, text, pi, msg);
       return 1;
     }
     let host: { runId: number; before?: string; after?: string } | undefined;
@@ -606,7 +663,7 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
     if (!host) {
       return 0;
     }
-    upsertLiveThinking(row, host, text, pi);
+    upsertLiveThinking(row, host, text, pi, msg);
     return 1;
   } catch {
     // Fail-open: the row keeps its own line; the completed pass retries.
@@ -871,7 +928,7 @@ export function detachPass(
       if (runId !== undefined && (row as { isStreaming?: unknown })?.isStreaming === true) {
         const text = extractThinkingText(message);
         if (text && !ownProseAfterThinking(message) && !messageHasProse(message)) {
-          upsertLiveThinking(row, { runId, ...anchorFor(i, prev, runId) }, text, pi);
+          upsertLiveThinking(row, { runId, ...anchorFor(i, prev, runId) }, text, pi, message);
         }
         skip("streaming");
         continue;
@@ -984,9 +1041,10 @@ export function detachPass(
         }
       }
       const anchor = anchorFor(i, prev, runId);
+      const timing = thinkingTiming(message);
       const same = texts.findIndex((item) => item.text === text);
-      if (same >= 0) texts[same] = { text, ...anchor };
-      else texts.push({ text, ...anchor });
+      if (same >= 0) texts[same] = { text, ...anchor, ...timing };
+      else texts.push({ text, ...anchor, ...timing });
       runThinking.set(runId, texts);
       hiddenRuns.add(runId);
       tracePokeOwner(runId);
