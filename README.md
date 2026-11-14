@@ -23,8 +23,21 @@ This section is for PCs that run the environment. It makes no changes to this re
 
 Pi itself updates independently: `pi update` installs the newest release and
 bootstrap never downgrades it (the pin is a floor, not an exact version).
-After `pi update`, verify the extensions' assumptions still hold with
-`./tests/pi-internals.test.sh`, then `./sync.sh --check`.
+After `pi update`, verify the extensions' assumptions still hold:
+
+1. `./tests/pi-internals.test.sh` pins the Pi internals the collapse view patches.
+2. `./tests/*.test.sh` covers bootstrap links, the Pi install path and the skills.
+3. `node pi/agent/extensions/collapse/*.test.cjs` and
+   `node pi/agent/extensions/subagents/*.test.cjs` exercise the extensions directly
+   (each prints `ok -` lines; any `FAIL -` is a real break).
+4. `node pi/agent/extensions/collapse/replay/parity.cjs <session.jsonl>` replays a real
+   transcript and diffs stock vs collapse rendering.
+5. `./sync.sh --check` for drift.
+
+Dependency layout moves between releases (deps were nested under the pi package
+before 1.5.x and are hoisted to the release root afterwards; `~/.pi/agent/bin/pi`
+is a launcher script, so `realpath` of it is not the package). The tests resolve
+through Node and `install/current-version` rather than assuming a layout.
 
 Use `./bootstrap.sh` without flags only when you also want new tools. It calls `apt-get`, installs uv and Pi if missing, and can ask for `sudo`.
 

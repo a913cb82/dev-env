@@ -98,11 +98,15 @@ esac
 S
 chmod +x "$BIN"/*
 
+PIN="$(sed -n 's/^PI_VERSION="\([^"]*\)".*/\1/p' "$REPO/bootstrap.sh")"
+[ -n "$PIN" ] || fail "cannot read PI_VERSION from bootstrap.sh"
+
 "$REPO/bootstrap.sh" >"$TMP/bootstrap.log" 2>&1 || { cat "$TMP/bootstrap.log" >&2; fail "bootstrap failed"; }
 
 [ "$(cat "$HOME/installer-tty")" = no-tty ] || fail "installer kept the controlling terminal"
 [ -f "$HOME/.pi/agent/install/current-version" ] || fail "current-version missing"
-[ "$(cat "$HOME/.pi/agent/install/current-version")" = 1.0.0 ] || fail "Pi was not pinned"
+[ "$(cat "$HOME/.pi/agent/install/current-version")" = "$PIN" ] \
+  || fail "Pi was not pinned to $PIN (got $(cat "$HOME/.pi/agent/install/current-version"))"
 # A user-run `pi update` plants a newer release: re-running bootstrap must
 # neither downgrade nor wipe it.
 mkdir -p "$HOME/.pi/agent/install/releases/9.9.9/node_modules/.bin"
@@ -115,7 +119,7 @@ printf '%s\n' 9.9.9 > "$HOME/.pi/agent/install/current-version"
 "$REPO/bootstrap.sh" >"$TMP/bootstrap2.log" 2>&1 || { cat "$TMP/bootstrap2.log" >&2; fail "bootstrap after pi update failed"; }
 [ "$(cat "$HOME/.pi/agent/install/current-version")" = 9.9.9 ] || fail "bootstrap downgraded a pi update"
 [ -x "$HOME/.pi/agent/install/releases/9.9.9/node_modules/.bin/pi" ] || fail "bootstrap wiped the updated release"
-[ -d "$HOME/.pi/agent/install/releases/1.0.0" ] || fail "bootstrap wiped the pinned release"
+[ -d "$HOME/.pi/agent/install/releases/$PIN" ] || fail "bootstrap wiped the pinned release"
 [ "$(wc -l < "$HOME/.pi/agent/install/current-version")" -eq 1 ] \
   || fail "current-version has no trailing newline"
 [ "$(readlink "$HOME/.pi/agent/subagents.json")" = "$REPO/pi/agent/subagents.json" ] \

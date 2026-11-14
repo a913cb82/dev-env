@@ -7,27 +7,27 @@ const fs = require("node:fs");
 const { execSync } = require("node:child_process");
 
 function findPiRoot() {
-  if (process.env.PI_ROOT) return process.env.PI_ROOT;
-  // Pinned managed install: ~/.pi/agent/install/releases/<ver>/node_modules/@earendil-works/pi-coding-agent
-  try {
-    const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
-    const root = path.join(
-      process.env.HOME,
-      ".pi/agent/install/releases",
-      version,
-      "node_modules/@earendil-works/pi-coding-agent",
-    );
-    if (fs.existsSync(path.join(root, "dist", "bundle", "index.js"))) return root;
-  } catch { /* fall through to legacy layout */ }
-  const bin = execSync("command -v pi", { encoding: "utf8" }).trim();
-  const real = fs.realpathSync(bin);
-  // <root>/dist/bundle/cli.js
-  return path.resolve(path.dirname(real), "..", "..");
+   if (process.env.PI_ROOT) return process.env.PI_ROOT;
+   // The managed install records its version; ~/.pi/agent/bin/pi is a shell
+   // launcher, so walking up from it lands on ~/.pi rather than the package.
+   try {
+   	const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
+   	const root = path.join(process.env.HOME, ".pi/agent/install/releases", version,
+   		"node_modules/@earendil-works/pi-coding-agent");
+   	if (fs.existsSync(path.join(root, "dist", "modes"))) return root;
+   } catch { /* fall through to the legacy layout */ }
+   // Legacy: the launcher used to point into the package itself.
+   const real = fs.realpathSync(execSync("command -v pi", { encoding: "utf8" }).trim());
+   let dir = path.dirname(real);
+   while (dir !== path.dirname(dir) && !fs.existsSync(path.join(dir, "dist", "modes"))) dir = path.dirname(dir);
+   return dir;
 }
 
 const PI = findPiRoot();
-const PIN = path.join(PI, "node_modules");
-const { createJiti } = require(path.join(PIN, "jiti"));
+// Deps are nested under the pi package before 1.5.x and hoisted to the release
+// root afterwards, so resolve through Node instead of assuming a layout.
+const vreq = (id) => require.resolve(id, { paths: [PI] });
+const { createJiti } = require(vreq("jiti"));
 
 const HERE = __dirname;
 const jiti = createJiti(__filename, {
@@ -36,7 +36,7 @@ const jiti = createJiti(__filename, {
   moduleCache: false,
   alias: {
     "@earendil-works/pi-coding-agent": path.join(PI, "dist", "bundle", "index.js"),
-    "@earendil-works/pi-tui": path.join(PIN, "@earendil-works", "pi-tui", "dist", "index.js"),
+    "@earendil-works/pi-tui": vreq("@earendil-works/pi-tui"),
     typebox: require.resolve("typebox", { paths: [PI] }),
   },
 });

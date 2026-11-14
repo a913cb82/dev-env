@@ -29,7 +29,11 @@ fi
 node -e "
 const C = require('$ROOT/dist/modes/interactive/components/assistant-message.js');
 const TE = require('$ROOT/dist/modes/interactive/components/tool-execution.js');
-const T = require('$ROOT/node_modules/@earendil-works/pi-tui/dist/index.js');
+// Deps are nested under the pi package before 1.5.x and hoisted to the
+// release root afterwards, so resolve through Node instead of assuming a
+// layout. The paths option makes the release root the resolution base.
+const req = (id) => require(require.resolve(id, { paths: ['$ROOT'] }));
+const T = req('@earendil-works/pi-tui');
 const fs = require('node:fs');
 const assert = (cond, name) => { if (!cond) { console.error('missing: ' + name); process.exit(1); } };
 const P = C.AssistantMessageComponent.prototype;
@@ -91,7 +95,7 @@ assert(typeof holder.child.setText === 'function', 'pi-tui Text.setText exists (
 // chalk 6 rewrites every copy of its own close code in its input into
 // close+open, so a bare SGR 23 cannot end italic inside the label. The
 // extension uses 23;23, which chalk leaves alone.
-const chalkMod = require('$ROOT/node_modules/chalk/source/index.js');
+const chalkMod = req('chalk');
 const chalk = chalkMod.default ?? chalkMod;
 chalk.level = 3;
 const ESC = String.fromCharCode(27);

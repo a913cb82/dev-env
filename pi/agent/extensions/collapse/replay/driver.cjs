@@ -40,20 +40,22 @@ function findPiRoot() {
 }
 
 const PI = findPiRoot();
-const PIN = path.join(PI, "node_modules");
+// Before 1.5.x the deps lived under the pi package; afterwards npm hoists them
+// to the release root. Resolve through Node so both layouts work.
+const vreq = (id) => require.resolve(id, { paths: [PI] });
 const HERE = path.join(__dirname, "..");
 let jiti;
 
 async function loadPi() {
   if (!jiti) {
-    ({ createJiti } = require(path.join(PIN, "jiti")));
+    ({ createJiti } = require(vreq("jiti")));
     jiti = createJiti(__filename, {
       interopDefault: true,
       fsCache: true,
       moduleCache: false,
       alias: {
         "@earendil-works/pi-coding-agent": path.join(PI, "dist", "bundle", "index.js"),
-        "@earendil-works/pi-tui": path.join(PIN, "@earendil-works", "pi-tui", "dist", "index.js"),
+        "@earendil-works/pi-tui": vreq("@earendil-works/pi-tui"),
         typebox: require.resolve("typebox", { paths: [PI] }),
       },
     });

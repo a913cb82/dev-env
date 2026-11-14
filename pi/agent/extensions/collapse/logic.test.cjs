@@ -6,26 +6,24 @@ const fs = require("node:fs");
 const { execSync } = require("node:child_process");
 
 function findPiRoot() {
-  if (process.env.PI_ROOT) return process.env.PI_ROOT;
-  // Pinned managed install: ~/.pi/agent/install/releases/<ver>/node_modules/@earendil-works/pi-coding-agent
-  try {
-    const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
-    const root = path.join(
-      process.env.HOME,
-      ".pi/agent/install/releases",
-      version,
-      "node_modules/@earendil-works/pi-coding-agent",
-    );
-    if (fs.existsSync(path.join(root, "dist", "bundle", "index.js"))) return root;
-  } catch { /* fall through to legacy layout */ }
-  const bin = execSync("command -v pi", { encoding: "utf8" }).trim();
-  const real = fs.realpathSync(bin);
-  // <root>/dist/bundle/cli.js
-  return path.resolve(path.dirname(real), "..", "..");
+   if (process.env.PI_ROOT) return process.env.PI_ROOT;
+   // The managed install records its version; ~/.pi/agent/bin/pi is a shell
+   // launcher, so walking up from it lands on ~/.pi rather than the package.
+   try {
+   	const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
+   	const root = path.join(process.env.HOME, ".pi/agent/install/releases", version,
+   		"node_modules/@earendil-works/pi-coding-agent");
+   	if (fs.existsSync(path.join(root, "dist", "modes"))) return root;
+   } catch { /* fall through to the legacy layout */ }
+   // Legacy: the launcher used to point into the package itself.
+   const real = fs.realpathSync(execSync("command -v pi", { encoding: "utf8" }).trim());
+   let dir = path.dirname(real);
+   while (dir !== path.dirname(dir) && !fs.existsSync(path.join(dir, "dist", "modes"))) dir = path.dirname(dir);
+   return dir;
 }
 
 const PI = findPiRoot();
-const { createJiti } = require(path.join(PI, "node_modules", "jiti"));
+const { createJiti } = require(require.resolve("jiti", { paths: [PI] }));
 const jiti = createJiti(__filename, { interopDefault: true, fsCache: true, moduleCache: false });
 
 let failures = 0;

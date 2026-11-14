@@ -4,7 +4,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="$HOME/.pi/agent"
-PI_VERSION="1.0.0" # floor Pi release: bootstrap installs at least this, but never downgrades a newer `pi update`
+PI_VERSION="1.5.2" # floor Pi release: bootstrap installs at least this, but never downgrades a newer `pi update`
 KETCH_VERSION="v0.20.0" # pinned ketch release; bump deliberately
 CHECK_ONLY="${1:-}"
 

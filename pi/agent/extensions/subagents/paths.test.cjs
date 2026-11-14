@@ -6,12 +6,23 @@ const os = require("node:os");
 const path = require("node:path");
 
 function findPiRoot() {
-	const bin = execSync("command -v pi", { encoding: "utf8" }).trim();
-	const real = fs.realpathSync(bin);
-	return path.resolve(path.dirname(real), "..", "..");
+	if (process.env.PI_ROOT) return process.env.PI_ROOT;
+	// The managed install records its version; ~/.pi/agent/bin/pi is a shell
+	// launcher, so walking up from it lands on ~/.pi rather than the package.
+	try {
+		const version = fs.readFileSync(path.join(process.env.HOME, ".pi/agent/install/current-version"), "utf8").trim();
+		const root = path.join(process.env.HOME, ".pi/agent/install/releases", version,
+			"node_modules/@earendil-works/pi-coding-agent");
+		if (fs.existsSync(path.join(root, "dist", "modes"))) return root;
+	} catch { /* fall through to the legacy layout */ }
+	// Legacy: the launcher used to point into the package itself.
+	const real = fs.realpathSync(execSync("command -v pi", { encoding: "utf8" }).trim());
+	let dir = path.dirname(real);
+	while (dir !== path.dirname(dir) && !fs.existsSync(path.join(dir, "dist", "modes"))) dir = path.dirname(dir);
+	return dir;
 }
 const PI = process.env.PI_ROOT || findPiRoot();
-const { createJiti } = require(path.join(PI, "node_modules", "jiti"));
+const { createJiti } = require(require.resolve("jiti", { paths: [PI] }));
 
 const HERE = __dirname;
 const jiti = createJiti(__filename, { interopDefault: true, fsCache: false, moduleCache: false });
