@@ -449,6 +449,28 @@ function check(name, cond, extra) {
     check("args text on junk", t(null) === 0 && t("x") === 0 && t([]) === 0 && t({}) === 0, "junk");
   }
 
+  // sessionContextEntries: Pi renders the compaction-aware context, not the
+  // raw branch. The helper must prefer it but still work with old mocks.
+  {
+    const context = [{ id: "cmp", type: "compaction" }, { id: "kept" }];
+    const branch = [{ id: "old" }, { id: "cmp", type: "compaction" }];
+    const picked = logic.sessionContextEntries({
+      buildContextEntries: () => context,
+      getBranch: () => branch,
+    });
+    check("context entries prefer buildContextEntries",
+      picked.length === 2 && picked[0].id === "cmp", JSON.stringify(picked));
+    const fallback = logic.sessionContextEntries({ getBranch: () => branch });
+    check("context entries fall back to getBranch", fallback[0]?.id === "old", JSON.stringify(fallback));
+    const throwing = logic.sessionContextEntries({
+      buildContextEntries: () => { throw new Error("old Pi"); },
+      getBranch: () => branch,
+    });
+    check("a throwing context accessor falls back to getBranch",
+      throwing[0]?.id === "old", JSON.stringify(throwing));
+    check("context entries tolerate no source", logic.sessionContextEntries(undefined).length === 0, "");
+  }
+
   // planToolRuns: group contiguous history tools so the rebuild layout
   // matches live runs (no teleporting: never span visible content).
   {

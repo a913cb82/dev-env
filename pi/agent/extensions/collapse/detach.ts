@@ -16,7 +16,7 @@
  * degrades to the stock Pi row, never a duplicate.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, thinkingPreview } from "./logic.js";
+import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, sessionContextEntries, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { STANDALONE_THINKING_LABEL, findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
 import { isSpacerLike } from "./tree.js";
@@ -295,22 +295,7 @@ export function hiddenRunCount(): number {
 }
 
 function entriesOf(sm: unknown): Array<{ id?: string; message?: unknown }> {
-  try {
-    if (!sm || typeof sm !== "object") return [];
-    const source = sm as {
-      getBranch?: () => unknown;
-      getEntries?: () => unknown;
-    };
-    const list =
-      typeof source.getBranch === "function"
-        ? source.getBranch()
-        : typeof source.getEntries === "function"
-          ? source.getEntries()
-          : [];
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
+  return sessionContextEntries(sm) as Array<{ id?: string; message?: unknown }>;
 }
 
 /** Transcript order walk: thinking rows plus the tool components that own

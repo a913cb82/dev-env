@@ -26,7 +26,7 @@ async function main() {
   }
   const turnArg = process.argv.indexOf("--turn");
   const n = turnArg > 0 ? Number(process.argv[turnArg + 1]) : 1;
-  const entries = parity.readEntries(file);
+  const entries = parity.contextEntries(parity.readEntries(file));
   const messages = parity.messagesFromEntries(entries);
   const turns = lastTurns(messages);
   const [from, to] = turns[turns.length - n] || [0, messages.length];

@@ -96,16 +96,16 @@ const loadFixture = (name) =>
     const rowLines = (row) => row.render(100).map(plain);
     const blockRow = [...world.assistantComps.values()].find((row) => {
       const lines = rowLines(row);
-      return lines.length === 1 && /^\s*▸1 thinking\b/.test(lines[0]);
+      return lines.length === 2 && lines[0] === "" && /^\s*▸1 thinking\b/.test(lines[1]);
     });
     check("a detached standalone is one block line", !!blockRow,
       blockRow ? rowLines(blockRow).join("\n") : "no standalone row");
     if (blockRow) {
-      blockRow.handleMouse({ type: "click", button: "left", y: 0, width: 100, height: 1 });
+      blockRow.handleMouse({ type: "click", button: "left", y: 1, width: 100, height: 2 });
       const opened = rowLines(blockRow);
       check("detached standalone header opens the block",
-        opened.length === 3 && opened[0].startsWith("▾1 thinking") &&
-        opened[1].startsWith("▏") && opened[2].startsWith("▴Collapse"),
+        opened.length === 4 && opened[0] === "" && opened[1].startsWith("▾1 thinking") &&
+        opened[2].startsWith("▏") && opened[3].startsWith("▴Collapse"),
         opened.join("\n"));
     }
   }
@@ -670,17 +670,21 @@ const loadFixture = (name) =>
       slot ? JSON.stringify({ args: slot.comp.argsComplete, partial: slot.comp.isPartial }) : "no slot");
   }
 
-  // R22. The real extension prefers getBranch(). The driver used to expose
-  // only getEntries(), so the production branch path was never exercised.
+  // R22. The real extension prefers the compaction-aware context. A raw
+  // branch is not enough: Pi moves the newest summary to the front before
+  // rendering, and planning from the branch splits one run around it.
   {
     const world = driver.createWorld(PI, { width: 100 });
-    check("driver exposes getBranch", typeof world.sm.getBranch === "function", typeof world.sm.getBranch);
+    check("driver exposes buildContextEntries",
+      typeof world.sm.buildContextEntries === "function", typeof world.sm.buildContextEntries);
     const entries = loadFixture("history-split").restore;
     await driver.restore(world, entries);
+    world.sm.getBranch = () => [];
     world.sm.getEntries = () => [];
     await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
     driver.tickOnce(world);
-    check("history loads through getBranch", driver.dump(world).lines.some((l) => l.includes("1 thinking")),
+    check("history loads through buildContextEntries",
+      driver.dump(world).lines.some((l) => l.includes("1 thinking")),
       driver.dump(world).lines.join("\n"));
   }
 
@@ -734,9 +738,10 @@ const loadFixture = (name) =>
       JSON.stringify({ custom, headers }));
   }
 
-  // R25. Compaction and branch summaries are visible history too. They must
-  // split tool runs just like prose; otherwise two blocks sit adjacent with
-  // a summary rendered between them (and parity can see the bad shape).
+  // R25. A compaction is a checkpoint, not a transcript separator. Pi
+  // renders the newest summary first, then the kept entries and everything
+  // after it. Planning from the raw branch put the summary between two tool
+  // runs and produced touching headers with no visible content between them.
   {
     const world = driver.createWorld(PI, { width: 100 });
     const entries = [
@@ -749,7 +754,7 @@ const loadFixture = (name) =>
         role: "toolResult", toolCallId: "c1", toolName: "bash",
         content: [{ type: "text", text: "one" }],
       } },
-      { id: "cmp", type: "compaction", summary: "COMPACTION SUMMARY", timestamp: Date.now() },
+      { id: "cmp", type: "compaction", firstKeptEntryId: "a1", summary: "COMPACTION SUMMARY", timestamp: Date.now() },
       { id: "a2", type: "message", message: {
         role: "assistant", timestamp: Date.now() - 1000,
         content: [{ type: "toolCall", id: "c2", name: "bash", arguments: { command: "echo two" } }],
@@ -763,10 +768,9 @@ const loadFixture = (name) =>
     const lines = driver.dump(world).lines;
     const summary = lines.findIndex((l) => l.includes("COMPACTION SUMMARY"));
     const headers = lines.map((l, i) => (/^\s*▸/.test(l) ? i : -1)).filter((i) => i >= 0);
-    check("compaction summary renders", summary >= 0, lines.join("\n"));
-    check("compaction summary separates tool blocks",
-      summary >= 0 && headers.length === 2 && headers[0] < summary && headers[1] > summary,
-      JSON.stringify({ summary, headers }));
+    check("compaction summary renders first", summary >= 0 && summary < headers[0], lines.join("\n"));
+    check("compaction keeps both tool runs in one block",
+      headers.length === 1, JSON.stringify({ summary, headers }));
   }
 
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);

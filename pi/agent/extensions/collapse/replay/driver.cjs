@@ -87,6 +87,30 @@ function resetAll(mod) {
   try { mod.captureWalkerTui?.({ children: [] }); } catch {}
 }
 
+// Mirror SessionManager.buildContextEntries for the linear test fixtures:
+// the newest compaction moves to the front, followed by its kept entries
+// and everything after it. Production's SessionManager supplies the real
+// method; this keeps the replay model honest when fixtures include one.
+function contextEntries(entries) {
+  let compactionIdx = -1;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i]?.type === "compaction") compactionIdx = i;
+  }
+  if (compactionIdx < 0) return entries;
+  const compaction = entries[compactionIdx];
+  const out = [compaction];
+  let foundFirstKept = false;
+  for (let i = 0; i < compactionIdx; i++) {
+    const entry = entries[i];
+    if (entry?.id === compaction.firstKeptEntryId) foundFirstKept = true;
+    if (foundFirstKept && !(entry?.type === "message" && entry.message?.role === "system")) {
+      out.push(entry);
+    }
+  }
+  out.push(...entries.slice(compactionIdx + 1));
+  return out;
+}
+
 function createWorld(PIloaded, { width = 100, hideThinkingBlock = true, clock } = {}) {
   const { mod, tui } = PIloaded;
   resetAll(mod);
@@ -110,7 +134,7 @@ function createWorld(PIloaded, { width = 100, hideThinkingBlock = true, clock } 
   const sm = {
     getEntries: () => entries,
     getBranch: () => entries,
-    buildContextEntries: () => entries,
+    buildContextEntries: () => contextEntries(entries),
   };
   const ui = {
     setWidget: () => {},
@@ -330,7 +354,7 @@ function mountSummary(world, entry) {
 async function restore(world, entries) {
   for (const entry of entries) world.entries.push(entry);
   await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
-  mountEntries(world, entries);
+  mountEntries(world, contextEntries(entries));
   ticks(world);
 }
 
@@ -339,7 +363,7 @@ async function restore(world, entries) {
 // of arming). Same converge after.
 async function restoreLate(world, entries) {
   for (const entry of entries) world.entries.push(entry);
-  mountEntries(world, entries);
+  mountEntries(world, contextEntries(entries));
   await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
   ticks(world);
 }
@@ -612,7 +636,7 @@ function openRun(world, toolCallId) {
 async function armRestore(world, entries) {
   for (const entry of entries) world.entries.push(entry);
   await world.fire("session_start", {}, { hasUI: true, ui: world.ui, sessionManager: world.sm });
-  mountEntries(world, entries);
+  mountEntries(world, contextEntries(entries));
 }
 
 function tickOnce(world) {
@@ -620,6 +644,6 @@ function tickOnce(world) {
 }
 
 module.exports = {
-  loadPi, createWorld, restore, restoreLate, armRestore,
+  loadPi, createWorld, contextEntries, restore, restoreLate, armRestore,
   runLive, reload, dump, openRun, tickOnce,
 };

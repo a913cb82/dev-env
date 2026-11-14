@@ -5301,7 +5301,10 @@ function clickFirstRow(comp) {
       row.updateContent(msg, true);
       labelsLib.captureWalkerTui({ children: [row] });
       labelsLib.reconcileStreamingLabel(piS, msg, now);
-      const rendered = plainText(row.render(100).join("\n"));
+      const streamedLines = row.render(100).map(plainText);
+      const rendered = streamedLines.join("\n");
+      check("streaming thinking keeps the blank line above its block",
+        streamedLines[0] === "", JSON.stringify(streamedLines.slice(0, 3)));
       check("latest streaming thinking is a collapsed block",
         /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]1 thinking\b/.test(rendered.trim()) && rendered.includes("32s"),
         JSON.stringify(rendered.slice(0, 160)));
@@ -5349,30 +5352,32 @@ function clickFirstRow(comp) {
         type: "click", button: "left", y, width: 100, height,
       });
       const closed = row.render(100).map(plainText);
-      check("standalone header is one line before the click",
-        closed.length === 1 && closed[0].startsWith("▸1 thinking") && closed[0].includes("22s"),
+      check("standalone header is one line below the blank spacer",
+        closed.length === 2 && closed[0] === "" &&
+        closed[1].startsWith("▸1 thinking") && closed[1].includes("22s"),
         JSON.stringify(closed));
 
-      click(0, 1);
+      click(1, 2);
       const opened = row.render(100).map(plainText);
       check("standalone header opens a block",
-        opened.length === 3 && opened[0].startsWith("▾1 thinking") &&
-        opened[1].startsWith("▏") && /k ch\s*$/.test(opened[1]) &&
-        opened[2].startsWith("▴Collapse"), JSON.stringify(opened));
+        opened.length === 4 && opened[0] === "" && opened[1].startsWith("▾1 thinking") &&
+        opened[2].startsWith("▏") && /k ch\s*$/.test(opened[2]) &&
+        opened[3].startsWith("▴Collapse"), JSON.stringify(opened));
       check("standalone block starts with a middle-truncated preview",
-        opened[1].includes("HEAD") && opened[1].includes("…") && opened[1].length <= 100,
-        JSON.stringify(opened[1]));
+        opened[2].includes("HEAD") && opened[2].includes("…") && opened[2].length <= 100,
+        JSON.stringify(opened[2]));
 
-      click(1, 3);
+      click(2, 4);
       const expanded = row.render(100).map(plainText);
       check("clicking the preview expands the thinking text",
-        expanded.length > 3 && expanded.some((line) => line.includes("TAIL")) &&
+        expanded.length > 4 && expanded.some((line) => line.includes("TAIL")) &&
         expanded[expanded.length - 1].startsWith("▴Collapse"), JSON.stringify(expanded.slice(0, 4)));
 
       click(expanded.length - 1, expanded.length);
       const reclosing = row.render(100).map(plainText);
       check("the footer collapses the standalone block",
-        reclosing.length === 1 && reclosing[0].startsWith("▸1 thinking"), JSON.stringify(reclosing));
+        reclosing.length === 2 && reclosing[0] === "" &&
+        reclosing[1].startsWith("▸1 thinking"), JSON.stringify(reclosing));
     } finally {
       Date.now = realNow;
       labelsLib.setActiveTheme(undefined);
@@ -5404,12 +5409,13 @@ function clickFirstRow(comp) {
     container.addChild(row);
     container.render(100);
     const handled = container.handleMouse({
-      type: "click", button: "left", x: 0, y: 0, width: 100, height: 1,
+      type: "click", button: "left", x: 0, y: 1, width: 100, height: 2,
     });
     const opened = row.render(100).map(plainText);
     check("real Container dispatch opens the standalone block",
-      handled?.handled === true && opened.length === 3 && opened[0].startsWith("▾1 thinking") &&
-      opened[2].startsWith("▴Collapse"), JSON.stringify({ handled, opened }));
+      handled?.handled === true && opened.length === 4 && opened[0] === "" &&
+      opened[1].startsWith("▾1 thinking") &&
+      opened[3].startsWith("▴Collapse"), JSON.stringify({ handled, opened }));
     labelsLib.setActiveTheme(undefined);
   }
 

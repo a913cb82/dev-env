@@ -96,6 +96,7 @@ export { collapseTick };
 import {
   planToolRuns,
   branchToolIds,
+  sessionContextEntries,
   toolTimings,
 } from "./logic.js";
 import {
@@ -139,7 +140,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 96;
+const COLLAPSE_REVISION = 97;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
@@ -458,8 +459,11 @@ export default function (pi: ExtensionAPI) {
       }
       const sm = ctx.sessionManager as any;
       noteSessionManager(sm);
-      const entries =
-        typeof sm?.getBranch === "function" ? sm.getBranch() : (sm?.getEntries?.() ?? []);
+      // Plan from the compaction-aware context, not the raw branch. Pi
+      // renders the newest compaction summary first, followed by the kept
+      // entries; the raw branch still has that summary between the old and
+      // new tool calls, which split one run into two touching headers.
+      const entries = sessionContextEntries(sm);
       // Rebind flows rendered one run per history tool BEFORE this event
       // (anti-teleport while positions were unknown): merge contiguous
       // groups now so one blank line covers the block. Startup resume

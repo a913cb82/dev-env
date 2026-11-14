@@ -74,7 +74,11 @@ function sliceTurns(messages, n) {
   messages.forEach((m, i) => { if (m.role === "user") starts.push(i); });
   const complete = starts.slice(0, -1); // drop the in-flight final turn
   const from = complete[Math.max(0, complete.length - n)];
-  if (from === undefined) return [];
+  // A compaction can leave the context with no complete user turn (the
+  // summary replaces the history and the current turn is still open). An
+  // empty slice would make every parity check vacuous, so fall back to the
+  // whole available context; the live/resume comparison is still exact.
+  if (from === undefined) return messages;
   return messages.slice(from, starts[complete.length]);
 }
 
@@ -358,7 +362,7 @@ async function main() {
   const turns = arg("--turns", 3);
   const orderTurns = arg("--order-turns", Math.min(turns, 8));
   const width = arg("--width", 100);
-  const allMessages = messagesFromEntries(readEntries(file));
+  const allMessages = messagesFromEntries(driver.contextEntries(readEntries(file)));
   const messages = sliceTurns(allMessages, turns);
   const ops = turnOps(messages);
   const list = probes(sliceTurns(allMessages, orderTurns));
@@ -412,12 +416,17 @@ async function main() {
   if (liveBlocks === 0) fail("no current block headers recognized", dumps.live.join("\n"));
   else ok(`recognized ${liveBlocks} block header(s)`);
 
-  // (3) all three paths identical, collapsed.
+  // (3) all three paths identical, collapsed. The wheel is an animation
+  // frame, not layout: normalize it before comparing, or a live row makes
+  // the screenshot differ only by how many milliseconds elapsed.
+  const steady = (lines) => lines.map((line) => line.replace(
+    new RegExp(`[${WHEEL}]`, "g"), "⠿",
+  ));
   for (const other of ["resume", "reload"]) {
-    const a = dumps.live.join("\n"), b = dumps[other].join("\n");
+    const a = steady(dumps.live).join("\n"), b = steady(dumps[other]).join("\n");
     const name = `collapsed: live == ${other}`;
     if (a === b) ok(name);
-    else fail(name, firstDiff(dumps.live, dumps[other]));
+    else fail(name, firstDiff(steady(dumps.live), steady(dumps[other])));
   }
 
   // (3b) all three identical with every run opened. Opening a row can
@@ -452,8 +461,8 @@ async function main() {
   }
   for (const other of ["resume", "reload"]) {
     const name = `opened: live == ${other}`;
-    if (openDumps.live.join("\n") === openDumps[other].join("\n")) ok(name);
-    else fail(name, firstDiff(openDumps.live, openDumps[other]));
+    if (steady(openDumps.live).join("\n") === steady(openDumps[other]).join("\n")) ok(name);
+    else fail(name, firstDiff(steady(openDumps.live), steady(openDumps[other])));
   }
 
   // (1) hidden vs visible ordering, collapsed and opened.
@@ -513,6 +522,7 @@ module.exports = {
   adjacencyViolations, blockHeaders, blockHeaderCount,
   probes, orderViolations, lineFits,
   readEntries, messagesFromEntries, sliceTurns, turnOps,
+  contextEntries: driver.contextEntries,
 };
 
 if (require.main === module) {

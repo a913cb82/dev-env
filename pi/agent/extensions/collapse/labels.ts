@@ -656,7 +656,10 @@ function buildStandaloneLines(row: any, width: number, pi?: ExtensionAPI): strin
     !view.open && live,
     view.open ? "▾" : live ? undefined : "▸",
   );
-  const lines = header.render(width);
+  // Keep the blank row Pi puts above a thinking block. The stock hidden
+  // row renders it as an OSC-133 marker line; returning only our header
+  // glued the standalone block to whatever came before it.
+  const lines = ["", ...header.render(width)];
   if (!view.open) return lines;
   if (view.expanded) {
     lines.push(...new Text(quiet(theme, info.text), pad, 0).render(width));
@@ -736,7 +739,8 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
         const y = typeof event.y === "number" ? event.y : -1;
         const view = standaloneView(row);
         if (!view.open) {
-          if (y === 0) {
+          if (y === 0) return { handled: true };
+          if (y === 1) {
             view.open = true;
             view.expanded = false;
             requestRowRender();
@@ -744,14 +748,17 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
           }
           return handle(event);
         }
+        // Line 0 is the blank spacer Pi keeps above a thinking row; line 1
+        // is the header. Clicking either the header or the footer closes.
+        const headerY = 1;
         const last = lines.length - 1;
-        if (y === 0 || y === last) {
+        if (y === 0 || y === headerY || y === last) {
           view.open = false;
           view.expanded = false;
           requestRowRender();
           return { handled: true };
         }
-        if (y > 0 && y < last) {
+        if (y > headerY && y < last) {
           view.expanded = !view.expanded;
           requestRowRender();
           return { handled: true };

@@ -101,6 +101,32 @@ export function branchToolIds(
   return ids;
 }
 
+/** Entries in the order Pi actually renders them. A compaction is a
+ *  checkpoint: Pi draws its summary first, then the kept entries and the
+ *  entries after it. The raw branch keeps the summary in its historical
+ *  position, where it looks like a separator and splits one run in two. */
+export function sessionContextEntries(source: unknown): any[] {
+  if (!source || typeof source !== "object") return [];
+  const sm = source as {
+    buildContextEntries?: () => unknown;
+    getBranch?: () => unknown;
+    getEntries?: () => unknown;
+  };
+  // Try each in turn: an old mock may lack the context method, and a Pi
+  // upgrade that makes it throw must not take the collapse view down with
+  // it. An empty array is still a real answer and stops the fallback.
+  for (const read of [sm.buildContextEntries, sm.getBranch, sm.getEntries]) {
+    if (typeof read !== "function") continue;
+    try {
+      const list = read.call(sm);
+      if (Array.isArray(list)) return list;
+    } catch {
+      // Try the next accessor.
+    }
+  }
+  return [];
+}
+
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
   // Below 1000 the k-form rounds every small result to "0.0k ch"/"0.1k ch",

@@ -144,9 +144,12 @@ emits one blank line per run instead of one per tool. A run continues across
 turn boundaries; only a turn whose visible prose renders above its tools
 starts a new one — hidden thinking never splits, so consecutive think→tool
 turns merge into one block and two collapsed headers are never adjacent
-without a visible message between them. Rows therefore stay adjacent
-to whatever is actually on screen, and consecutive tool-only turns are
-gapless. A message that renders nothing — a custom message with
+without a visible message between them. The plan comes from Pi's
+compaction-aware context, not the raw branch: the newest summary renders
+first, and the kept tools merge with the tools after it instead of splitting
+into two touching headers. Rows therefore stay adjacent to whatever is
+actually on screen, and consecutive tool-only turns are gapless. A message
+that renders nothing — a custom message with
 `display: false` (extension notifications) or a system message — never starts
 a run: splitting there would leave a blank line with no content between the
 rows.
@@ -201,7 +204,9 @@ it again starts from the one-line view. A one-row run is the same block in
 every state: settled or live, tool or thinking, it still has a header and
 the same click depth. A standalone `▸N thinking` block follows the same
 depth: its header opens `▾` + one preview row + `▴Collapse`, the preview
-expands the full thinking text in place, and the footer closes it.
+expands the full thinking text in place, and the footer closes it. The block
+keeps Pi's blank spacer above its header, so it never glues itself to a
+preceding row.
 (Mixed thinking-plus-prose rows keep their prose and their native label
 click; the block view is only for a thinking-only row.)
 Each row opens its stock cell at the depth Pi currently asks for:
@@ -556,9 +561,9 @@ feeds them a scripted transcript, and screenshots the chat with
 persistence order is emulated, but it is asserted: extension handlers run
 before the UI listener, and `message_end` sees the branch BEFORE
 `SessionManager.appendMessage`. The session manager exposes `getBranch`,
-`getEntries`, and `buildContextEntries` over the same entry array, so the
-production branch path is exercised. `/reload` loads a fresh extension
-module, clears state, mounts the rebuilt chat, then emits
+`getEntries`, and `buildContextEntries` over the same entry array, and the
+driver mounts from the compaction-aware context just like Pi. `/reload`
+loads a fresh extension module, clears state, mounts the rebuilt chat, then emits
 `session_start(reason="reload")`; it does not reuse the old module.
 
 ```
