@@ -91,6 +91,13 @@ function isPendingAssistant(message: unknown): boolean {
   return msg?.role === "assistant" && (msg.stopReason == null || msg.stopReason === "pending");
 }
 
+/** A mounted thinking row that is still being appended to. Pi's flag is the
+ *  authoritative live signal for the per-render and poll paths. */
+function rowIsStreaming(row: unknown): boolean {
+  return !!row && typeof row === "object" &&
+    (row as { isStreaming?: unknown }).isStreaming === true;
+}
+
 /** The row for an update. Handlers may run before or after Pi applies the
  *  delta: match by message identity first, then the one live row, then the
  *  just-mounted last row (its `lastMessage` is still undefined). Returns
@@ -171,9 +178,10 @@ export function resetLabelsState(): void {
   liveHostedRows = new WeakSet<object>();
 }
 
-/** Thinking with nowhere to go: completed messages detach could not host
- *  (no tools in any reachable run) collapse in place instead of lingering
- *  as stock rows. Set by detachPass; honored by the reconcile below. */
+/** Thinking with nowhere to go: a streaming block before a host exists, or
+ *  a completed message detach could not host (no tools in any reachable
+ *  run), collapses in place instead of lingering as stock text. Set by the
+ *  streaming/poll passes and detachPass; honored by the reconcile below. */
 let standaloneMessages = new WeakSet<object>();
 /** First sighting + completion per standalone message, for the duration. */
 let standaloneSeen = new WeakMap<object, { first: number; done?: number }>();
@@ -209,7 +217,7 @@ export function standaloneThinkingLabel(
 
 /** Standalone thinking labels are already blocks: the row-rail pass must not
  *  add a second wheel/marker in the pad cell. */
-const STANDALONE_THINKING_LABEL = /^\s*(?:▸|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏])\d+ thinking\b/;
+export const STANDALONE_THINKING_LABEL = /^\s*(?:▸|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏])\d+ thinking\b/;
 
 export function walkerStatus(): string {
   return walkStatus;
@@ -371,9 +379,10 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
 }
 
 
-/** Write the collapsed form for homeless thinking (see setStandaloneThinking).
- *  Never cached: the duration ticks until it freezes at completion. */
-function writeStandaloneLabel(row: any, message: unknown, width: number | undefined, pad: number): void {
+/** Write the collapsed form for a standalone thinking, streaming or
+ *  homeless (see setStandaloneThinking). Never cached: the duration ticks
+ *  until it freezes at completion. */
+function writeStandaloneLabel(row: any, message: unknown, width: number | undefined, pad: number, nowMs = Date.now()): void {
   try {
     const msg = message as { content?: unknown; stopReason?: unknown; timestamp?: unknown; durationMs?: unknown };
     let runs = 0;
@@ -382,7 +391,7 @@ function writeStandaloneLabel(row: any, message: unknown, width: number | undefi
         if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim() !== "") runs++;
       }
     }
-    const now = Date.now();
+    const now = nowMs;
     const start = typeof msg?.timestamp === "number" && Number.isFinite(msg.timestamp)
       ? msg.timestamp
       : undefined;
@@ -452,6 +461,10 @@ export function restoreThinkingLabel(row: unknown, pi: ExtensionAPI): void {
     const width = currentColumns();
     const pad = liveOutputPad(pi);
     installRowRail(row, pi);
+    if (rowIsStreaming(row) || standaloneMessages.has(message)) {
+      writeStandaloneLabel(row, message, width, pad);
+      return;
+    }
     const label = thinkingLabelForWidth(thinking, width, pad);
     if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
     labeledFor.set(row, { message, width, pad });
@@ -482,11 +495,11 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
     const thinking = extractThinkingText(message);
     if (!thinking) return;
     const pad = liveOutputPad(pi);
-    // A standalone thinking wears the `▸N thinking` block label; the preview
-    // is a different rendering and must not replace it on the first render
-    // after install (r88: a resumed mixed row showed a preview where live
-    // showed the standalone label).
-    if (standaloneMessages.has(message)) {
+    // A standalone or still-streaming thinking wears the `N thinking` block
+    // label; the preview belongs inside an opened run and must not replace
+    // the block on a resize render.
+    if (standaloneMessages.has(message) || rowIsStreaming(row)) {
+      if (rowIsStreaming(row)) setStandaloneThinking(message, true);
       writeStandaloneLabel(row, message, cols, pad);
       return;
     }
@@ -562,13 +575,16 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
       const message = row.lastMessage as { role?: unknown; content?: unknown };
       if (message?.role !== "assistant") continue;
       if (isRowLiveHosted(row)) continue;
+      const streaming = rowIsStreaming(row);
+      const standalone = standaloneMessages.has(message as object) || streaming;
+      if (streaming) setStandaloneThinking(message, true);
       // Cache hit first: a steady row costs one WeakMap read per pass, not
       // a rail install. The rail was installed when the label was written.
       const cached = labeledFor.get(row);
-      if (!standaloneMessages.has(message as object) &&
-          cached && cached.message === message && cached.width === width && cached.pad === pad) continue;
+      if (!standalone && cached && cached.message === message &&
+          cached.width === width && cached.pad === pad) continue;
       installRowRail(row, pi);
-      if (standaloneMessages.has(message as object)) {
+      if (standalone) {
         writeStandaloneLabel(row, message, width, pad);
         labeled++;
         continue;
@@ -591,16 +607,16 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
   }
 }
 
-/** Streaming relabel window: a live row's preview refreshes at most this
- *  often. Reads as smooth growth (~10 updates/s) without relabeling on
- *  every token, which would rebuild the row's children each delta. */
+/** Streaming relabel window: a live row's block refreshes at most this
+ *  often. Reads as smooth elapsed time (~10 updates/s) without relabeling
+ *  on every token, which would rebuild the row's children each delta. */
 const STREAM_LABEL_MS = 100;
 
 /** Last live relabel per row, so a brand-new row writes immediately (no
  *  stock "Thinking..." frame) and later deltas coalesce. */
 let streamLabelAt = new WeakMap<object, number>();
 
-/** Live-preview writes since activation, for `/collapse`. A number that
+/** Live-block writes since activation, for `/collapse`. A number that
  *  stays at 0 while a model thinks means the streaming path is not firing. */
 let streamWrites = 0;
 
@@ -689,15 +705,7 @@ export function reconcileStreamingLabel(
       installRowRail(row, pi);
       const own = row.lastMessage as { role?: unknown; content?: unknown };
       if (own?.role !== "assistant") continue;
-      // Standalone thinking blocks carry their own total time; never let the
-      // generic streaming preview replace that label with a bare preview.
-      if (standaloneMessages.has(own)) {
-        writeStandaloneLabel(row, own, width, pad);
-        continue;
-      }
-      const live =
-        (row as { isStreaming?: unknown }).isStreaming === true ||
-        (message !== undefined && own === message);
+      const live = rowIsStreaming(row) || (message !== undefined && own === message);
       if (!live) continue;
       const text = extractThinkingText(own);
       // Match Pi: no thinking region renders without non-empty text, so there
@@ -706,10 +714,14 @@ export function reconcileStreamingLabel(
       const at = streamLabelAt.get(row);
       if (at !== undefined && now - at < STREAM_LABEL_MS) continue;
       streamLabelAt.set(row, now);
-      const label = thinkingLabelForWidth(text, width, pad);
+      // A streaming thinking with no host is already a collapsed block:
+      // spinner + `N thinking` + elapsed time. The text preview is only for
+      // a hosted thinking inside an opened run.
+      setStandaloneThinking(own, true);
+      const before = row.hiddenThinkingLabel;
+      writeStandaloneLabel(row, own, width, pad, now);
       labeledFor.delete(row);
-      if (row.hiddenThinkingLabel !== label) {
-        writeLabel(row, label);
+      if (row.hiddenThinkingLabel !== before) {
         streamWrites++;
         written++;
       }

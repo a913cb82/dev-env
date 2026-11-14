@@ -407,8 +407,8 @@ const loadFixture = (name) =>
   }
 
   // R15. A streaming mixed row (thinking then its own prose) must NOT be
-  // hosted: the prose follows the thinking, so the label belongs above the
-  // prose in the row, not inside a block below it.
+  // hosted: the prose follows the thinking, so the collapsed thinking block
+  // belongs above the prose, not inside a block below it.
   {
     const world = driver.createWorld(PI, { width: 100 });
     await driver.restore(world, []);
@@ -429,14 +429,17 @@ const loadFixture = (name) =>
     check("mixed streaming row is not hoisted into the block",
       header >= 0 && lines[header].includes("1 bash") && !lines[header].includes("thinking"),
       lines.join("\n"));
-    const preview = lines.findIndex((l) => l.includes("LIVEOWN"));
+    // The thinking is not hoisted into the run (the run header has no
+    // thinking), but it is still a collapsed block in place above the prose.
+    const block = lines.findIndex((l) => l.includes("1 thinking") && !l.includes("bash"));
     const prose = lines.findIndex((l) => l.includes("PROSE AFTER"));
-    check("mixed streaming row keeps the preview above its prose",
-      preview >= 0 && prose > preview, lines.join("\n"));
+    check("mixed streaming row keeps a collapsed block above its prose",
+      block >= 0 && prose > block && !lines[block].includes("LIVEOWN"), lines.join("\n"));
   }
 
   // R16. Prose arriving after the live host must pull the thinking back
-  // above its own prose; the block must not keep counting it.
+  // above its own prose as a collapsed block; the run must not keep counting
+  // it.
   {
     const world = driver.createWorld(PI, { width: 100 });
     await driver.restore(world, []);
@@ -455,10 +458,10 @@ const loadFixture = (name) =>
     const header = lines.findIndex((l) => l.includes("bash"));
     check("prose arrival releases the live thinking",
       header >= 0 && !lines[header].includes("thinking"), lines.join("\n"));
-    const preview = lines.findIndex((l) => l.includes("LIVEPROSE"));
+    const block = lines.findIndex((l) => /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏▸]1 thinking\b/.test(l));
     const prose = lines.findIndex((l) => l.includes("PROSE ARRIVES"));
-    check("prose arrival keeps the preview above its prose",
-      preview >= 0 && prose > preview, lines.join("\n"));
+    check("prose arrival keeps the collapsed block above its prose",
+      block >= 0 && prose > block && !lines.some((l) => l.includes("LIVEPROSE")), lines.join("\n"));
   }
 
   // R17. The message's own tool mounts after the thinking: the live item
@@ -490,8 +493,8 @@ const loadFixture = (name) =>
       one >= 0 && live > one && two > live, opened.join("\n"));
   }
 
-  // R18. A first-turn thinking with no block to join stays visible; live
-  // hosting must never hide a row with nowhere to go.
+  // R18. A first-turn thinking with no block to join stays visible as a
+  // collapsed block; live hosting must never hide a row with nowhere to go.
   {
     const world = driver.createWorld(PI, { width: 100 });
     await driver.restore(world, []);
@@ -502,8 +505,9 @@ const loadFixture = (name) =>
       { op: "tick" },
     ]);
     const lines = driver.dump(world).lines;
-    check("first-turn live thinking keeps a row",
-      lines.some((l) => l.includes("LIVEALONE")), lines.join("\n"));
+    const block = lines.findIndex((l) => /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]1 thinking\b/.test(l));
+    check("first-turn live thinking is a collapsed block",
+      block >= 0 && !lines.some((l) => l.includes("LIVEALONE")), lines.join("\n"));
     check("first-turn live thinking has no empty block",
       !lines.some((l) => l.trim().startsWith("▸")), lines.join("\n"));
   }

@@ -18,7 +18,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
-import { findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
+import { STANDALONE_THINKING_LABEL, findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
 import { isSpacerLike } from "./tree.js";
 import { registerRunClose, registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent, isRunOpen } from "./trace.js";
 
@@ -617,6 +617,12 @@ function upsertLiveThinking(
   hiddenRuns.add(host.runId);
   bumpLive(host.runId, isNewRow || added || moved);
   setRowLiveHosted(row, true);
+  // A streaming row was marked standalone while it had no host; the run
+  // owns it now, so its block label must not linger behind the open rows.
+  // Event ordering can leave the row and the event on different message
+  // objects; clear both so a later reopen cannot resurrect the block.
+  setStandaloneThinking((row as { lastMessage?: unknown }).lastMessage, false);
+  if (message !== undefined) setStandaloneThinking(message, false);
   if ((row as { hiddenThinkingLabel?: unknown }).hiddenThinkingLabel !== "") {
     try {
       (row as { setHiddenThinkingLabel: (label: string) => void }).setHiddenThinkingLabel("");
@@ -934,11 +940,19 @@ export function detachPass(
           restoreThinkingLabel(row, pi);
         }
         const text = extractThinkingText(message);
+        const concluded = text && message.stopReason != null;
         // A mixed row (prose + thinking) can stand alone too: this only
         // rewrites the thinking label, the prose stays exactly as it is.
-        if (text && message.stopReason != null &&
+        if (concluded &&
             (isSafeToDetach(message, true, overrides) || isPartialSafeToDetach(message, true, overrides))) {
           setStandaloneThinking(message, true);
+        } else if (concluded) {
+          // An unsafe conclusion (e.g. a tool-less abort) must go back to
+          // the stock preview: the streaming pass may have marked the row
+          // standalone before Pi knew how the message would end. Restore
+          // is idempotent; the next poll would otherwise leave the block.
+          setStandaloneThinking(message, false);
+          restoreThinkingLabel(row, pi);
         }
         skip("nohome");
         continue;
@@ -990,9 +1004,14 @@ export function detachPass(
         // such row was vetoed as unsafe (the visible stray label).
         const label = (row as { hiddenThinkingLabel?: unknown }).hiddenThinkingLabel;
         const stem = thinkingPreview(text, 240).slice(0, 20).trim();
-        if (!isPartialSafeToDetach(message, true, overrides) ||
-            typeof label !== "string" || label.length === 0 ||
-            !stem || !stripAnsi(label).includes(stem)) {
+        // A streaming standalone block (`⠋1 thinking`) is our own label too,
+        // but it carries no stem. It names exactly the hidden-label child we
+        // are allowed to remove, so a mixed row can still be detached when
+        // the thinking finished before this pass or was marked standalone.
+        const managed = typeof label === "string" && label.length > 0 &&
+          (STANDALONE_THINKING_LABEL.test(stripAnsi(label)) ||
+            (!!stem && stripAnsi(label).includes(stem)));
+        if (!isPartialSafeToDetach(message, true, overrides) || !managed) {
           skip("unsafe");
           continue;
         }

@@ -1,7 +1,7 @@
 # collapse
 
-Compacts Pi's transcript into one-line tool rows and a one-line thinking
-preview. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
+Compacts Pi's transcript into one-line tool rows and one-line thinking
+blocks. Active only while **Thinking blocks: hidden** is on (`ctrl+t`).
 
 At rest a run is one header, live or settled. Click the header to open
 its rows; the header stays at the top (always `▾` once open, with the
@@ -194,7 +194,8 @@ column 1 while it streams). The header copy is Pi's grey italic, the same
 voice as a thinking block, so every collapsed block reads as one quiet
 layer; the marker keeps the accent. Clicking the header opens the
 per-row view: the header always flips to `▾` and stays on top, active rows
-spin their own wheels, and a `▴Collapse` footer is appended below. Closing
+spin their own wheels, and a `▴Collapse` footer (same grey italic as the
+header) is appended below. Closing
 the run resets any row or thinking preview the user had opened, so opening
 it again starts from the one-line view. A one-row run is the same block in
 every state: settled or live, tool or thinking, it still has a header and
@@ -230,9 +231,11 @@ prose stays mounted, and the run still counts the thinking. Partial needs a
 completed message (streaming labels never flicker), our own label on the row
 (never stock, so visible thinking can never match), and every thinking run
 hidden. The label proves ownership by carrying the head of the preview
-derived from that message's own thinking text — never by a middle ellipsis,
-which a short thinking does not have (requiring one vetoed every short row
-and left its label visible above the block). A lone thinking row with no host tool attaches to the nearest tool
+derived from that message's own thinking text, or by being our standalone
+block (`▸N thinking` / wheel) whose hidden-label child is exactly the one
+removed — never by a middle ellipsis, which a short thinking does not have
+(requiring one vetoed every short row and left its label visible above the
+block). A lone thinking row with no host tool attaches to the nearest tool
 run in transcript order (next preferred, else previous) so its preview
 still has a home — except at the live edge: a thinking row whose message
 is not yet persisted never attaches across a turn-resetting boundary
@@ -268,6 +271,14 @@ current run after its last tool. The host is dropped the moment the row
 gains prose, loses its turn, or completes; the completed detach then
 replaces the provisional item, so live, resume, and restore agree and no
 thinking is counted twice. Any failure restores the stock row (fail-open).
+A streaming thinking with no host yet is already a collapsed block in
+place: wheel, `N thinking`, and elapsed time, with the text hidden. The
+first delta may still show Pi's stock `Thinking...` before its region
+exists; from the next delta on, the block owns the line. If a run can host
+it, the block disappears into that run and the preview text appears only
+inside an opened run. This keeps the latest thinking a single line instead
+of a growing prose row.
+
 The count updates while streaming; a closed header repaints only when the
 count or its all-inclusive clock changes, an open one on every delta.
 
@@ -341,7 +352,9 @@ so skip counts stay honest.
 A completed thinking with nowhere to go (no tools in any reachable run)
 collapses in place as `▸1 thinking  1m54s` instead of lingering — same
 header shape, frozen at completion; while it streams the marker is the
-wheel. Detach runs on
+wheel and the elapsed time ticks. A streaming thinking that later gains a
+host gives up this block to the run; an unsafe conclusion (a tool-less
+abort, for example) falls back to the stock preview instead. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
 are never edited, so history, replay, compaction, and reload backfill keep
@@ -388,22 +401,24 @@ resize lag for seconds on a long transcript. Every hidden-label run in the
 message is patched. If a row's shape is unexpected the setter is used as the
 fallback, so a Pi change costs speed, never correctness.
 
-**Live preview while thinking.** The label is also written on
-`message_update`, so the preview (and its char count) grows as the model
-thinks instead of flashing stock `Thinking...` until the turn settles. Rows
-are matched by their own `isStreaming` flag, not by event identity: an
-extension handler can run before interactive-mode applies the delta, so the
-row's message is then one delta behind the event's, and an identity check
-would never match (leaving the stock label up for the whole thinking
-phase). The label is computed from the row's own message for the same
-reason. Writes happen inline and again from the deferred pass (which runs
-after the event chain, when the row already holds the delta), so event
-ordering cannot defeat it, and they are throttled to ~10/s per row so the
-row is not rebuilt on every token. Pi renders no thinking region at all
-until a block has non-empty text, so there is no pre-text window that would
-need a placeholder. Labels written while streaming are not cached, so the
-settle pass always recomputes the final count; `/collapse` reports the live
-write count.
+**Live block while thinking.** The label is also written on
+`message_update`, so an unhosted thinking becomes a collapsed block (wheel,
+`N thinking`, elapsed time) as the model thinks instead of showing a
+growing text row. Rows are matched by their own `isStreaming` flag, not by
+event identity: an extension handler can run before interactive-mode
+applies the delta, so the row's message is then one delta behind the
+event's, and an identity check would never match (leaving the stock label
+up for the whole thinking phase). The label is computed from the row's own
+message for the same reason. Writes happen inline and again from the
+deferred pass (which runs after the event chain, when the row already holds
+the delta), so event ordering cannot defeat it, and they are throttled to
+~10/s per row so the row is not rebuilt on every token. Pi renders no
+thinking region at all until a block has non-empty text, so the first delta
+may still show stock `Thinking...`; the next one lands the block. Labels
+written while streaming are not cached, so the settle pass always
+recomputes the final time; `/collapse` reports the live write count. Once a
+run can host the row, the block is replaced by that run and its preview is
+shown only when the run is open.
 
 **Any tool, not just the built-ins.** Tools from other extensions and MCP
 servers render through the same row pipeline as soon as they hand over their
@@ -485,7 +500,7 @@ If rows show an unexpected gap, the boundary list names what split them.
 | `rows.ts` | row painting, the stock cell a row opens, tool wrappers, the opt-in slot for foreign tools |
 | `trace.ts` | run registry, boundaries, history phase, diagnostics |
 | `settings.ts` | read-live Pi settings (`hideThinkingBlock`, `outputPad`, columns) |
-| `labels.ts` | tree-walk per-row thinking labels (settle + live preview), walker widget, reconcile |
+| `labels.ts` | tree-walk per-row thinking labels (settle + live block), walker widget, reconcile |
 | `detach.ts` | thinking-row detach (on by default; `COLLAPSE_HIDE_THINKING=0` opts out) |
 | `wrap.ts` | per-instance render wrap deleting the run owner's leading blank |
 | `tree.ts` | duck-typed TUI node helpers shared by wrap/detach (`classNameOf`, `isSpacerLike`) |

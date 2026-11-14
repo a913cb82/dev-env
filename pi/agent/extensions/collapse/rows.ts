@@ -457,6 +457,9 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
     typeof (theme as { italic?: unknown }).italic === "function"
       ? (theme as { italic: (text: string) => string }).italic(text)
       : text;
+  // The quiet block voice: every header summary and the footer control use
+  // the same grey italic as Pi's thinking label.
+  const quiet = (text: string): string => italic(theme.fg("thinkingText", text));
   // A click must act on the run the registry currently assigns: a re-plan
   // can move this tool between paints, and the header closure would then
   // open the old id while the next sync paints the new run closed.
@@ -487,7 +490,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   const errors = runErrorCount(runId);
   // Collapsed blocks share one voice: the same grey italic as Pi's thinking
   // label. Rows keep their identity styling; only the block header is quiet.
-  const styledSummary = baseSummary ? italic(theme.fg("thinkingText", baseSummary)) : "";
+  const styledSummary = baseSummary ? quiet(baseSummary) : "";
   // Errors must be visible while the block rests closed: opening every run to
   // discover a failure defeats the one-line view.
   const summary = errors > 0
@@ -620,7 +623,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   if (ids.length >= 1) {
     // Same clock as the header; long blocks keep the time visible at the
     // bottom even when the top header has scrolled out of the viewport.
-    const footer = new CollapsedLine("Collapse", time, liveOutputPad(pi), theme, false, "▴");
+    const footer = new CollapsedLine(quiet("Collapse"), time, liveOutputPad(pi), theme, false, "▴");
     trace.addChild(
       new MouseRegion(footer, (event: any) => {
         if (!event || event.type !== "click") return undefined;

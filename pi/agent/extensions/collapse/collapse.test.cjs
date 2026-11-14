@@ -583,6 +583,9 @@ function clickFirstRow(comp) {
       check("header click opens rows+footer", openedHdr.length === 4 && openedHdr[3].includes("Collapse"), JSON.stringify(openedHdr));
       check("open run keeps a top header", openedHdr[0].includes("▾") && openedHdr[0].includes("1 read"), JSON.stringify(openedHdr[0]));
       check("footer points back up", plainText(openedHdr[3]).startsWith("▴"), JSON.stringify(openedHdr[3]));
+      check("footer copy is grey italic like the header",
+        openedHdr[3].includes("<i>") && openedHdr[3].includes("thinkingText"),
+        JSON.stringify(openedHdr[3]));
       hdrComp().children[3].onMouse({ type: "click", button: "left" });
       const closed = hdrComp().render(90);
       check("footer click closes to header", closed.length === 1 && closed[0].includes("▸"), JSON.stringify(closed));
@@ -2908,24 +2911,28 @@ function clickFirstRow(comp) {
     modW.captureWalkerTui({ children: [] });
   }
 
-  // 49. streaming relabel: the live row shows OUR preview, never stock
+  // 49. streaming relabel: the live row is already a collapsed block, never
+  // the stock label or an inline text preview.
   {
     resetTrace();
-    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(500) }] };
+    const msg = { role: "assistant", timestamp: 0, content: [{ type: "thinking", thinking: "x".repeat(500) }] };
     const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
     row.lastMessage = msg;
     row.hiddenThinkingLabel = "Thinking...";
     modW.captureWalkerTui({ children: [row] });
     check("streaming relabel exported", typeof modW.reconcileStreamingLabel === "function", typeof modW.reconcileStreamingLabel);
-    modW.reconcileStreamingLabel(piW, msg, 1000);
-    check("streaming label is ours, not stock", row.hiddenThinkingLabel !== "Thinking..." && /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
-    check("streaming label carries the preview", /x/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    modW.reconcileStreamingLabel(piW, msg, 2000);
+    check("streaming label is a collapsed block", row.hiddenThinkingLabel !== "Thinking..." &&
+      /(?:^|\s)[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]1 thinking\b/.test(row.hiddenThinkingLabel) &&
+      /2s\s*$/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    check("streaming block hides the preview text", !row.hiddenThinkingLabel.includes("x"), row.hiddenThinkingLabel);
   }
 
-  // 50. the count grows with the text; updates are throttled but never stuck
+  // 50. the elapsed time advances with the stream; updates are throttled but
+  // never stuck, and the label stays a block (never a char preview).
   {
     resetTrace();
-    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "a".repeat(400) }] };
+    const msg = { role: "assistant", timestamp: 0, content: [{ type: "thinking", thinking: "a".repeat(400) }] };
     const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
     row.lastMessage = msg;
     row.hiddenThinkingLabel = "";
@@ -2936,9 +2943,9 @@ function clickFirstRow(comp) {
     msg.content[0].thinking = "a".repeat(4000);
     modW.reconcileStreamingLabel(piW, msg, 5050);
     check("throttled delta keeps label", row.hiddenThinkingLabel === first, `${row.hiddenThinkingLabel} VS ${first}`);
-    // Once the window passes, the bigger text lands (smooth growth).
-    modW.reconcileStreamingLabel(piW, msg, 5200);
-    check("throttle window releases", row.hiddenThinkingLabel !== first && /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    // Once the window passes, the elapsed time lands (smooth blocks).
+    modW.reconcileStreamingLabel(piW, msg, 7000);
+    check("throttle window releases", row.hiddenThinkingLabel !== first && /7s\s*$/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
   }
 
   // 51. no thinking text renders no region, so no label is written at all
@@ -2961,7 +2968,7 @@ function clickFirstRow(comp) {
   {
     resetTrace();
     const hist = { role: "assistant", content: [{ type: "thinking", thinking: "old thoughts here" }] };
-    const live = { role: "assistant", content: [{ type: "thinking", thinking: "n".repeat(300) }] };
+    const live = { role: "assistant", timestamp: 0, content: [{ type: "thinking", thinking: "n".repeat(300) }] };
     const oldRow = thinkingRow([new Spacer(), new MouseRegion(new Text("T"))]);
     oldRow.lastMessage = hist;
     oldRow.hiddenThinkingLabel = "OLD-LABEL";
@@ -2971,13 +2978,13 @@ function clickFirstRow(comp) {
     modW.captureWalkerTui({ children: [oldRow, liveRow] });
     modW.reconcileStreamingLabel(piW, live, 12000);
     check("history row untouched", oldRow.hiddenThinkingLabel === "OLD-LABEL", oldRow.hiddenThinkingLabel);
-    check("live row relabeled", /ch/.test(liveRow.hiddenThinkingLabel), liveRow.hiddenThinkingLabel);
+    check("live row relabeled as a block", /12s\s*$/.test(liveRow.hiddenThinkingLabel) && !/ch/.test(liveRow.hiddenThinkingLabel), liveRow.hiddenThinkingLabel);
   }
 
   // 53. the settle pass still writes the final count after streaming
   {
     resetTrace();
-    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "z".repeat(300) }] };
+    const msg = { role: "assistant", timestamp: 0, content: [{ type: "thinking", thinking: "z".repeat(300) }] };
     const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
     row.lastMessage = msg;
     row.hiddenThinkingLabel = "";
@@ -2985,9 +2992,11 @@ function clickFirstRow(comp) {
     modW.reconcileStreamingLabel(piW, msg, 15000);
     const during = row.hiddenThinkingLabel;
     msg.content[0].thinking = "z".repeat(9000);
+    msg.stopReason = "stop";
+    msg.durationMs = 9000;
     // Streaming wrote labels without caching, so the settle pass recomputes.
     modW.reconcileThinkingLabels(piW);
-    check("settle pass corrects the count", row.hiddenThinkingLabel !== during && /ch/.test(row.hiddenThinkingLabel), `${row.hiddenThinkingLabel} VS ${during}`);
+    check("settle pass freezes the elapsed time", row.hiddenThinkingLabel !== during && /9s\s*$/.test(row.hiddenThinkingLabel), `${row.hiddenThinkingLabel} VS ${during}`);
   }
 
   // 54. message_start/message_update schedule a pass (row shadowed promptly)
@@ -3017,7 +3026,7 @@ function clickFirstRow(comp) {
   // row's message is one delta behind the event's)
   {
     resetTrace();
-    const stale = { role: "assistant", content: [{ type: "thinking", thinking: "s".repeat(600) }] };
+    const stale = { role: "assistant", timestamp: 0, content: [{ type: "thinking", thinking: "s".repeat(600) }] };
     const evt = { role: "assistant", content: [{ type: "thinking", thinking: "s".repeat(700) }] };
     const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
     row.lastMessage = stale;
@@ -3025,8 +3034,9 @@ function clickFirstRow(comp) {
     row.hiddenThinkingLabel = "Thinking...";
     modW.captureWalkerTui({ children: [row] });
     modW.reconcileStreamingLabel(piW, evt, 20000);
-    check("stale-identity streaming row labeled", row.hiddenThinkingLabel !== "Thinking..." && /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
-    check("label follows the row's own text", /s/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    check("stale-identity streaming row labeled as a block", row.hiddenThinkingLabel !== "Thinking..." &&
+      /20s\s*$/.test(row.hiddenThinkingLabel) && !/ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    check("label follows the row's own clock", /1 thinking\b/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
   }
 
   // 56. settled rows are never touched by the streaming path
@@ -3046,14 +3056,14 @@ function clickFirstRow(comp) {
   // 57. the deferred pass relabels any live row (post-UI-update ordering)
   {
     resetTrace();
-    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "p".repeat(800) }] };
+    const msg = { role: "assistant", timestamp: 0, content: [{ type: "thinking", thinking: "p".repeat(800) }] };
     const row = thinkingRow([new Spacer(), new MouseRegion(new Text("Thinking..."))]);
     row.lastMessage = msg;
     row.isStreaming = true;
     row.hiddenThinkingLabel = "Thinking...";
     modW.captureWalkerTui({ children: [row] });
     modW.reconcileStreamingLabel(piW, undefined, 24000);
-    check("no-arg pass labels live rows", /ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
+    check("no-arg pass labels live rows as a block", /24s\s*$/.test(row.hiddenThinkingLabel) && !/ch/.test(row.hiddenThinkingLabel), row.hiddenThinkingLabel);
     modW.captureWalkerTui({ children: [] });
   }
 
@@ -3065,13 +3075,13 @@ function clickFirstRow(comp) {
     const row = new agent.AssistantMessageComponent(
       undefined, true, undefined, "Thinking...", 1, [],
     );
-    const msg = { role: "assistant", content: [{ type: "thinking", thinking: "real ".repeat(200) }] };
+    const msg = { role: "assistant", timestamp: Date.now() - 2000, content: [{ type: "thinking", thinking: "real ".repeat(200) }] };
     row.updateContent(msg, true);
     modW.captureWalkerTui({ children: [row] });
-    modW.reconcileStreamingLabel(piW, undefined, 30000);
+    modW.reconcileStreamingLabel(piW, undefined);
     const rendered = row.render(100).join("\n");
     check("real streaming row drops stock label", !rendered.includes("Thinking..."), rendered.slice(0, 80));
-    check("real streaming row renders our preview", /ch/.test(rendered) && /real/.test(rendered), rendered.slice(0, 80));
+    check("real streaming row renders a collapsed block", /1 thinking\b/.test(rendered) && /2s\b/.test(rendered) && !/real/.test(rendered), rendered.slice(0, 120));
     // Settling turns the flag off: the streaming path must then leave it alone.
     row.updateContent(msg, false);
     row.setHiddenThinkingLabel("SETTLED");
@@ -3699,7 +3709,7 @@ function clickFirstRow(comp) {
     module.reconcileStreamingLabel(pi, undefined, Date.now() + 1000);
     check("streaming row is labeled", row.hiddenThinkingLabel.length > 0, JSON.stringify(row.hiddenThinkingLabel));
     const first = plainText(row.render(100)[1]);
-    check("streaming row spins the wheel", logicLib69.WHEEL_FRAMES.some((f) => first.startsWith(f)), JSON.stringify(first.slice(0, 6)));
+    check("streaming row spins the wheel", logicLib69.WHEEL_FRAMES.some((f) => first.trimStart().startsWith(f)), JSON.stringify(first.slice(0, 6)));
   }
 
   if (before === undefined) delete process.stdout.columns;
@@ -5267,6 +5277,45 @@ function clickFirstRow(comp) {
     const done = labelsLib.standaloneThinkingLabel(1, 2000, 100, false);
     check("standalone finished thinking keeps the marker",
       done.startsWith("▸1 thinking") && done.includes("2s"), JSON.stringify(done));
+  }
+
+  // 106. A latest streaming thinking with no host is already a collapsed
+  // block: spinner, `1 thinking`, elapsed time. It must not show the live
+  // text preview that belongs inside an opened run.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    try {
+      const msg = {
+        role: "assistant", timestamp: now - 32000, stopReason: "pending",
+        content: [{ type: "thinking", thinking: "secret reasoning ".repeat(80) }],
+      };
+      const row = new agent.AssistantMessageComponent(
+        undefined, true, undefined, "Thinking...", 1, [],
+      );
+      row.updateContent(msg, true);
+      labelsLib.captureWalkerTui({ children: [row] });
+      labelsLib.reconcileStreamingLabel(piS, msg, now);
+      const rendered = plainText(row.render(100).join("\n"));
+      check("latest streaming thinking is a collapsed block",
+        /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]1 thinking\b/.test(rendered.trim()) && rendered.includes("32s"),
+        JSON.stringify(rendered.slice(0, 160)));
+      check("latest streaming thinking hides its preview text",
+        !rendered.includes("secret reasoning"), JSON.stringify(rendered.slice(0, 160)));
+      // The poll and a resize render must preserve the block, not resurrect
+      // the preview label.
+      labelsLib.reconcileThinkingLabels(piS);
+      const polled = plainText(row.render(100).join("\n"));
+      check("poll keeps the streaming block",
+        /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]1 thinking\b/.test(polled.trim()) && !polled.includes("secret reasoning"),
+        JSON.stringify(polled.slice(0, 160)));
+    } finally {
+      Date.now = realNow;
+    }
   }
 
   if (failures > 0) {
