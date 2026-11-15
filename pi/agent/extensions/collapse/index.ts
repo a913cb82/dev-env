@@ -389,6 +389,10 @@ export default function (pi: ExtensionAPI) {
     ownBreatheTimer = undefined;
     if (activation === newestActivation) {
       collapseUi = undefined;
+      collapseSawUI = false;
+      collapseLastHidden = undefined;
+      pendingHistoryPlan = undefined;
+      pendingHistoryIds = undefined;
       setThemeProvider(undefined);
       clearCollapsePokes();
       clearWrappedToolNames();
