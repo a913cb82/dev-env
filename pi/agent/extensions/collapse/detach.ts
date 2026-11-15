@@ -403,18 +403,11 @@ function ownProseAfterThinking(message: unknown): boolean {
   return content.slice(lastThinking + 1).some(isVisibleTextBlock);
 }
 
-/** Any visible prose in the message. A live host is conservative: a mixed
- *  row keeps its own label above the prose (the completed pass may still
- *  place it, but live must never hoist it below prose). */
-function messageHasProse(message: unknown): boolean {
-  return hasVisibleText((message as { content?: unknown } | undefined)?.content);
-}
-
 function messageVisibleToUser(message: unknown): boolean {
   if (!message || typeof message !== "object") return false;
   const role = (message as { role?: unknown }).role;
   if (role === "user") return true;
-  if (role === "assistant") return messageHasProse(message);
+  if (role === "assistant") return hasVisibleText((message as { content?: unknown }).content);
   return false;
 }
 
@@ -633,7 +626,7 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
       }
       return 0;
     }
-    if (ownProseAfterThinking(msg) || messageHasProse(msg)) {
+    if (ownProseAfterThinking(msg) || hasVisibleText((msg as { content?: unknown } | undefined)?.content)) {
       if (existing) {
         removeLiveThinking(row);
         restoreThinkingLabel(row, pi);
@@ -873,7 +866,7 @@ export function detachPass(
       if (liveThinkingByRow.has(row)) {
         const settled = (row as { isStreaming?: unknown }).isStreaming !== true ||
           (message.stopReason != null && message.stopReason !== "pending");
-        if (settled || ownProseAfterThinking(message) || messageHasProse(message)) {
+        if (settled || ownProseAfterThinking(message) || hasVisibleText((message as { content?: unknown } | undefined)?.content)) {
           removeLiveThinking(row);
           restoreThinkingLabel(row, pi);
         }
@@ -967,7 +960,7 @@ export function detachPass(
       // isSafeToDetach treats that as not completed.
       if (runId !== undefined && (row as { isStreaming?: unknown })?.isStreaming === true) {
         const text = extractThinkingText(message);
-        if (text && !ownProseAfterThinking(message) && !messageHasProse(message)) {
+        if (text && !ownProseAfterThinking(message) && !hasVisibleText((message as { content?: unknown } | undefined)?.content)) {
           upsertLiveThinking(row, { runId, ...anchorFor(index, i, prev, runId) }, text, message);
         }
         skip("streaming");

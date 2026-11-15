@@ -12,7 +12,7 @@ import { Container, type Component } from "@earendil-works/pi-tui";
 import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatCharCount, formatRunDuration, hasThinkingText, hasVisibleText, labelBudget, padLabel, thinkingLabelForWidth, thinkingPreview, thinkingRunCount, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
-import { CollapsedLine, thinkingMarkdown } from "./line.js";
+import { CollapsedLine, dimText as dim, quietText as quiet, thinkingMarkdown } from "./line.js";
 
 /** Widget key for the invisible handle holder (renders zero lines). */
 export const WALKER_KEY = "collapse-thinking-walker";
@@ -559,22 +559,6 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
     labeledFor.set(row, { message, width: cols, pad });
   } catch {
     // Fail-open: the poll relabels on its next pass.
-  }
-}
-
-function quiet(theme: any, text: string): string {
-  try {
-    return theme?.italic(theme.fg("thinkingText", text)) ?? text;
-  } catch {
-    return text;
-  }
-}
-
-function dim(theme: any, text: string): string {
-  try {
-    return theme?.fg("dim", text) ?? text;
-  } catch {
-    return text;
   }
 }
 

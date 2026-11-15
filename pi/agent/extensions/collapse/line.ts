@@ -8,6 +8,33 @@ import { currentColumns } from "./settings.js";
 
 const COUNT_GAP = 2;
 
+/** Safe theme decorations shared by every collapse surface. A theme that
+ *  lacks a style (or throws) degrades to plain text instead of failing the
+ *  render. */
+export function italicText(theme: any, text: string): string {
+  try {
+    return (typeof theme?.italic === "function" ? theme.italic(text) : text) ?? text;
+  } catch {
+    return text;
+  }
+}
+
+export function quietText(theme: any, text: string): string {
+  try {
+    return italicText(theme, theme?.fg("thinkingText", text));
+  } catch {
+    return text;
+  }
+}
+
+export function dimText(theme: any, text: string): string {
+  try {
+    return theme?.fg("dim", text) ?? text;
+  } catch {
+    return text;
+  }
+}
+
 /** Middle-truncate styled text to a visible width: keep the head and the
  *  tail around "…" (end truncation would eat the file name / command
  *  tail that identifies the row). Falls back to a plain slice when the

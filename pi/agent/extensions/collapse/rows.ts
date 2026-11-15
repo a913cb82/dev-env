@@ -1,7 +1,7 @@
 // Row painting: one collapsed line per tool, and the stock cell a row opens
 // into. Everything here is pure rendering plus the trace registry.
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { CollapsedLine, thinkingMarkdown } from "./line.js";
+import { CollapsedLine, italicText, quietText, thinkingMarkdown } from "./line.js";
 export { CollapsedLine };
 import {
   createBashToolDefinition,
@@ -414,18 +414,6 @@ function runSpan(runId: number): { startedAt?: number; endedAt?: number } {
     endedAt = endedAt === undefined ? thinking.endedAt : Math.max(endedAt, thinking.endedAt);
   }
   return { startedAt, endedAt };
-}
-
-function italicText(theme: Theme, text: string): string {
-  return typeof (theme as { italic?: unknown }).italic === "function"
-    ? (theme as { italic: (text: string) => string }).italic(text)
-    : text;
-}
-
-/** The quiet block voice: every header summary and the footer control use
- *  the same grey italic as Pi's thinking label. */
-function quietText(theme: Theme, text: string): string {
-  return italicText(theme, theme.fg("thinkingText", text));
 }
 
 /** Run-level header text: tool counts, thinking count, and any failure count. */
