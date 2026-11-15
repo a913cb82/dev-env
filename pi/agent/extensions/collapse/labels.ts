@@ -9,7 +9,7 @@
  * stops matching, everything below bails to stock behavior (never throws).
  */
 import { Container, type Component } from "@earendil-works/pi-tui";
-import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatCharCount, formatRunDuration, isVisibleTextBlock, labelBudget, padLabel, thinkingLabelForWidth, thinkingPreview, wheelFrameAt } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatCharCount, formatRunDuration, hasThinkingText, hasVisibleText, labelBudget, padLabel, thinkingLabelForWidth, thinkingPreview, thinkingRunCount, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import { CollapsedLine, thinkingMarkdown } from "./line.js";
@@ -322,8 +322,7 @@ export function hasVisibleProse(node: unknown): boolean {
   const lastMessage = (node as { lastMessage?: unknown }).lastMessage;
   if (!lastMessage || typeof lastMessage !== "object") return false;
   if ((lastMessage as { role?: unknown }).role !== "assistant") return false;
-  const content = (lastMessage as { content?: unknown }).content;
-  return Array.isArray(content) && content.some(isVisibleTextBlock);
+  return hasVisibleText((lastMessage as { content?: unknown }).content);
 }
 
 
@@ -420,19 +419,6 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
 }
 
 
-/** Non-empty thinking runs in a message; Pi groups adjacent runs into one
- *  label, so the count is per message, not per block. */
-function thinkingRuns(message: unknown): number {
-  const msg = message as { content?: unknown } | undefined;
-  let runs = 0;
-  if (Array.isArray(msg?.content)) {
-    for (const block of msg.content as Array<{ type?: unknown; thinking?: unknown }>) {
-      if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim() !== "") runs++;
-    }
-  }
-  return runs;
-}
-
 interface StandaloneInfo {
   runs: number;
   complete: boolean;
@@ -447,7 +433,7 @@ function standaloneInfo(message: unknown, now = Date.now()): StandaloneInfo {
   const msg = message as {
     content?: unknown; stopReason?: unknown; timestamp?: unknown; durationMs?: unknown;
   };
-  const runs = thinkingRuns(message);
+  const runs = thinkingRunCount(message);
   const start = typeof msg?.timestamp === "number" && Number.isFinite(msg.timestamp)
     ? msg.timestamp
     : undefined;
@@ -619,7 +605,7 @@ function standaloneCandidate(row: any, pi?: ExtensionAPI): boolean {
     const stop = message.stopReason;
     if (stop === "aborted" || stop === "error" || stop === "length") return false;
     if (!standaloneMessages.has(message) && (row as { isStreaming?: unknown }).isStreaming !== true) return false;
-    return (extractThinkingText(message) ?? "").length > 0;
+    return hasThinkingText(message);
   } catch {
     return false;
   }
@@ -899,9 +885,9 @@ export function reconcileStreamingLabel(
     };
     let candidates = liveRows.filter(isLive);
     if (message != null) {
-      const text = extractThinkingText(message);
-      // A text-only message has no thinking row worth finding.
-      if (!text && candidates.length === 0) return 0;
+      // A text-only message has no thinking row worth finding. Cheap
+      // yes/no check: this runs on every delta.
+      if (!hasThinkingText(message) && candidates.length === 0) return 0;
       const found = rowByMessage.get(message as object);
       if (found && isLive(found) && !candidates.includes(found)) candidates.push(found);
       if (candidates.length === 0) {
@@ -944,10 +930,9 @@ export function reconcileStreamingLabel(
       if (own?.role !== "assistant") continue;
       const live = rowIsStreaming(row) || (message !== undefined && own === message);
       if (!live) continue;
-      const text = extractThinkingText(own);
       // Match Pi: no thinking region renders without non-empty text, so there
       // is nothing to label and nothing that could flash as stock.
-      if (!text) continue;
+      if (!hasThinkingText(own)) continue;
       const at = streamLabelAt.get(row);
       if (at !== undefined && now - at < STREAM_LABEL_MS) continue;
       streamLabelAt.set(row, now);

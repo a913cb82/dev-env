@@ -5324,6 +5324,36 @@ function clickFirstRow(comp) {
       done.startsWith("▸1 thinking") && done.includes("2s"), JSON.stringify(done));
   }
 
+  // 105b. Pi coalesces adjacent thinking blocks into one hidden label, so
+  // the standalone block counts one run, not one per block.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const now = 1700000000000;
+    try {
+      const msg = {
+        role: "assistant", timestamp: now, stopReason: "pending",
+        content: [
+          { type: "thinking", thinking: "first half" },
+          { type: "thinking", thinking: "second half" },
+        ],
+      };
+      const row = new agent.AssistantMessageComponent(
+        undefined, true, undefined, "Thinking...", 1, [],
+      );
+      row.updateContent(msg, true);
+      labelsLib.captureWalkerTui({ children: [row] });
+      labelsLib.reconcileStreamingLabel(piS, msg, now);
+      const rendered = plainText(row.render(100).join("\n"));
+      check("adjacent thinking blocks are one run",
+        /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]1 thinking\b/.test(rendered.trim()) && !rendered.includes("2 thinking"),
+        JSON.stringify(rendered.slice(0, 160)));
+    } finally {
+      labelsLib.resetLabelsState();
+    }
+  }
+
   // 106. A latest streaming thinking with no host is already a collapsed
   // block: spinner, `1 thinking`, elapsed time. It must not show the live
   // text preview that belongs inside an opened run.

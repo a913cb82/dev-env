@@ -31,6 +31,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isThinkingRow, reconcileStreamingLabel, refreshThinkingRows, walkerTui } from "./labels.js";
 import { classNameOf, isSpacerLike } from "./tree.js";
+import { hasVisibleText } from "./logic.js";
 import { isHiddenThinking } from "./settings.js";
 import { traceEntries, traceOwnerId } from "./trace.js";
 
@@ -248,8 +249,8 @@ function gluesToPrev(prev: unknown): boolean {
     // under it would drop the blank line the transcript expects between the
     // prose and the header (visible while the row is still streaming, and
     // permanent after the thinking is detached).
-    const message = (prev as { lastMessage?: { content?: Array<{ type?: string; text?: string }> } }).lastMessage;
-    if ((message?.content ?? []).some((b) => b?.type === "text" && (b.text ?? "").trim() !== "")) return false;
+    const message = (prev as { lastMessage?: { content?: unknown } }).lastMessage;
+    if (hasVisibleText(message?.content)) return false;
     const kids = rowKids(prev);
     for (let i = kids.length - 1; i >= 0; i--) {
       if (isSpacerLike(kids[i])) continue;

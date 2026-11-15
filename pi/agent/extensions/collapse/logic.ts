@@ -429,6 +429,49 @@ export function previewLines(text: string, expanded: boolean, limit = 10): { lin
   return { lines, remaining: all.length - lines.length };
 }
 
+/** True when the message carries at least one non-blank thinking block.
+ *  Stops at the first hit: hot paths only need the yes/no answer, not the
+ *  joined text. */
+export function hasThinkingText(message: unknown): boolean {
+  const content = (message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => {
+    const candidate = block as { type?: unknown; thinking?: unknown } | null | undefined;
+    return candidate?.type === "thinking" &&
+      typeof candidate.thinking === "string" &&
+      candidate.thinking.trim() !== "";
+  });
+}
+
+/** Number of Pi-visible thinking runs in a message. Pi coalesces adjacent
+ *  thinking blocks into one hidden label; blank-only runs contribute
+ *  nothing. A non-thinking block (text, tool call) separates runs. */
+export function thinkingRunCount(message: unknown): number {
+  const content = (message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return 0;
+  let runs = 0;
+  for (let i = 0; i < content.length; i++) {
+    const block = content[i] as { type?: unknown; thinking?: unknown } | null | undefined;
+    if (block?.type !== "thinking") continue;
+    let nonBlank = false;
+    for (; i < content.length; i++) {
+      const peer = content[i] as { type?: unknown; thinking?: unknown } | null | undefined;
+      if (peer?.type !== "thinking") break;
+      if (typeof peer.thinking === "string" && peer.thinking.trim() !== "") nonBlank = true;
+    }
+    i--;
+    if (nonBlank) runs++;
+  }
+  return runs;
+}
+
+/** True when a content array renders any visible text block. The one
+ *  predicate shared by row labels, detach planning, and wrap spacing. */
+export function hasVisibleText(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some(isVisibleTextBlock);
+}
+
 export function extractThinkingText(message: {
   role?: unknown;
   content?: unknown;

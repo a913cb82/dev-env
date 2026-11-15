@@ -261,6 +261,21 @@ function check(name, cond, extra) {
     logic.extractThinkingText({ role: "user", content: [{ type: "thinking", thinking: "a" }] }) === undefined,
     "should be undefined",
   );
+  // Content scanners: adjacent thinking blocks are one Pi run; a text or
+  // tool block separates runs, and blank-only runs never count.
+  {
+    const t = (thinking) => ({ type: "thinking", thinking });
+    check("thinking one run", logic.thinkingRunCount({ content: [t("a")] }) === 1, String(logic.thinkingRunCount({ content: [t("a")] })));
+    check("thinking adjacent blocks coalesce", logic.thinkingRunCount({ content: [t("a"), t("b")] }) === 1, String(logic.thinkingRunCount({ content: [t("a"), t("b")] })));
+    check("thinking blank-only run skipped", logic.thinkingRunCount({ content: [t("  "), t("a")] }) === 1, String(logic.thinkingRunCount({ content: [t("  "), t("a")] })));
+    check("thinking text separates runs", logic.thinkingRunCount({ content: [t("a"), { type: "text", text: "prose" }, t("b")] }) === 2, String(logic.thinkingRunCount({ content: [t("a"), { type: "text", text: "prose" }, t("b")] })));
+    check("thinking tool separates runs", logic.thinkingRunCount({ content: [t("a"), { type: "toolCall", id: "x" }, t("b")] }) === 2, String(logic.thinkingRunCount({ content: [t("a"), { type: "toolCall", id: "x" }, t("b")] })));
+    check("thinking text detects", logic.hasThinkingText({ content: [t(" "), t("a")] }) === true, "");
+    check("thinking text absent", logic.hasThinkingText({ content: [t(" ")] }) === false, "");
+    check("visible text detects", logic.hasVisibleText([{ type: "text", text: "a" }, t("b")]) === true, "");
+    check("visible text ignores thinking", logic.hasVisibleText([t("b")]) === false, "");
+  }
+
   // labelBudget / padLabel (label must be exactly columns-3: pad + scrollbar)
   check("budget wide", logic.labelBudget(200) === 197, logic.labelBudget(200));
   check("budget fallback", logic.labelBudget(undefined) === 77, logic.labelBudget(undefined));

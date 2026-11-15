@@ -16,7 +16,7 @@
  * degrades to the stock Pi row, never a duplicate.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { extractThinkingText, isPartialSafeToDetach, isSafeToDetach, sessionContextEntries, stripAnsi, thinkingPreview } from "./logic.js";
+import { extractThinkingText, hasThinkingText, hasVisibleText, isPartialSafeToDetach, isSafeToDetach, isVisibleTextBlock, sessionContextEntries, stripAnsi, thinkingPreview } from "./logic.js";
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { STANDALONE_THINKING_LABEL, findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
 import { isSpacerLike } from "./tree.js";
@@ -400,21 +400,14 @@ function ownProseAfterThinking(message: unknown): boolean {
     if ((block as { type?: unknown } | null | undefined)?.type === "thinking") lastThinking = i;
   });
   if (lastThinking < 0) return false;
-  return content.slice(lastThinking + 1).some((block) => {
-    const part = block as { type?: unknown; text?: unknown } | null | undefined;
-    return part?.type === "text" && typeof part.text === "string" && part.text.trim() !== "";
-  });
+  return content.slice(lastThinking + 1).some(isVisibleTextBlock);
 }
 
 /** Any visible prose in the message. A live host is conservative: a mixed
  *  row keeps its own label above the prose (the completed pass may still
  *  place it, but live must never hoist it below prose). */
 function messageHasProse(message: unknown): boolean {
-  const content = (message as { content?: unknown })?.content;
-  return Array.isArray(content) && content.some((block) => {
-    const part = block as { type?: unknown; text?: unknown } | null | undefined;
-    return part?.type === "text" && typeof part.text === "string" && part.text.trim() !== "";
-  });
+  return hasVisibleText((message as { content?: unknown } | undefined)?.content);
 }
 
 function messageVisibleToUser(message: unknown): boolean {
@@ -625,7 +618,7 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
     }
     // Text-only deltas have no live thinking to host; avoid the row scan
     // that r89 removed from this per-token path.
-    if (message != null && !extractThinkingText(message)) return 0;
+    if (message != null && !hasThinkingText(message)) return 0;
     const row = findStreamingRow(message);
     if (!row || !isThinkingRow(row)) return 0;
     const msg = (message ?? row.lastMessage) as { role?: unknown; stopReason?: unknown };
@@ -647,14 +640,14 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
       }
       return 0;
     }
-    const text = extractThinkingText(msg);
-    if (!text) {
+    if (!hasThinkingText(msg)) {
       if (existing) {
         removeLiveThinking(row);
         restoreThinkingLabel(row, pi);
       }
       return 0;
     }
+    const text = extractThinkingText(msg)!;
     const own = ownToolRun(msg);
     if (existing) {
       // Same row, still streaming: no transcript scan. Keep the host stable
@@ -749,11 +742,7 @@ export function detachPass(
       const role = (message as { role?: unknown }).role;
       if (role === "user") return true;
       if (role === "assistant") {
-        const content = (message as { content?: unknown }).content;
-        return Array.isArray(content) && content.some((block) =>
-          (block as { type?: unknown })?.type === "text" &&
-          typeof (block as { text?: unknown }).text === "string" &&
-          (block as { text: string }).text.trim() !== "");
+        return hasVisibleText((message as { content?: unknown }).content);
       }
       return false;
     };
