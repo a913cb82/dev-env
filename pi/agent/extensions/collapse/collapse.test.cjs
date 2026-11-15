@@ -5539,19 +5539,30 @@ function clickFirstRow(comp) {
     }
   }
 
-  // 110. Session shutdown clears only this activation's slots and timers.
+  // 110. Session shutdown clears only this activation's slots and timers,
+  // even when a newer activation shares the module instance.
   {
     const mod = await jiti.import(path.join(HERE, "index.ts"));
-    const piS = createMockPi();
-    (mod.default ?? mod)(piS);
+    const factory = mod.default ?? mod;
+    const piA = createMockPi();
+    factory(piA);
+    const piB = createMockPi();
+    factory(piB);
     const g = globalThis;
     const WRAP = "__collapseWrapTool";
     const POLL = "__collapsePollTick";
     const BREATHE = "__collapseBreatheTick";
-    check("activation installs wrap slot", typeof g[WRAP] === "function", typeof g[WRAP]);
-    check("activation installs poll timer", !!g[POLL]?.timer, typeof g[POLL]);
-    check("activation installs breathe timer", !!g[BREATHE]?.timer, typeof g[BREATHE]);
-    piS.handlers.get("session_shutdown")?.[0]?.();
+    const wrapB = g[WRAP];
+    const pollB = g[POLL]?.timer;
+    const breatheB = g[BREATHE]?.timer;
+    check("activation installs wrap slot", typeof wrapB === "function", typeof wrapB);
+    check("activation installs poll timer", !!pollB, typeof pollB);
+    check("activation installs breathe timer", !!breatheB, typeof breatheB);
+    piA.handlers.get("session_shutdown")?.[0]?.();
+    check("older shutdown keeps the newer wrap slot", g[WRAP] === wrapB, typeof g[WRAP]);
+    check("older shutdown keeps the newer poll timer", g[POLL]?.timer === pollB, typeof g[POLL]);
+    check("older shutdown keeps the newer breathe timer", g[BREATHE]?.timer === breatheB, typeof g[BREATHE]);
+    piB.handlers.get("session_shutdown")?.[0]?.();
     check("shutdown clears wrap slot", !(WRAP in g), typeof g[WRAP]);
     check("shutdown clears poll timer", !(POLL in g), typeof g[POLL]);
     check("shutdown clears breathe timer", !(BREATHE in g), typeof g[BREATHE]);
