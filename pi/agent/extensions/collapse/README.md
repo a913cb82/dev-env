@@ -367,9 +367,11 @@ header shape, frozen at completion; while it streams the marker is the
 wheel and the elapsed time ticks. Clicking the header opens the block
 preview (`▾`, a middle-truncated line with its size, `▴Collapse`) instead
 of expanding Pi's hidden label immediately; clicking the preview then shows
-the full text. A streaming thinking that later gains a host gives up this
-block to the run; an unsafe conclusion (a tool-less abort, for example)
-falls back to the stock preview instead. Detach runs on
+the full text. The standalone label is also the block's ownership proof:
+when Pi hands the row a fresh final message object, the block stays a block
+instead of reverting to Pi's native full-text click. A streaming thinking
+that later gains a host gives up this block to the run; an unsafe conclusion
+(a tool-less abort, for example) falls back to the stock preview instead. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
 are never edited, so history, replay, compaction, and reload backfill keep

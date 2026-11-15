@@ -549,8 +549,9 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
     // A standalone or still-streaming thinking wears the `N thinking` block
     // label; the preview belongs inside an opened run and must not replace
     // the block on a resize render.
-    if (standaloneMessages.has(message) || rowIsStreaming(row)) {
-      if (rowIsStreaming(row)) setStandaloneThinking(message, true);
+    if (standaloneMessages.has(message as object) || rowIsStreaming(row) ||
+        (rowHasStandaloneLabel(row) && standaloneEligible(row, pi))) {
+      setStandaloneThinking(message, true);
       writeStandaloneLabel(row, message, cols, pad);
       return;
     }
@@ -571,25 +572,42 @@ function standaloneView(row: object): StandaloneView {
   return view;
 }
 
+/** A standalone label is ownership proof. Pi hands the row a fresh message
+ *  object at message_end; the label written for the streaming copy would
+ *  otherwise stop matching `standaloneMessages` and the row would fall back
+ *  to Pi's native label click (full Markdown, no block chrome). */
+function rowHasStandaloneLabel(row: any): boolean {
+  const label = row?.hiddenThinkingLabel;
+  return typeof label === "string" && STANDALONE_THINKING_LABEL.test(label);
+}
+
+/** Structural eligibility for the custom block, before ownership. */
+function standaloneEligible(row: any, pi?: ExtensionAPI): boolean {
+  if (!row || typeof row !== "object") return false;
+  if (pi && !isHiddenThinking(pi)) return false;
+  if (isRowLiveHosted(row)) return false;
+  const container = row.contentContainer as { children?: unknown } | undefined;
+  if (!container || !Array.isArray(container.children)) return false;
+  const message = row.lastMessage as {
+    role?: unknown; stopReason?: unknown; content?: unknown;
+  } | undefined;
+  if (!message || message.role !== "assistant") return false;
+  if (hasVisibleProse(row)) return false;
+  const stop = message.stopReason;
+  if (stop === "aborted" || stop === "error" || stop === "length") return false;
+  return hasThinkingText(message);
+}
+
 /** A pure thinking row that owns a standalone block. Mixed rows keep their
  *  prose and native label click: this custom block must never hide prose.
  *  Error/abort/length rows carry extra Pi-rendered lines and stay stock. */
 function standaloneCandidate(row: any, pi?: ExtensionAPI): boolean {
   try {
-    if (!row || typeof row !== "object") return false;
-    if (pi && !isHiddenThinking(pi)) return false;
-    if (isRowLiveHosted(row)) return false;
-    const container = row.contentContainer as { children?: unknown } | undefined;
-    if (!container || !Array.isArray(container.children)) return false;
-    const message = row.lastMessage as {
-      role?: unknown; stopReason?: unknown; content?: unknown;
-    } | undefined;
-    if (!message || message.role !== "assistant") return false;
-    if (hasVisibleProse(row)) return false;
-    const stop = message.stopReason;
-    if (stop === "aborted" || stop === "error" || stop === "length") return false;
-    if (!standaloneMessages.has(message) && (row as { isStreaming?: unknown }).isStreaming !== true) return false;
-    return hasThinkingText(message);
+    if (!standaloneEligible(row, pi)) return false;
+    const message = row.lastMessage as object;
+    return standaloneMessages.has(message) ||
+      (row as { isStreaming?: unknown }).isStreaming === true ||
+      rowHasStandaloneLabel(row);
   } catch {
     return false;
   }
@@ -783,8 +801,12 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
       if (message?.role !== "assistant") continue;
       if (isRowLiveHosted(row)) continue;
       const streaming = rowIsStreaming(row);
-      const standalone = standaloneMessages.has(message as object) || streaming;
-      if (streaming) setStandaloneThinking(message, true);
+      // Keep the old ownership rule for marked/streaming rows; a stale
+      // standalone label only counts when the row is still structurally
+      // eligible (never on prose or an unsafe stop).
+      const standalone = standaloneMessages.has(message as object) || streaming ||
+        (rowHasStandaloneLabel(row) && standaloneEligible(row, pi));
+      if (standalone) setStandaloneThinking(message, true);
       // Cache hit first: a steady row costs one WeakMap read per pass, not
       // a rail install. The rail was installed when the label was written.
       const cached = labeledFor.get(row);

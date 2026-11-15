@@ -5496,6 +5496,52 @@ function clickFirstRow(comp) {
     labelsLib.setActiveTheme(undefined);
   }
 
+  // 108b. A final message copy must not turn the finished standalone block
+  // back into Pi's stock hidden label: its label is the block's ownership
+  // proof, so a click still opens the header/preview/footer shape.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    try {
+      const msg = {
+        role: "assistant", timestamp: now - 13000, stopReason: "pending",
+        content: [{ type: "thinking", thinking: "finished block body ".repeat(80) }],
+      };
+      const row = new agent.AssistantMessageComponent(
+        undefined, true, undefined, "Thinking...", 1, [],
+      );
+      row.updateContent(msg, true);
+      labelsLib.setActiveTheme(theme);
+      labelsLib.captureWalkerTui({ children: [row] });
+      labelsLib.setStandaloneThinking(msg, true);
+      labelsLib.reconcileThinkingLabels(piS);
+      // Pi's message_end path hands the row a fresh final message object.
+      const finalMsg = { ...msg, stopReason: "stop", durationMs: 13000 };
+      row.updateContent(finalMsg, false);
+      labelsLib.reconcileThinkingLabels(piS);
+      const closed = row.render(100).map(plainText);
+      check("finished copy keeps the standalone label",
+        closed.length === 2 && closed[1].startsWith("▸1 thinking") && closed[1].includes("13s"),
+        JSON.stringify(closed));
+      row.handleMouse({ type: "click", button: "left", y: 1, width: 100, height: closed.length });
+      const opened = row.render(100).map(plainText);
+      check("finished copy still opens the block shape",
+        opened.length === 4 && opened[1].startsWith("▾1 thinking") &&
+        opened[2].startsWith("▏") && opened[3].startsWith("▴Collapse"),
+        JSON.stringify(opened));
+      check("finished copy shows a preview, not the full text",
+        opened[2].includes("…") && /\d\.\dk\s*$/.test(opened[2]) && opened[2].length <= 100,
+        JSON.stringify(opened[2]));
+    } finally {
+      Date.now = realNow;
+      labelsLib.setActiveTheme(undefined);
+    }
+  }
+
   // 109. Production theme wiring: session_start stores ctx.ui, and the
   // standalone block reads the live theme through that provider. Test 107
   // injects setActiveTheme directly, which cannot catch a broken noteTheme.
