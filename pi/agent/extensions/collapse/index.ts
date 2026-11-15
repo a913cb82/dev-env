@@ -42,16 +42,6 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  createBashToolDefinition,
-  createEditToolDefinition,
-  createFindToolDefinition,
-  createGrepToolDefinition,
-  createLsToolDefinition,
-  createPowerShellToolDefinition,
-  createReadToolDefinition,
-  createWriteToolDefinition,
-} from "@earendil-works/pi-coding-agent";
-import {
   cleanupLiveHosts,
   detachDiag,
   detachPass,
@@ -104,9 +94,9 @@ import {
   breatheFrame,
   breatheWheel,
   clearCollapsePokes,
+  builtinTools,
   collapseDefinition,
   collapseTool,
-  makeLeftByName,
   pokeAllCollapse,
   resetRowsState,
   wrappedToolNames,
@@ -336,23 +326,8 @@ export default function (pi: ExtensionAPI) {
 
   // One source of truth: the same table paints the rows and builds the tools,
   // so a name can never drift between the two.
-  const definitions: Record<
-    string,
-    ((dir: string) => any) | undefined
-  > = {
-    read: createReadToolDefinition,
-    bash: createBashToolDefinition,
-    powershell: createPowerShellToolDefinition,
-    edit: createEditToolDefinition,
-    write: createWriteToolDefinition,
-    grep: createGrepToolDefinition,
-    find: createFindToolDefinition,
-    ls: createLsToolDefinition,
-  };
-  for (const [name, makeLeft] of Object.entries(makeLeftByName)) {
-    const create = definitions[name];
-    if (!create) continue;
-    pi.registerTool(collapseTool(create(cwd), makeLeft, pi));
+  for (const spec of Object.values(builtinTools)) {
+    pi.registerTool(collapseTool(spec.create(cwd), spec.left, pi));
   }
 
   // Tools from other extensions and MCP servers can only collapse if they hand
@@ -360,7 +335,7 @@ export default function (pi: ExtensionAPI) {
   // extensions opt in through the global slot below; anything else is listed
   // here so a plain row is never a mystery.
   function uncollapsedReport(api: ExtensionAPI): string {
-    const own = new Set([...Object.keys(definitions), ...wrappedToolNames()]);
+    const own = new Set([...Object.keys(builtinTools), ...wrappedToolNames()]);
     let all: { name: string }[] = [];
     try {
       all = api.getAllTools?.() ?? [];
@@ -565,7 +540,7 @@ export default function (pi: ExtensionAPI) {
   // Tools that opted into collapsing (the global wrap slot) render their
   // own rows, so they merge like the built-ins; anything else still splits.
   function isOwnTool(name: string): boolean {
-    return !!makeLeftByName[name] || wrappedToolNames().includes(name);
+    return !!builtinTools[name] || wrappedToolNames().includes(name);
   }
   // Pi validates user_bash results (undefined or a valid result object):
   // never leak traceBoundary's return value through the arrow body.

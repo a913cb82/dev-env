@@ -3,7 +3,19 @@
 import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { CollapsedLine, thinkingMarkdown } from "./line.js";
 export { CollapsedLine };
-import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
+  createPowerShellToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+  keyHint,
+  type ExtensionAPI,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { WHEEL_FRAMES, WHEEL_MS, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, formatRunDuration, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, summarizeRun, textCharCount, wheelFrameAt, type BashSegment, type GenericPair } from "./logic.js";
 /** Re-exported so the wheel-test surface keeps its path (rows.ts owns the
  *  timer quantum BREATHE_MS; the frames live on the shared leaf). */
@@ -229,40 +241,67 @@ function makeLeftFor(
   budget: number,
   live = false,
 ): { text: string; cut: boolean } {
-  const known = makeLeftByName[name];
+  const known = builtinTools[name];
   // Generic rows already carry every argument: nothing is hidden, so nothing
   // is cut.
   if (!known) return { text: genericLeft(theme, name, args, isError, budget), cut: false };
-  const base = known(theme, args, isError);
+  const base = known.left(theme, args, isError);
   // A live row streams what its summary hides; a settled row keeps the calm
   // one-liner (the result count then says all there is to say).
   if (!live) return { text: base, cut: false };
-  return fillPairs(theme, base, extraArgPairs(args, SHOWN_ARGS[name] ?? []), budget);
+  return fillPairs(theme, base, extraArgPairs(args, known.shown), budget);
 }
 
-/** Summary builders by tool name, for trace rows owned by another tool. */
-export const makeLeftByName: Record<string, (theme: Theme, args: any, isError: boolean) => string> = {
-  read: readLeft,
-  bash: (t, a, e) => shellLeft(t, "$", a, e),
-  powershell: (t, a, e) => shellLeft(t, "PS>", a, e),
-  edit: (t, a, e) => pathLeft(t, "edit", a?.path, e),
-  write: (t, a, e) => pathLeft(t, "write", a?.path, e),
-  grep: (t, a, e) => searchLeft(t, "grep", a, e),
-  find: (t, a, e) => searchLeft(t, "find", a, e),
-  ls: lsLeft,
-};
+/** One built-in tool: how to create the stock definition, how to summarize
+ *  its call, and which arguments that summary already shows. Keeping these
+ *  together means a tool cannot drift between registration and rendering. */
+export interface BuiltinTool {
+  create: (cwd: string) => any;
+  left: (theme: Theme, args: any, isError: boolean) => string;
+  shown: readonly string[];
+}
 
-/** The arguments each builtin summary already shows; everything else is a
- *  dim pair while the call is live. */
-const SHOWN_ARGS: Record<string, readonly string[]> = {
-  read: ["path", "file_path", "offset", "limit"],
-  bash: ["command", "timeout"],
-  powershell: ["command", "timeout"],
-  edit: ["path"],
-  write: ["path"],
-  grep: ["pattern", "path"],
-  find: ["pattern", "path"],
-  ls: ["path"],
+export const builtinTools: Record<string, BuiltinTool> = {
+  read: {
+    create: createReadToolDefinition,
+    left: readLeft,
+    shown: ["path", "file_path", "offset", "limit"],
+  },
+  bash: {
+    create: createBashToolDefinition,
+    left: (t, a, e) => shellLeft(t, "$", a, e),
+    shown: ["command", "timeout"],
+  },
+  powershell: {
+    create: createPowerShellToolDefinition,
+    left: (t, a, e) => shellLeft(t, "PS>", a, e),
+    shown: ["command", "timeout"],
+  },
+  edit: {
+    create: createEditToolDefinition,
+    left: (t, a, e) => pathLeft(t, "edit", a?.path, e),
+    shown: ["path"],
+  },
+  write: {
+    create: createWriteToolDefinition,
+    left: (t, a, e) => pathLeft(t, "write", a?.path, e),
+    shown: ["path"],
+  },
+  grep: {
+    create: createGrepToolDefinition,
+    left: (t, a, e) => searchLeft(t, "grep", a, e),
+    shown: ["pattern", "path"],
+  },
+  find: {
+    create: createFindToolDefinition,
+    left: (t, a, e) => searchLeft(t, "find", a, e),
+    shown: ["pattern", "path"],
+  },
+  ls: {
+    create: createLsToolDefinition,
+    left: lsLeft,
+    shown: ["path"],
+  },
 };
 
 /** Stock content for one opened trace row, boxed like Pi's own section. The
