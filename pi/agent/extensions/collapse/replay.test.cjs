@@ -173,7 +173,7 @@ const loadFixture = (name) =>
       !settled.some((l) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(l)), settled.join("\n"));
     driver.openRun(live, "p1");
     const opened = driver.dump(live).lines;
-    check("a live result updates the row", opened.some((l) => l.includes("0.0k ch")), opened.join("\n"));
+    check("a live result updates the row", opened.some((l) => l.includes("0.0k")), opened.join("\n"));
   }
 
   // R3. mid-stream the prose is mounted but unpersisted: entries cannot

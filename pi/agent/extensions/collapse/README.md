@@ -16,8 +16,8 @@ After the click:
 
 ```
 ▾1 read · 1 bash · 1 thinking                       18s
-▏read /home/abrai/dev-env/src/app.ts:10-20          5.3k ch
-▏$ ls some/dist (timeout 25s)                       0.8k ch
+▏read /home/abrai/dev-env/src/app.ts:10-20          5.3k
+▏$ ls some/dist (timeout 25s)                       0.8k
 ▴Collapse                                          18s
 ```
 
@@ -51,8 +51,8 @@ Settled rows are dim rail + dim count; failed rows keep the dim rail
 with a red head.
 
 ```
-▏read /a/b.txt:5-10                                5.3k ch
-▏$ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k ch
+▏read /a/b.txt:5-10                                5.3k
+▏$ cd /path/to/thing && cat > /tmp/real/thing | tail -n 3   0.8k
 ```
 
 `bash`/`powershell` rows are tokenized rather than styled by position:
@@ -64,9 +64,9 @@ tokens / 2048 characters (the row can never show more), so a pathological
 command cannot slow a repaint.
 
 Long rows cut in the middle, so the head and the count survive. Every count
-uses k units with one decimal, including short rows (`500 ch` reads
-`0.5k ch`, `42 ch` reads `0.0k ch`); the column therefore has one grammar
-and a stable width.
+uses k units with one decimal, including short rows (`500` characters reads
+`0.5k`, `42` reads `0.0k`); the column therefore has one grammar and a
+stable width. The `k` is the whole suffix: counts carry no `ch`.
 
 Every row's first glyph lands on column 2 — the same column as Pi's prose
 (`outputPad`), hidden-thinking rows (`Text` pad) and stock tool cells
@@ -493,7 +493,7 @@ the arguments its summary hides — the `write` body, both sides of an `edit`, t
 `bash` description, `grep`/`find` flags — as the same dim `key=value` pairs,
 in declared order, filling the row. When they do not all fit and the row
 hides text, the right column reports the argument text written so far
-(`1.9k ch`) instead of waiting for a result count: on a long body the visible
+(`1.9k`) instead of waiting for a result count: on a long body the visible
 head stops changing, so the count keeps climbing while the wheel in column 1
 shows the call is still alive. Text
 that fits needs no badge, so short calls show no count. When the result

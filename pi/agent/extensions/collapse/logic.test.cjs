@@ -27,16 +27,16 @@ function check(name, cond, extra) {
 
   // formatCharCount: every count is in k units, including short rows. One
   // decimal keeps a stable width and the same grammar above and below 1000.
-  check("count 0", logic.formatCharCount(0) === "0.0k ch", logic.formatCharCount(0));
-  check("count 5", logic.formatCharCount(5) === "0.0k ch", logic.formatCharCount(5));
-  check("count 42", logic.formatCharCount(42) === "0.0k ch", logic.formatCharCount(42));
-  check("count 500", logic.formatCharCount(500) === "0.5k ch", logic.formatCharCount(500));
-  check("count 999", logic.formatCharCount(999) === "1.0k ch", logic.formatCharCount(999));
-  check("count 1000", logic.formatCharCount(1000) === "1.0k ch", logic.formatCharCount(1000));
-  check("count 1500", logic.formatCharCount(1500) === "1.5k ch", logic.formatCharCount(1500));
-  check("count 5300", logic.formatCharCount(5300) === "5.3k ch", logic.formatCharCount(5300));
-  check("count 12345", logic.formatCharCount(12345) === "12.3k ch", logic.formatCharCount(12345));
-  check("count negative", logic.formatCharCount(-5) === "0.0k ch", logic.formatCharCount(-5));
+  check("count 0", logic.formatCharCount(0) === "0.0k", logic.formatCharCount(0));
+  check("count 5", logic.formatCharCount(5) === "0.0k", logic.formatCharCount(5));
+  check("count 42", logic.formatCharCount(42) === "0.0k", logic.formatCharCount(42));
+  check("count 500", logic.formatCharCount(500) === "0.5k", logic.formatCharCount(500));
+  check("count 999", logic.formatCharCount(999) === "1.0k", logic.formatCharCount(999));
+  check("count 1000", logic.formatCharCount(1000) === "1.0k", logic.formatCharCount(1000));
+  check("count 1500", logic.formatCharCount(1500) === "1.5k", logic.formatCharCount(1500));
+  check("count 5300", logic.formatCharCount(5300) === "5.3k", logic.formatCharCount(5300));
+  check("count 12345", logic.formatCharCount(12345) === "12.3k", logic.formatCharCount(12345));
+  check("count negative", logic.formatCharCount(-5) === "0.0k", logic.formatCharCount(-5));
 
   // branchToolIds: every toolCall in the branch, own or foreign, with or
   // without timestamps (a reload often has none; pruning must not delete
@@ -337,16 +337,16 @@ function check(name, cond, extra) {
     const short = logic.thinkingLabelForWidth("hello", 80);
     check("label no prefix", visible(short).startsWith("hello"), JSON.stringify(short));
     check("label short fills width", visible(short).length === 77, `${visible(short).length}`);
-    check("label short count", short.endsWith("\x1b[23;23m0.0k ch"), JSON.stringify(short.slice(-20)));
-    check("label only count leaves italic", (short.match(/\x1b\[23;23m/g) ?? []).length === 1 && short.endsWith("\x1b[23;23m0.0k ch"), JSON.stringify(short.slice(-20)));
-    check("label visible matches plain pad", visible(short) === logic.padLabel("hello", "0.0k ch", 77), JSON.stringify(visible(short)));
+    check("label short count", short.endsWith("\x1b[23;23m0.0k"), JSON.stringify(short.slice(-20)));
+    check("label only count leaves italic", (short.match(/\x1b\[23;23m/g) ?? []).length === 1 && short.endsWith("\x1b[23;23m0.0k"), JSON.stringify(short.slice(-20)));
+    check("label visible matches plain pad", visible(short) === logic.padLabel("hello", "0.0k", 77), JSON.stringify(visible(short)));
 
     const long = logic.thinkingLabelForWidth("a".repeat(1500), 100);
     check("label long fills width", visible(long).length === 97, `${visible(long).length}`);
     check("label long has middle cut", !long.startsWith("Thinking") && long.includes("…"), JSON.stringify(long.slice(0, 60)));
-    check("label long ends count", long.endsWith("\x1b[23;23m1.5k ch"), JSON.stringify(long.slice(-20)));
+    check("label long ends count", long.endsWith("\x1b[23;23m1.5k"), JSON.stringify(long.slice(-20)));
     // preview keeps head and tail around the middle cut
-    const expectedPreview = `${"a".repeat(44)}…${"a".repeat(44)}`;
+    const expectedPreview = `${"a".repeat(46)}…${"a".repeat(45)}`;
     check("label pad 0 wider", visible(logic.thinkingLabelForWidth("hello", 80, 0)).length === 79, `${visible(logic.thinkingLabelForWidth("hello", 80, 0)).length}`);
     check("label long middle exact", long.startsWith(expectedPreview), JSON.stringify(long.slice(0, 100)));
 
@@ -357,7 +357,7 @@ function check(name, cond, extra) {
     const cjkLabel = logic.thinkingLabelForWidth(cjk, 80);
     check("cjk label fits the budget", tui.visibleWidth(visible(cjkLabel)) <= logic.labelBudget(80, 1),
       `${tui.visibleWidth(visible(cjkLabel))} > ${logic.labelBudget(80, 1)}`);
-    check("cjk label ends on the count", visible(cjkLabel).trimEnd().endsWith("0.0k ch"), JSON.stringify(visible(cjkLabel)));
+    check("cjk label ends on the count", visible(cjkLabel).trimEnd().endsWith("0.0k"), JSON.stringify(visible(cjkLabel)));
     const emoji = "\ud83d\ude00".repeat(40);
     const emojiPreview = logic.thinkingPreview(emoji, 10);
     check("emoji preview keeps graphemes whole", emojiPreview === Array.from(emojiPreview).join(""), JSON.stringify(emojiPreview));

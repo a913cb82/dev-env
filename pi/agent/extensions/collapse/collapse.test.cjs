@@ -200,7 +200,7 @@ function clickFirstRow(comp) {
     check("read result invalidates after the render pass", invalidated === 1, String(invalidated));
     openRun(read.renderCall(ctx.args, ansiTheme, { ...ctx, state }));
     const lines = read.renderCall(ctx.args, ansiTheme, { ...ctx, state }).render(100);
-    check("read count shown", plainText(lines[1]).endsWith("5.3k ch"), JSON.stringify(plainText(lines[1])));
+    check("read count shown", plainText(lines[1]).endsWith("5.3k"), JSON.stringify(plainText(lines[1])));
     check("read padded to width", plainText(lines[1]).length === 98, `${plainText(lines[1]).length}: ${JSON.stringify(plainText(lines[1]))}`);
   }
 
@@ -420,7 +420,7 @@ function clickFirstRow(comp) {
       const lines = read.renderCall(args, theme, ctx).render(80);
       check("visible call stock chrome", lines.length > 2 && lines[0].includes("toolSuccessBg"), JSON.stringify(lines[0]));
       check("visible call keeps content", lines.some((l) => l.includes("/path/to/file")), JSON.stringify(lines).slice(0, 200));
-      check("visible call not collapsed", !lines.some((l) => l.includes("5.3k ch")), JSON.stringify(lines).slice(0, 200));
+      check("visible call not collapsed", !lines.some((l) => l.includes("5.3k")), JSON.stringify(lines).slice(0, 200));
       const state = {};
       const { ctx: rctx } = callContext({ args, state });
       const out = read.renderResult(textResult(5300), { expanded: false, isPartial: false }, theme, { ...rctx, state });
@@ -507,7 +507,7 @@ function clickFirstRow(comp) {
     const lines = (() => { openRun(read.renderCall(ctx.args, ansiTheme, ctx)); return read.renderCall(ctx.args, ansiTheme, ctx).render(60); })();
     check("ansi one line", lines.length === 3, JSON.stringify(lines));
     check("ansi padded to width", tui.visibleWidth(lines[1]) === 58, `${tui.visibleWidth(lines[1])}: ${JSON.stringify(lines[1])}`);
-    check("ansi keeps count", lines[1].endsWith("\x1b[31m5.3k ch\x1b[0m"), JSON.stringify(lines[1]).slice(-40));
+    check("ansi keeps count", lines[1].endsWith("\x1b[31m5.3k\x1b[0m"), JSON.stringify(lines[1]).slice(-40));
   }
 
   // 12. visibility toggle pokes settled rows into the other mode
@@ -606,7 +606,7 @@ function clickFirstRow(comp) {
     const st = { ...bctx, state: bashState };
     bash.renderResult(textResult(5300), { expanded: false, isPartial: false }, theme, st);
     const trace2 = read.renderCall(rctx.args, theme, { ...rctx, state: readState }).render(80);
-    check("trace shows shared counts", trace2[2].includes("5.3k ch"), JSON.stringify(trace2[2]));
+    check("trace shows shared counts", trace2[2].includes("5.3k"), JSON.stringify(trace2[2]));
   }
 
   // 13b. a user message splits runs; clicking a row opens just that row
@@ -1199,7 +1199,7 @@ function clickFirstRow(comp) {
     wrapped.renderResult({ content: [{ type: "text", text: "x".repeat(2400) }], details: {} },
       { expanded: false, isPartial: false }, theme, ctx("e1", args));
     const withCount = wrapped.renderCall(args, theme, ctx("e1", args)).render(90);
-    check("generic row shows count", withCount[1].includes("2.4k ch"), JSON.stringify(withCount[1]));
+    check("generic row shows count", withCount[1].includes("2.4k"), JSON.stringify(withCount[1]));
   }
 
   // 21b. The opt-in slot: collapse publishes a wrapper other extensions can
@@ -1830,7 +1830,7 @@ function clickFirstRow(comp) {
     const prevLine = bash.renderCall({ command: "echo w" }, theme, mk("w1", { command: "echo w" }))
       .render(100).map(plainText).find((l) => l.includes("word")) ?? "";
     check("preview fills the row width", (prevLine.match(/word/g) ?? []).length > 13, JSON.stringify(prevLine.slice(0, 80)));
-    check("preview ends with its count", prevLine.trimEnd().endsWith("0.3k ch"), JSON.stringify(prevLine.slice(-24)));
+    check("preview ends with its count", prevLine.trimEnd().endsWith("0.3k"), JSON.stringify(prevLine.slice(-24)));
     detach.resetDetachState?.();
   }
 
@@ -2036,7 +2036,7 @@ function clickFirstRow(comp) {
       mockNow += 14000;
       const header = bash.renderCall(live.args, theme, live).render(120).join("");
       check("live header shows elapsed", header.includes("1 bash") && header.includes("14s"), header.slice(0, 120));
-      check("live header shows no arg chars", !/\dk ch/.test(header), header.slice(0, 120));
+      check("live header shows no arg chars", !/\d\.\dk\b/.test(header), header.slice(0, 120));
     } finally {
       Date.now = realNow;
     }
@@ -2142,7 +2142,7 @@ function clickFirstRow(comp) {
     bash.renderCall({ command: "echo hp" }, theme, mk("hp", { command: "echo hp" }));
     // P1: completed mixed message with our label: kid goes, prose stays.
     const msgP1 = { role: "assistant", content: [text("hello"), think("plan p1"), tool("hp")], stopReason: "toolUse" };
-    const m1 = mkMixedRow(msgP1, "\u2026plan p1 0.1k ch");
+    const m1 = mkMixedRow(msgP1, "\u2026plan p1 0.1k");
     const chat = { children: [{ toolCallId: "hp" }, m1.row],
       removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
     mod.captureWalkerTui({ children: [chat] });
@@ -2152,7 +2152,7 @@ function clickFirstRow(comp) {
     check("partial still counts the thinking", (detach.runThinkingForTool("hp") ?? "").includes("plan p1"), detach.runThinkingForTool("hp") ?? "(none)");
     // P2: streaming mixed message never partial-detaches (no flicker).
     const msgP2 = { role: "assistant", content: [text("hello"), think("plan p2"), tool("hp")] };
-    const m2 = mkMixedRow(msgP2, "\u2026plan p2 0.1k ch");
+    const m2 = mkMixedRow(msgP2, "\u2026plan p2 0.1k");
     chat.children.push(m2.row);
     const r2 = detach.detachPass(piX);
     check("streaming mixed stays whole", r2.detached === 0 && m2.container.children.includes(m2.kid), JSON.stringify(r2));
@@ -2164,7 +2164,7 @@ function clickFirstRow(comp) {
     check("stock-labeled mixed stays whole", r3.detached === 0 && m3.container.children.includes(m3.kid), JSON.stringify(r3));
     // P4: click-opened thinking run vetoes the partial.
     const msgP4 = { role: "assistant", content: [text("hello"), think("plan p4"), tool("hp")], stopReason: "toolUse" };
-    const m4 = mkMixedRow(msgP4, "\u2026plan p4 0.1k ch", new Map([[0, false]]));
+    const m4 = mkMixedRow(msgP4, "\u2026plan p4 0.1k", new Map([[0, false]]));
     chat.children.push(m4.row);
     const r4 = detach.detachPass(piX);
     check("click-opened mixed stays whole", r4.detached === 0 && m4.container.children.includes(m4.kid), JSON.stringify(r4));
@@ -2201,7 +2201,7 @@ function clickFirstRow(comp) {
     bash.renderCall({ command: "echo two" }, theme, mk("i2", "echo two"));
     const mkRow = (text) => ({ lastMessage: { role: "assistant",
         content: [{ type: "thinking", thinking: text }], stopReason: "stop" },
-      hiddenThinkingLabel: `\u2026${text} 0.1k ch`,
+      hiddenThinkingLabel: `\u2026${text} 0.1k`,
       updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } });
     const row1 = mkRow("first thought");
     const row2 = mkRow("second thought");
@@ -2249,7 +2249,7 @@ function clickFirstRow(comp) {
     bash.renderCall({ command: "echo one" }, theme, mk("j1", "echo one"));
     bash.renderCall({ command: "echo two" }, theme, mk("j2", "echo two"));
     const thinkMsg = { role: "assistant", content: [{ type: "thinking", thinking: "blind thought" }], stopReason: "stop" };
-    const rowBlind = { lastMessage: thinkMsg, hiddenThinkingLabel: "\u2026blind thought 0.1k ch",
+    const rowBlind = { lastMessage: thinkMsg, hiddenThinkingLabel: "\u2026blind thought 0.1k",
       updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
     const entries = [
       { id: "e1", type: "message", message: { role: "assistant",
@@ -2317,7 +2317,7 @@ function clickFirstRow(comp) {
     bash.renderCall({ command: "echo next" }, theme, mk("n1", "echo next"));
     const prevRun = mod.traceEntries.get("p1").runId;
     const nextRun = mod.traceEntries.get("n1").runId;
-    const rowThink = { lastMessage: msgB, hiddenThinkingLabel: "\u2026mid thought 0.1k ch",
+    const rowThink = { lastMessage: msgB, hiddenThinkingLabel: "\u2026mid thought 0.1k",
       updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
     const chat = { children: [{ toolCallId: "p1" }, rowThink, { toolCallId: "n1" }],
       removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); } };
@@ -2407,7 +2407,7 @@ function clickFirstRow(comp) {
     bash.renderCall({ command: "echo live" }, theme, mk("k1", "echo live"));
     const liveThink = { role: "assistant",
       content: [{ type: "thinking", thinking: "live thought" }], stopReason: "stop" };
-    const rowThink = { lastMessage: liveThink, hiddenThinkingLabel: "\u2026live thought 0.1k ch",
+    const rowThink = { lastMessage: liveThink, hiddenThinkingLabel: "\u2026live thought 0.1k",
       updateContent() {}, setHiddenThinkingLabel(v) { this.hiddenThinkingLabel = v; } };
     const proseRow = { lastMessage: { role: "assistant",
         content: [{ type: "text", text: "Rule confirmed: attach within the segment." }] },
@@ -2462,7 +2462,7 @@ function clickFirstRow(comp) {
     const lines2 = out2comp().render(100);
     check("preview appears after confirmed detach", lines2.some((l) => l.includes("plan for one")), lines2.join("|").slice(0, 160));
     const prevLine2 = lines2.map(plainText).find((l) => l.includes("plan for one")) ?? "";
-    check("preview row carries its count", /0\.0k ch\s*$/.test(prevLine2.trimEnd()), JSON.stringify(prevLine2));
+    check("preview row carries its count", /0\.0k\s*$/.test(prevLine2.trimEnd()), JSON.stringify(prevLine2));
     delete process.env.COLLAPSE_HIDE_THINKING;
     detach.resetDetachState?.();
   }
@@ -3319,20 +3319,20 @@ function clickFirstRow(comp) {
     partial(120, true);
     openRun(bash.renderCall(ctx.args, theme, ctx));
     const during = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
-    check("partial output shows a count", /0\.1k ch/.test(during), during);
+    check("partial output shows a count", /0\.1k/.test(during), during);
     const spinning = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80);
     check("live row spins the wheel in column 1", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(spinning[1]), spinning[1].slice(0, 120));
     partial(2500, true);
     const grown = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
-    check("count grows while output streams", /2\.5k ch/.test(grown), grown);
+    check("count grows while output streams", /2\.5k/.test(grown), grown);
     const liveRow = bash.renderCall(ctx.args, theme, { ...ctx, isPartial: true }).render(80);
-    check("streaming row stays live (wheel in column 1, dim count)", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(liveRow[1]) && /<dim>2\.5k ch<\/>/.test(liveRow[1]), liveRow[1].slice(0, 160));
+    check("streaming row stays live (wheel in column 1, dim count)", /^<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/>/.test(liveRow[1]) && /<dim>2\.5k<\/>/.test(liveRow[1]), liveRow[1].slice(0, 160));
     partial(4200, false);
     const settled = bash.renderCall(ctx.args, theme, ctx).render(80).join("");
-    check("final count lands", /4\.2k ch/.test(settled), settled);
+    check("final count lands", /4\.2k/.test(settled), settled);
     check("settled row parks the wheel", !/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(settled), settled.slice(0, 120));
     const restLines = bash.renderCall(ctx.args, theme, ctx).render(80);
-    check("row stays one line", restLines.length === 3 && /4\.2k ch/.test(restLines[1]), JSON.stringify(restLines));
+    check("row stays one line", restLines.length === 3 && /4\.2k/.test(restLines[1]), JSON.stringify(restLines));
   }
 
   // 64. formatting hierarchy: BOLD = identity (tool / command), PLAIN = the
@@ -3373,9 +3373,9 @@ function clickFirstRow(comp) {
     check("read dir dim", row("read", { path: "/a/b.txt" }).includes("<dim>/a/</>"), row("read", { path: "/a/b.txt" }));
     check("read range dim", row("read", { path: "/a/b.txt", offset: 5, limit: 6 }).includes("<dim>:5-10</>"), row("read", { path: "/a/b.txt", offset: 5, limit: 6 }));
     check("bash timeout dim", row("bash", { command: "ls", timeout: 25 }).includes("<dim> (timeout 25s)</>"), row("bash", { command: "ls", timeout: 25 }));
-    check("size dim", row("bash", { command: "ls" }, { count: 1200 }).includes("<dim>1.2k ch</>"), row("bash", { command: "ls" }, { count: 1200 }));
-    check("short size uses k units", row("bash", { command: "ls" }, { count: 500 }).includes("<dim>0.5k ch</>"), row("bash", { command: "ls" }, { count: 500 }));
-    check("tiny size uses k units", row("bash", { command: "ls" }, { count: 42 }).includes("<dim>0.0k ch</>"), row("bash", { command: "ls" }, { count: 42 }));
+    check("size dim", row("bash", { command: "ls" }, { count: 1200 }).includes("<dim>1.2k</>"), row("bash", { command: "ls" }, { count: 1200 }));
+    check("short size uses k units", row("bash", { command: "ls" }, { count: 500 }).includes("<dim>0.5k</>"), row("bash", { command: "ls" }, { count: 500 }));
+    check("tiny size uses k units", row("bash", { command: "ls" }, { count: 42 }).includes("<dim>0.0k</>"), row("bash", { command: "ls" }, { count: 42 }));
     const custom = globalThis.__collapseWrapTool;
     const wrapped = custom({ name: "mcp_thing", parameters: {}, async execute() {} });
     const { ctx: cctx } = callContext({ args: { query: "find the thing" }, toolCallId: "fmt-custom" });
@@ -3480,7 +3480,7 @@ function clickFirstRow(comp) {
       await handlers.get("message_end")[0]({ message }, { hasUI: true, ui });
       const narrow = row.hiddenThinkingLabel;
       check("resize rebuilds label", visibleLen(narrow) === 77, `${visibleLen(narrow)} vs ${visibleLen(wide)}`);
-      check("resize keeps the count", narrow.endsWith("\x1b[23;23m2.0k ch"), JSON.stringify(narrow.slice(-20)));
+      check("resize keeps the count", narrow.endsWith("\x1b[23;23m2.0k"), JSON.stringify(narrow.slice(-20)));
     } finally {
       delete process.stdout.columns;
     }
@@ -3547,7 +3547,7 @@ function clickFirstRow(comp) {
   Object.defineProperty(process.stdout, "columns", { value: 60, configurable: true, writable: true });
   // Real escapes for width math: marker tags would count as visible text.
   const LEFT = ansiTheme.fg("accent", "$ ls");
-  const RIGHT = ansiTheme.fg("dim", "1.0k ch");
+  const RIGHT = ansiTheme.fg("dim", "1.0k");
   const line = (opts) => new CollapsedLine(LEFT, RIGHT, opts.pad ?? 1, ansiTheme, opts.live ?? false).render(60)[0];
   const dimRail = ansiTheme.fg("dim", RAIL);
 
@@ -3564,7 +3564,7 @@ function clickFirstRow(comp) {
   const noPad = line({ pad: 0 });
   check("no pad: no rail, content on column 1", !plainText(noPad).includes(RAIL) && plainText(noPad).startsWith("$"), JSON.stringify(plainText(noPad).slice(0, 6)));
 
-  const plainRow = new CollapsedLine("<accent>$</><b>ls</b>", "<dim>1.0k ch</>", 1).render(60)[0];
+  const plainRow = new CollapsedLine("<accent>$</><b>ls</b>", "<dim>1.0k</>", 1).render(60)[0];
   check("theme-less row still gets the rail glyph", plainText(plainRow).startsWith(RAIL));
 
   if (before === undefined) delete process.stdout.columns;
@@ -4071,7 +4071,7 @@ function clickFirstRow(comp) {
 
     const counted = rowFor("spawn_agent", spawnArgs, 120, "x".repeat(1300));
     check("counted row still fits", tui.visibleWidth(counted) <= 120, String(tui.visibleWidth(counted)));
-    check("counted row ends with its count", plainText(counted).trimEnd().endsWith("1.3k ch"), JSON.stringify(plainText(counted).slice(-12)));
+    check("counted row ends with its count", plainText(counted).trimEnd().endsWith("1.3k"), JSON.stringify(plainText(counted).slice(-12)));
 
     setColumns(80);
     const narrow = rowFor("spawn_agent", spawnArgs, 80);
@@ -4181,15 +4181,15 @@ function clickFirstRow(comp) {
   check("live edit row streams newText", rows()[1].includes('newText="const a = 2;"'), rows()[1]);
   check("live bash row streams the description", rows()[2].includes('description="Build the extension"'), rows()[2]);
   check("live bash row keeps its command grammar", rows()[2].includes("$ npm run build (timeout 30s)"), rows()[2]);
-  check("live bash row hides little, so no count", !/\d\.\dk ch/.test(rows()[2]), rows()[2]);
+  check("live bash row hides little, so no count", !/\d\.\dk\b/.test(rows()[2]), rows()[2]);
   check("live grep row streams its flags", rows()[3].includes('glob="*.ts" ignoreCase=true'), rows()[3]);
-  check("live grep row fits its flags, so no count", !/\d\.\dk ch/.test(rows()[3]), rows()[3]);
+  check("live grep row fits its flags, so no count", !/\d\.\dk\b/.test(rows()[3]), rows()[3]);
   check("live read row has no hidden args", !rows()[4].includes("offset="), rows()[4]);
   // The count is a fallback for hidden text, not a badge: it appears only when
   // the hidden args do not fit.
   check("live read row shows the wheel, no count", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]read \/repo\/a\.ts:1-20$/.test(plainText(rows()[4]).trimEnd()), rows()[4]);
   check("live short write row shows the wheel, no count", rows()[7].includes('content="hi"') && /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(plainText(rows()[7]).trimEnd()), rows()[7]);
-  check("bare call row shows the wheel, no count", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]write$/.test(plainText(rows()[5]).trimEnd()) && !/\dk ch/.test(rows()[5]), JSON.stringify(rows()[5]));
+  check("bare call row shows the wheel, no count", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]write$/.test(plainText(rows()[5]).trimEnd()) && !/\d\.\dk\b/.test(rows()[5]), JSON.stringify(rows()[5]));
   check("live rows fit the terminal", rows().every((row) => row.length <= 118), rows().map((r) => r.length).join(","));
 
   // Settled: the count is the result's, and the hidden args are gone.
@@ -4242,15 +4242,15 @@ function clickFirstRow(comp) {
   const before = process.stdout.columns;
   Object.defineProperty(process.stdout, "columns", { value: 60, configurable: true, writable: true });
   const LEFT = ansiTheme.fg("accent", "$ ls");
-  const settled = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.0k ch"), 1, ansiTheme, false).render(60)[0];
+  const settled = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.0k"), 1, ansiTheme, false).render(60)[0];
   check("settled rail stays dim", settled.startsWith(ansiTheme.fg("dim", "▏")), JSON.stringify(settled.slice(0, 24)));
   // Live rows replace the rail with a wheel glyph — whichever frame the wall
   // clock currently shows (frame membership, not an exact frame: no anchor).
-  function live0_ansi() { return new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k ch"), 1, ansiTheme, true).render(60)[0]; }
+  function live0_ansi() { return new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k"), 1, ansiTheme, true).render(60)[0]; }
   const live0 = live0_ansi();
   check("live rail replaced by wheel", rowsLib.WHEEL_FRAMES.includes(plainText(live0)[0]), JSON.stringify(plainText(live0).slice(0, 8)));
   check("live rail keeps column 2", tuiLib.visibleWidth(live0_ansi().slice(0, live0_ansi().indexOf("$"))) === 1 && plainText(live0_ansi()).indexOf("$") === 1, JSON.stringify(plainText(live0_ansi()).slice(0, 8)));
-  const live1 = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k ch"), 1, ansiTheme, true).render(60)[0];
+  const live1 = new CollapsedLine(LEFT, ansiTheme.fg("dim", "1.9k"), 1, ansiTheme, true).render(60)[0];
   check("wheel keeps width", tuiLib.visibleWidth(live0) === tuiLib.visibleWidth(live1), `${tuiLib.visibleWidth(live0)} vs ${tuiLib.visibleWidth(live1)}`);
   check("live count matches settled (dim)", rowsLib.liveCountSuffix(theme, 1900).includes("<dim>"), JSON.stringify(rowsLib.liveCountSuffix(theme, 1900)));
   if (before === undefined) delete process.stdout.columns;
@@ -4816,7 +4816,7 @@ function clickFirstRow(comp) {
     const rowsLib = await jiti.import(path.join(HERE, "rows.ts"));
     const tuiLib = await jiti.import("@earendil-works/pi-tui");
     const { CollapsedLine } = rowsLib;
-    const narrow = new CollapsedLine("<b>$ a-very-long-command</b>", "<dim>1.2k ch</>", 1, theme).render(4)[0];
+    const narrow = new CollapsedLine("<b>$ a-very-long-command</b>", "<dim>1.2k</>", 1, theme).render(4)[0];
     check("narrow row fits the width", tuiLib.visibleWidth(narrow) <= 4, `${tuiLib.visibleWidth(narrow)}: ${JSON.stringify(narrow)}`);
     const zero = new CollapsedLine("<b>ls</b>", "", 1, theme).render(0)[0];
     check("zero width renders empty", tuiLib.visibleWidth(zero) === 0, JSON.stringify(zero));
@@ -5405,7 +5405,7 @@ function clickFirstRow(comp) {
       const opened = row.render(100).map(plainText);
       check("standalone header opens a block",
         opened.length === 4 && opened[0] === "" && opened[1].startsWith("▾1 thinking") &&
-        opened[2].startsWith("▏") && /k ch\s*$/.test(opened[2]) &&
+        opened[2].startsWith("▏") && /\d\.\dk\s*$/.test(opened[2]) &&
         opened[3].startsWith("▴Collapse"), JSON.stringify(opened));
       check("standalone block starts with a middle-truncated preview",
         opened[2].includes("HEAD") && opened[2].includes("…") && opened[2].length <= 100,

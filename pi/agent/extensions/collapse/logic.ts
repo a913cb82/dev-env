@@ -130,8 +130,9 @@ export function sessionContextEntries(source: unknown): any[] {
 export function formatCharCount(chars: number): string {
   const n = Math.max(0, Math.floor(chars));
   // Always k units: one grammar for short and long rows, and a stable width
-  // for the right-aligned column. One decimal rounds 999 up to 1.0k.
-  return `${(n / 1000).toFixed(1)}k ch`;
+  // for the right-aligned column. One decimal rounds 999 up to 1.0k. The
+  // column heading is implicit; no "ch" suffix.
+  return `${(n / 1000).toFixed(1)}k`;
 }
 
 export function splitDirBase(filePath: string): { dir: string; base: string } {

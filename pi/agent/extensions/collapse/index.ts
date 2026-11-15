@@ -5,8 +5,8 @@
 //
 // Each row is a marker, not a prompt. One leading space puts the first
 // glyph on column 2, where Pi's prose, thinking rows and stock cells start:
-//    read /path/to/file:10-20                    5.3k ch
-//    $ timeout 25 ls some/dist                   0.1k ch
+//    read /path/to/file:10-20                    5.3k
+//    $ timeout 25 ls some/dist                   0.1k
 // Three levels, one meaning each: BOLD is identity (the tool name, and the
 // command word of every segment of a bash/powershell command), PLAIN is the
 // one specific thing acted on (file name, search pattern, path leaf, bare
@@ -37,7 +37,7 @@
 //
 // Thinking blocks keep Pi's hidden label, updated per turn to a grey preview
 // with its size:
-//   about something rea…lots of thoughts were here. 1.5k ch
+//   about something rea…lots of thoughts were here. 1.5k
 // The label is a plain string, so it is rebuilt on terminal resize.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -140,7 +140,7 @@ export { collapseDefinition };
 
 // Bump on every behavior change: /collapse prints this, so a pasted line
 // always identifies the running code. Forgetting this burned a session.
-const COLLAPSE_REVISION = 100;
+const COLLAPSE_REVISION = 101;
 
 
 const WRAP_SLOT = "__collapseWrapTool";
