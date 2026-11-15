@@ -5539,6 +5539,24 @@ function clickFirstRow(comp) {
     }
   }
 
+  // 110. Session shutdown clears only this activation's slots and timers.
+  {
+    const mod = await jiti.import(path.join(HERE, "index.ts"));
+    const piS = createMockPi();
+    (mod.default ?? mod)(piS);
+    const g = globalThis;
+    const WRAP = "__collapseWrapTool";
+    const POLL = "__collapsePollTick";
+    const BREATHE = "__collapseBreatheTick";
+    check("activation installs wrap slot", typeof g[WRAP] === "function", typeof g[WRAP]);
+    check("activation installs poll timer", !!g[POLL]?.timer, typeof g[POLL]);
+    check("activation installs breathe timer", !!g[BREATHE]?.timer, typeof g[BREATHE]);
+    piS.handlers.get("session_shutdown")?.[0]?.();
+    check("shutdown clears wrap slot", !(WRAP in g), typeof g[WRAP]);
+    check("shutdown clears poll timer", !(POLL in g), typeof g[POLL]);
+    check("shutdown clears breathe timer", !(BREATHE in g), typeof g[BREATHE]);
+  }
+
   if (failures > 0) {
     console.error(`${failures} failure(s)`);
     process.exit(1);

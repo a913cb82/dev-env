@@ -95,6 +95,7 @@ import {
   breatheWheel,
   clearCollapsePokes,
   builtinTools,
+  clearWrappedToolNames,
   collapseDefinition,
   collapseTool,
   pokeAllCollapse,
@@ -136,6 +137,11 @@ const COLLAPSE_REVISION = 101;
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
 const BREATHE_SLOT = "__collapseBreatheTick";
+/** Slots/timers owned by this activation, so shutdown never clears a newer
+ *  activation's state. */
+let ownWrapSlot: ((definition: any) => any) | undefined;
+let ownPollTimer: ReturnType<typeof setInterval> | undefined;
+let ownBreatheTimer: ReturnType<typeof setInterval> | undefined;
 // Test surface: the shared wheel clock (quantum + wall-clock frame) and the
 // repaint tick that drives live rows while they run.
 export { BREATHE_MS, breatheFrame, breatheTick };
@@ -350,20 +356,37 @@ export default function (pi: ExtensionAPI) {
   // outside: getAllTools returns metadata but not the execute function or the
   // renderers. They call this slot at registration time instead, which keeps
   // their definition intact and only overlays the row renderers.
+  const wrapSlot = (definition: any) => collapseDefinition(definition, pi);
+  ownWrapSlot = wrapSlot;
   try {
-    (globalThis as Record<string, unknown>)[WRAP_SLOT] = (definition: any) =>
-      collapseDefinition(definition, pi);
+    (globalThis as Record<string, unknown>)[WRAP_SLOT] = wrapSlot;
   } catch {
     // Fixture hosts without a global object: nothing to share.
   }
   pi.on("session_shutdown", () => {
     try {
       const g = globalThis as Record<string, unknown>;
-      // Only clear our own slot; a newer activation may already own it.
-      if (typeof g[WRAP_SLOT] === "function") delete g[WRAP_SLOT];
+      // Only clear state this activation still owns: a newer activation may
+      // already have replaced the slot or timer.
+      if (g[WRAP_SLOT] === ownWrapSlot) delete g[WRAP_SLOT];
+      if (ownPollTimer !== undefined && (g[POLL_SLOT] as { timer?: unknown } | undefined)?.timer === ownPollTimer) {
+        clearInterval(ownPollTimer);
+        delete g[POLL_SLOT];
+      }
+      if (ownBreatheTimer !== undefined && (g[BREATHE_SLOT] as { timer?: unknown } | undefined)?.timer === ownBreatheTimer) {
+        clearInterval(ownBreatheTimer);
+        delete g[BREATHE_SLOT];
+      }
     } catch {
       // Host without globals: nothing to clear.
     }
+    ownWrapSlot = undefined;
+    ownPollTimer = undefined;
+    ownBreatheTimer = undefined;
+    collapseUi = undefined;
+    setThemeProvider(undefined);
+    clearCollapsePokes();
+    clearWrappedToolNames();
   });
 
 
@@ -383,6 +406,7 @@ export default function (pi: ExtensionAPI) {
       collapseTick(pi);
     }, 1000);
     (timer as unknown as { unref?: () => void }).unref?.();
+    ownPollTimer = timer;
     g[POLL_SLOT] = { timer, tick: () => collapseTick(pi) };
   } catch {
     // Timers unavailable: renders still follow the setting, minus live pokes.
@@ -402,6 +426,7 @@ export default function (pi: ExtensionAPI) {
       breatheTick(pi);
     }, BREATHE_MS);
     (timer as unknown as { unref?: () => void }).unref?.();
+    ownBreatheTimer = timer;
     g[BREATHE_SLOT] = { timer, tick: () => breatheTick(pi) };
   } catch {
     // Timers unavailable: live rows keep the first breathe color.

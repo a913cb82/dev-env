@@ -685,6 +685,140 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
   }
 }
 
+type ToolRef = { runId: number; toolCallId: string };
+
+interface DetachIndex {
+  entryList: Array<{ id?: string; message?: unknown }>;
+  byMessage: Map<unknown, { id?: string }>;
+  entryIndex: Map<unknown, number>;
+  toolEntryIdx: Map<string, number>;
+  ordered: OrderedItem[];
+  toolPos: Map<string, number>;
+  nextTool: (ToolRef | undefined)[];
+}
+
+/** Whether an entry message is visible to the user: a run boundary.
+ *  Mirrors planToolRuns (user / visible custom break runs) plus assistant
+ *  prose — a thinking-only message never does. */
+function isEntryVisible(message: unknown): boolean {
+  if (!message || typeof message !== "object") return false;
+  const role = (message as { role?: unknown }).role;
+  if (role === "user") return true;
+  if (role === "assistant") return hasVisibleText((message as { content?: unknown }).content);
+  return false;
+}
+
+function isCustomEntryVisible(entry: unknown): boolean {
+  return !!entry && typeof entry === "object" &&
+    (entry as { type?: unknown }).type === "custom_message" &&
+    (entry as { display?: unknown }).display !== false;
+}
+
+/** Build the transcript and mounted-tree indexes used by one pass. */
+function buildDetachIndex(tui: unknown, sessionManager: unknown): DetachIndex {
+  const entryList = entriesOf(sessionManager);
+  const byMessage = new Map<unknown, { id?: string }>();
+  const entryIndex = new Map<unknown, number>();
+  entryList.forEach((entry, index) => {
+    if (entry && typeof entry === "object" && "message" in entry) {
+      const message = (entry as { message?: unknown }).message;
+      byMessage.set(message, entry as { id?: string });
+      if (!entryIndex.has(message)) entryIndex.set(message, index);
+    }
+  });
+  // toolCall id -> entry index of the message carrying it, for the segment
+  // gate below.
+  const toolEntryIdx = new Map<string, number>();
+  entryList.forEach((entry, index) => {
+    const content = (entry as { message?: { content?: unknown } })?.message?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      const id = (block as { type?: unknown; id?: unknown })?.type === "toolCall"
+        ? (block as { id?: unknown }).id
+        : undefined;
+      if (typeof id === "string") toolEntryIdx.set(id, index);
+    }
+  });
+  const ordered: OrderedItem[] = [];
+  // Mounted tool positions: the live segment gate (tree order decides while
+  // entries are still landing). Entry order covers the rest.
+  const toolPos = new Map<string, number>();
+  collectOrdered(tui, undefined, ordered, toolPos);
+  // Nearest tool run per position: next preferred (thinking usually precedes
+  // the tools it informs), else previous. Tool ids ride along so stashed
+  // thinkings anchor to their transcript neighbors.
+  const nextTool: (ToolRef | undefined)[] = new Array(ordered.length);
+  let next: ToolRef | undefined;
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    nextTool[i] = next;
+    const item = ordered[i];
+    if (item.kind === "tool") next = { runId: item.runId, toolCallId: item.toolCallId };
+  }
+  return { entryList, byMessage, entryIndex, toolEntryIdx, ordered, toolPos, nextTool };
+}
+
+/** Segment gate: a thinking attaches only within its own visible segment —
+ *  never across a user message, agent prose, or visible custom block.
+ *  Mounted tree order and entry order EACH veto: trees hold the live rows
+ *  entries have not landed yet, entries hold the settled rows no longer
+ *  mounted. Fully unknown positions allow (the settled pass re-checks once
+ *  entries land). */
+function segmentClear(index: DetachIndex, thinkIdx: number, thinkMsg: unknown, toolCallId: string): boolean {
+  const mountedAt = index.toolPos.get(toolCallId);
+  if (mountedAt !== undefined) {
+    const lo = Math.min(thinkIdx, mountedAt), hi = Math.max(thinkIdx, mountedAt);
+    for (let k = lo + 1; k < hi; k++) {
+      if (index.ordered[k]!.kind === "visible") return false;
+    }
+  }
+  const ti = index.entryIndex.get(thinkMsg);
+  const ci = index.toolEntryIdx.get(toolCallId);
+  // Forward attach = the tool comes at or after the thinking's message.
+  const forward = mountedAt !== undefined ? mountedAt >= thinkIdx : (ti !== undefined && ci !== undefined && ci >= ti);
+  if (forward && ownProseAfterThinking(thinkMsg)) return false;
+  if (ti !== undefined && ci !== undefined) {
+    const lo = Math.min(ti, ci), hi = Math.max(ti, ci);
+    for (let k = lo + 1; k < hi; k++) {
+      if (isEntryVisible((index.entryList[k] as { message?: unknown } | undefined)?.message) ||
+        isCustomEntryVisible(index.entryList[k])) return false;
+    }
+  }
+  return true;
+}
+
+/** Nearest tool hosting a toolCall in entry order (forward, then back).
+ *  Covers trees whose tool components are not mounted (tests, virtual rows):
+ *  the transcript order still places the thinking. */
+function entryNeighborRun(index: DetachIndex, message: unknown, forward: boolean): ToolRef | undefined {
+  const at = index.entryIndex.get(message);
+  if (at === undefined) return undefined;
+  const step = forward ? 1 : -1;
+  for (let k = at + step; k >= 0 && k < index.entryList.length; k += step) {
+    const content = (index.entryList[k] as { message?: { content?: unknown } })?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      const id = (block as { type?: unknown; id?: unknown })?.type === "toolCall"
+        ? (block as { id?: unknown }).id
+        : undefined;
+      if (typeof id === "string") {
+        const runId = traceEntries.get(id)?.runId;
+        if (runId !== undefined) return { runId, toolCallId: id };
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Transcript anchor for a stashed thinking: the neighboring tool in the
+ *  same run (next preferred, else previous). Cross-run neighbors do not
+ *  anchor — the render only honors same-run ids. */
+function anchorFor(index: DetachIndex, at: number, prevTool: ToolRef | undefined, homeRunId: number): { before?: string; after?: string } {
+  const next = index.nextTool[at];
+  if (next && next.runId === homeRunId) return { before: next.toolCallId };
+  if (prevTool && prevTool.runId === homeRunId) return { after: prevTool.toolCallId };
+  return {};
+}
+
 /** One idempotent pass: detach every SAFE+hosted thinking row. Returns
  *  counts for /collapse diagnostics. Silent on every failure (cosmetic). */
 export function detachPass(
@@ -711,126 +845,11 @@ export function detachPass(
       return result;
     }
     const sm = sessionManager ?? lastSessionManager;
-    const entryList = entriesOf(sm);
-    const byMessage = new Map<unknown, { id?: string }>();
-    const entryIndex = new Map<unknown, number>();
-    entryList.forEach((entry, index) => {
-      if (entry && typeof entry === "object" && "message" in entry) {
-        const message = (entry as { message?: unknown }).message;
-        byMessage.set(message, entry as { id?: string });
-        if (!entryIndex.has(message)) entryIndex.set(message, index);
-      }
-    });
-    // toolCall id -> entry index of the message carrying it, for the
-    // segment gate below.
-    const toolEntryIdx = new Map<string, number>();
-    entryList.forEach((entry, index) => {
-      const content = (entry as { message?: { content?: unknown } })?.message?.content;
-      if (!Array.isArray(content)) return;
-      for (const block of content) {
-        const id = (block as { type?: unknown; id?: unknown })?.type === "toolCall"
-          ? (block as { id?: unknown }).id
-          : undefined;
-        if (typeof id === "string") toolEntryIdx.set(id, index);
-      }
-    });
-    /** Whether an entry message is visible to the user: a run boundary.
-     *  Mirrors planToolRuns (user / visible custom break runs) plus
-     *  assistant prose — a thinking-only message never does. */
-    const isEntryVisible = (message: unknown): boolean => {
-      if (!message || typeof message !== "object") return false;
-      const role = (message as { role?: unknown }).role;
-      if (role === "user") return true;
-      if (role === "assistant") {
-        return hasVisibleText((message as { content?: unknown }).content);
-      }
-      return false;
-    };
-    const isCustomEntryVisible = (entry: unknown): boolean =>
-      !!entry && typeof entry === "object" &&
-      (entry as { type?: unknown }).type === "custom_message" &&
-      (entry as { display?: unknown }).display !== false;
-    /** Segment gate: a thinking attaches only within its own visible
-     *  segment — never across a user message, agent prose, or visible
-     *  custom block. Mounted tree order and entry order EACH veto: trees
-     *  hold the live rows entries have not landed yet, entries hold the
-     *  settled rows no longer mounted. Fully unknown positions allow
-     *  (the settled pass re-checks once entries land). */
-    const segmentClear = (thinkIdx: number, thinkMsg: unknown, toolCallId: string): boolean => {
-      const mountedAt = toolPos.get(toolCallId);
-      if (mountedAt !== undefined) {
-        const lo = Math.min(thinkIdx, mountedAt), hi = Math.max(thinkIdx, mountedAt);
-        for (let k = lo + 1; k < hi; k++) {
-          if (ordered[k].kind === "visible") return false;
-        }
-      }
-      const ti = entryIndex.get(thinkMsg);
-      const ci = toolEntryIdx.get(toolCallId);
-      // Forward attach = the tool comes at or after the thinking's message.
-      const forward = mountedAt !== undefined ? mountedAt >= thinkIdx : (ti !== undefined && ci !== undefined && ci >= ti);
-      if (forward && ownProseAfterThinking(thinkMsg)) return false;
-      if (ti !== undefined && ci !== undefined) {
-        const lo = Math.min(ti, ci), hi = Math.max(ti, ci);
-        for (let k = lo + 1; k < hi; k++) {
-          if (isEntryVisible((entryList[k] as { message?: unknown })?.message) ||
-            isCustomEntryVisible(entryList[k])) return false;
-        }
-      }
-      return true;
-    };
-    /** Nearest tool hosting a toolCall in entry order (forward, then back).
-     *  Covers trees whose tool components are not mounted (tests, virtual
-     *  rows): the transcript order still places the thinking. */
-    const entryNeighborRun = (message: unknown, forward: boolean): { runId: number; toolCallId: string } | undefined => {
-      const at = entryIndex.get(message);
-      if (at === undefined) return undefined;
-      const step = forward ? 1 : -1;
-      for (let k = at + step; k >= 0 && k < entryList.length; k += step) {
-        const content = (entryList[k] as { message?: { content?: unknown } })?.message?.content;
-        if (!Array.isArray(content)) continue;
-        for (const block of content) {
-          const id = (block as { type?: unknown; id?: unknown })?.type === "toolCall"
-            ? (block as { id?: unknown }).id
-            : undefined;
-          if (typeof id === "string") {
-            const runId = traceEntries.get(id)?.runId;
-            if (runId !== undefined) return { runId, toolCallId: id };
-          }
-        }
-      }
-      return undefined;
-    };
-    const ordered: OrderedItem[] = [];
-    // Mounted tool positions: the live segment gate (tree order decides
-    // while entries are still landing). Entry order covers the rest.
-    const toolPos = new Map<string, number>();
-    collectOrdered(tui, undefined, ordered, toolPos);
+    const index = buildDetachIndex(tui, sm);
+    const { ordered, byMessage, nextTool } = index;
     walkedTotal = ordered.length;
     walkedThinking = ordered.filter((o) => o.kind === "thinking").length;
     walkedTools = ordered.filter((o) => o.kind === "tool").length;
-    // Nearest tool run per position: next preferred (thinking usually
-    // precedes the tools it informs), else previous. Tool ids ride along
-    // so stashed thinkings anchor to their transcript neighbors.
-    const nextTool: ({ runId: number; toolCallId: string } | undefined)[] = new Array(ordered.length);
-    let next: { runId: number; toolCallId: string } | undefined;
-    for (let i = ordered.length - 1; i >= 0; i--) {
-      nextTool[i] = next;
-      const item = ordered[i];
-      if (item.kind === "tool") next = { runId: item.runId, toolCallId: item.toolCallId };
-    }
-    /** Transcript anchor for a stashed thinking: the neighboring tool in
-     *  the same run (next preferred, else previous). Cross-run neighbors
-     *  do not anchor — the render only honors same-run ids. */
-    const anchorFor = (
-      index: number,
-      prevTool: { runId: number; toolCallId: string } | undefined,
-      homeRunId: number,
-    ): { before?: string; after?: string } => {
-      const next = nextTool[index];
-      if (next && next.runId === homeRunId) return { before: next.toolCallId };
-      if (prevTool && prevTool.runId === homeRunId) return { after: prevTool.toolCallId };
-      return {};
-    };
     let prev: { runId: number; toolCallId: string } | undefined;
     for (let i = 0; i < ordered.length; i++) {
       const item = ordered[i];
@@ -888,10 +907,10 @@ export function detachPass(
           if (!tool) return undefined;
           const g = guessOk(tool.runId);
           if (g === undefined) return undefined;
-          return segmentClear(i, message, tool.toolCallId) ? g : undefined;
+          return segmentClear(index, i, message, tool.toolCallId) ? g : undefined;
         };
         runId = tryTool(nextTool[i]) ?? tryTool(prev) ??
-          tryTool(entryNeighborRun(message, true)) ?? tryTool(entryNeighborRun(message, false));
+          tryTool(entryNeighborRun(index, message, true)) ?? tryTool(entryNeighborRun(index, message, false));
         if (runId === undefined && !settled) {
           // Walk-blind trees (no tool components mounted): the most
           // recently rendered tool is the turn's own while its turn is
@@ -949,7 +968,7 @@ export function detachPass(
       if (runId !== undefined && (row as { isStreaming?: unknown })?.isStreaming === true) {
         const text = extractThinkingText(message);
         if (text && !ownProseAfterThinking(message) && !messageHasProse(message)) {
-          upsertLiveThinking(row, { runId, ...anchorFor(i, prev, runId) }, text, message);
+          upsertLiveThinking(row, { runId, ...anchorFor(index, i, prev, runId) }, text, message);
         }
         skip("streaming");
         continue;
@@ -1060,7 +1079,7 @@ export function detachPass(
           }
         }
       }
-      const anchor = anchorFor(i, prev, runId);
+      const anchor = anchorFor(index, i, prev, runId);
       const timing = thinkingTiming(message);
       const same = texts.findIndex((item) => item.text === text);
       if (same >= 0) {

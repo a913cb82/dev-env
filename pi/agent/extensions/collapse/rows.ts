@@ -416,16 +416,115 @@ function runSpan(runId: number): { startedAt?: number; endedAt?: number } {
   return { startedAt, endedAt };
 }
 
+function italicText(theme: Theme, text: string): string {
+  return typeof (theme as { italic?: unknown }).italic === "function"
+    ? (theme as { italic: (text: string) => string }).italic(text)
+    : text;
+}
+
+/** The quiet block voice: every header summary and the footer control use
+ *  the same grey italic as Pi's thinking label. */
+function quietText(theme: Theme, text: string): string {
+  return italicText(theme, theme.fg("thinkingText", text));
+}
+
+/** Run-level header text: tool counts, thinking count, and any failure count. */
+function headerSummary(runId: number, theme: Theme): string {
+  const styled = summarizeRun(runToolNames(runId), runThinkingCount(runId));
+  const summary = styled ? quietText(theme, styled) : "";
+  const errors = runErrorCount(runId);
+  return errors > 0
+    ? `${summary}${summary ? " · " : ""}${italicText(theme, theme.fg("error", `${errors} error`))}`
+    : summary;
+}
+
+/** Header/footer right column: elapsed while live, frozen duration settled.
+ *  The span includes thinking lead/tail, not just tools. */
+function runTimeRight(runId: number, live: boolean, theme: Theme): string {
+  const span = runSpan(runId);
+  if (!live) {
+    const duration = span.startedAt !== undefined && span.endedAt !== undefined && span.endedAt >= span.startedAt
+      ? span.endedAt - span.startedAt
+      : undefined;
+    const text = duration === undefined ? "" : formatRunDuration(duration);
+    return text ? theme.fg("dim", text) : "";
+  }
+  const elapsed = span.startedAt === undefined ? undefined : Date.now() - span.startedAt;
+  return elapsed !== undefined && elapsed >= 0 ? theme.fg("dim", formatRunDuration(elapsed)) : "";
+}
+
+/** One preview row for a hosted thinking block. */
+function addThinkingPreview(
+  trace: Container,
+  runId: number,
+  item: ThinkingItem,
+  theme: Theme,
+  pi: ExtensionAPI,
+): void {
+  const thinkingLive = item.live !== undefined;
+  const thinkingRow = item.open
+    ? thinkingMarkdown(item.text, liveOutputPad(pi), theme)
+    : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme, thinkingLive);
+  trace.addChild(
+    new MouseRegion(thinkingRow, (event: any) => {
+      if (!event || event.type !== "click") return undefined;
+      // Per-line expansion: only the clicked thinking opens.
+      item.open = !item.open;
+      traceBump();
+      tracePokeOwner(runId);
+      return { handled: true };
+    }),
+  );
+}
+
+/** The footer closes the run; the up arrow mirrors the open header. */
+function addFooter(
+  trace: Container,
+  runId: number,
+  toolCallId: string,
+  time: string,
+  theme: Theme,
+  pi: ExtensionAPI,
+): void {
+  const footer = new CollapsedLine(quietText(theme, "Collapse"), time, liveOutputPad(pi), theme, false, "▴");
+  trace.addChild(
+    new MouseRegion(footer, (event: any) => {
+      if (!event || event.type !== "click") return undefined;
+      toggleRunOpen(traceEntries.get(toolCallId)?.runId ?? runId);
+      traceBump();
+      tracePokeOwner(traceEntries.get(toolCallId)?.runId ?? runId);
+      return { handled: true };
+    }),
+  );
+}
+
+/** One collapsed or opened tool row. */
+function buildToolRow(
+  entry: TraceEntry,
+  theme: Theme,
+  ownerCtx: any,
+  pi: ExtensionAPI,
+  piExpanded: boolean,
+): Component {
+  if (entry.rowOpen) return buildOpenedRow(entry, theme, ownerCtx, piExpanded);
+  const live = entryIsLive(entry);
+  const count = countSuffix(theme, entry);
+  const textChars = live ? argsTextChars(entry.args) : 0;
+  let right = count;
+  let left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), live);
+  if (live && left.cut && textChars > visibleWidth(left.text)) {
+    const liveRight = liveCountSuffix(theme, textChars);
+    if (liveRight) {
+      right = liveRight;
+      left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), true);
+    }
+  }
+  return new CollapsedLine(left.text, right, liveOutputPad(pi), theme, live);
+}
+
 /** Paint one run into `trace`: header or rows + footer. Re-runs whenever
  *  the owner or the run changes (see buildTrace). */
 function paintTrace(trace: Container, runId: number, toolCallId: string, theme: Theme, ownerCtx: any, pi: ExtensionAPI): void {
-  const italic = (text: string): string =>
-    typeof (theme as { italic?: unknown }).italic === "function"
-      ? (theme as { italic: (text: string) => string }).italic(text)
-      : text;
-  // The quiet block voice: every header summary and the footer control use
-  // the same grey italic as Pi's thinking label.
-  const quiet = (text: string): string => italic(theme.fg("thinkingText", text));
   // A click must act on the run the registry currently assigns: a re-plan
   // can move this tool between paints, and the header closure would then
   // open the old id while the next sync paints the new run closed.
@@ -437,31 +536,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   // container is the extension's own component — tag it with the run's ids
   // so the detach walk (neighbors, anchors, segment gate) sees the tools.
   (trace as { traceToolIds?: string[] }).traceToolIds = [...ids];
-  // Time column: elapsed while live, frozen duration once settled. Never arg
-  // chars — the right column is always time. The span is the whole block:
-  // thinking before/between/after tools counts, not just the tool rows.
-  const timeRight = (live: boolean): string => {
-    const span = runSpan(runId);
-    if (!live) {
-      const duration = span.startedAt !== undefined && span.endedAt !== undefined && span.endedAt >= span.startedAt
-        ? span.endedAt - span.startedAt
-        : undefined;
-      const text = duration === undefined ? "" : formatRunDuration(duration);
-      return text ? theme.fg("dim", text) : "";
-    }
-    const elapsed = span.startedAt === undefined ? undefined : Date.now() - span.startedAt;
-    return elapsed !== undefined && elapsed >= 0 ? theme.fg("dim", formatRunDuration(elapsed)) : "";
-  };
-  const baseSummary = summarizeRun(runToolNames(runId), runThinkingCount(runId));
-  const errors = runErrorCount(runId);
-  // Collapsed blocks share one voice: the same grey italic as Pi's thinking
-  // label. Rows keep their identity styling; only the block header is quiet.
-  const styledSummary = baseSummary ? quiet(baseSummary) : "";
-  // Errors must be visible while the block rests closed: opening every run to
-  // discover a failure defeats the one-line view.
-  const summary = errors > 0
-    ? `${styledSummary}${styledSummary ? " · " : ""}${italic(theme.fg("error", `${errors} error`))}`
-    : styledSummary;
+  const summary = headerSummary(runId, theme);
   // Run-level header: every run rests as one line. Click opens the per-row
   // view below. While a tool or thinking is active the resting header carries
   // the live wheel and elapsed time; an open header keeps its arrow and the
@@ -471,7 +546,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   // One clock read for the header and footer: the two times can never
   // disagree at a second boundary. The header is not replaced while open;
   // the footer repeats the same value for long blocks.
-  const time = timeRight(active);
+  const time = runTimeRight(runId, active, theme);
   const toggleHeader = (marker: string | undefined, liveHeader = false): Component => {
     const header = new CollapsedLine(
       summary,
@@ -507,22 +582,6 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   // row per hosted thinking block, interleaved with the tool rows in
   // transcript order via each thinking's anchor (before/after a tool of
   // this run); unanchored entries keep the legacy top position.
-  const addPreview = (item: ThinkingItem): void => {
-    const thinkingLive = item.live !== undefined;
-    const thinkingRow = item.open
-      ? thinkingMarkdown(item.text, liveOutputPad(pi), theme)
-      : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme, thinkingLive);
-    trace.addChild(
-      new MouseRegion(thinkingRow, (event: any) => {
-        if (!event || event.type !== "click") return undefined;
-        // Per-line expansion: only the clicked thinking opens.
-        item.open = !item.open;
-        traceBump();
-        tracePokeOwner(runId);
-        return { handled: true };
-      }),
-    );
-  };
   const toolIds = traceRuns.get(runId) ?? [];
   const inRun = new Set(toolIds);
   const beforeMap = new Map<string, ThinkingItem[]>();
@@ -543,35 +602,12 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
       }
     }
   }
-  for (const item of topThinkings) addPreview(item);
+  for (const item of topThinkings) addThinkingPreview(trace, runId, item, theme, pi);
   for (const id of toolIds) {
     const entry = traceEntries.get(id);
     if (!entry) continue;
-    for (const item of beforeMap.get(id) ?? []) addPreview(item);
-    const row = entry.rowOpen
-      ? buildOpenedRow(entry, theme, ownerCtx, piExpanded)
-      : (() => {
-          // Live while Pi still streams or writes the call: partial
-          // renderResults already carry output sizes, so count==null must
-          // NOT gate liveness. The wheel in column 1 is the only live signal;
-          // counts stay dim.
-          const live = entryIsLive(entry);
-          const count = countSuffix(theme, entry);
-          // No result yet: the row streams the arguments its summary hides.
-          // When they do not all fit, the right column says how much text the
-          // model has written instead.
-          const textChars = live ? argsTextChars(entry.args) : 0;
-          let right = count;
-          let left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), live);
-          if (live && left.cut && textChars > visibleWidth(left.text)) {
-            const liveRight = liveCountSuffix(theme, textChars);
-            if (liveRight) {
-              right = liveRight;
-              left = makeLeftFor(entry.toolName, theme, entry.args, entry.isError, rowBudget(pi, right), true);
-            }
-          }
-          return new CollapsedLine(left.text, right, liveOutputPad(pi), theme, live);
-        })();
+    for (const item of beforeMap.get(id) ?? []) addThinkingPreview(trace, runId, item, theme, pi);
+    const row = buildToolRow(entry, theme, ownerCtx, pi, piExpanded);
     trace.addChild(
       new MouseRegion(row, (event: any) => {
         if (!event || event.type !== "click") return undefined;
@@ -581,7 +617,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
         return { handled: true };
       }),
     );
-    for (const item of afterMap.get(id) ?? []) addPreview(item);
+    for (const item of afterMap.get(id) ?? []) addThinkingPreview(trace, runId, item, theme, pi);
   }
   // Footer collapses the run back to its header. The collapse resets any
   // row the user opened (see toggleRunOpen), so reopening restores the
@@ -589,17 +625,7 @@ function paintTrace(trace: Container, runId: number, toolCallId: string, theme: 
   if (ids.length >= 1) {
     // Same clock as the header; long blocks keep the time visible at the
     // bottom even when the top header has scrolled out of the viewport.
-    const footer = new CollapsedLine(quiet("Collapse"), time, liveOutputPad(pi), theme, false, "▴");
-    trace.addChild(
-      new MouseRegion(footer, (event: any) => {
-        if (!event || event.type !== "click") return undefined;
-        const target = liveRun();
-        toggleRunOpen(target);
-        traceBump();
-        tracePokeOwner(target);
-        return { handled: true };
-      }),
-    );
+    addFooter(trace, runId, toolCallId, time, theme, pi);
   }
 }
 
@@ -893,10 +919,16 @@ export function clearCollapsePokes(): void {
   collapsePoke.clear();
 }
 
-/** Test-only reset: clear poke registrations and visibility-toggle
- *  baselines so a render test starts from a known world. */
+/** Forget wrapped extension/MCP tool names (session teardown or tests). */
+export function clearWrappedToolNames(): void {
+  wrappedNames.clear();
+}
+
+/** Test-only reset: clear poke registrations, wrapped names and
+ *  visibility-toggle baselines so a render test starts from a known world. */
 export function resetRowsState(): void {
   collapsePoke.clear();
+  wrappedNames.clear();
 }
 
 /** Invalidate every known tool: the visibility toggle changes the render mode
