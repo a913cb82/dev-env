@@ -80,10 +80,10 @@ export type TimingSrc = "pi" | "history" | "fallback";
  *  The FIRST tool of each run owns the trace (stable position); later tools
  *  render nothing. Keyed by toolCallId; only live-observed tools join, so
  *  history can never teleport (unregistered tools fall back to single rows). */
-// Nothing here is ever pruned, by design: buildTrace reads this registry at
-// render time and the TUI re-renders every component on resize/zoom, so a
-// dropped entry would blank a row that is still on screen. Size is therefore
-// proportional to the transcript, not to elapsed time.
+// Entries are live-observed; session_start prunes the ones outside the
+// current branch (pruneTrace). Until then a dropped entry would blank a row
+// that is still on screen, so only that branch-aware pass removes them.
+// Size is proportional to the active transcript, not elapsed time.
 export const traceEntries = new Map<string, TraceEntry>();
 export const traceRuns = new Map<number, string[]>();
 export const traceOwnerPoke = new Map<number, () => void>();

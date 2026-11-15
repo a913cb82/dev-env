@@ -372,8 +372,6 @@ function hostRunFor(message: {
   return undefined;
 }
 
-/** One idempotent pass: detach every SAFE+hosted thinking row. Returns
- *  counts for /collapse diagnostics. Silent on every failure (cosmetic). */
 /** True when this message carries a tool call that belongs to `runId`. */
 function ownsToolInRun(message: unknown, runId: number): boolean {
   try {
@@ -554,7 +552,6 @@ function upsertLiveThinking(
   row: object,
   host: { runId: number; before?: string; after?: string },
   text: string,
-  pi: ExtensionAPI,
   message?: unknown,
 ): void {
   const timing = thinkingTiming(message ?? (row as { lastMessage?: unknown }).lastMessage);
@@ -672,7 +669,7 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
         restoreThinkingLabel(row, pi);
         return 0;
       }
-      upsertLiveThinking(row, host, text, pi, msg);
+      upsertLiveThinking(row, host, text, msg);
       return 1;
     }
     let host: { runId: number; before?: string; after?: string } | undefined;
@@ -687,7 +684,7 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
     if (!host) {
       return 0;
     }
-    upsertLiveThinking(row, host, text, pi, msg);
+    upsertLiveThinking(row, host, text, msg);
     return 1;
   } catch {
     // Fail-open: the row keeps its own line; the completed pass retries.
@@ -695,6 +692,8 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
   }
 }
 
+/** One idempotent pass: detach every SAFE+hosted thinking row. Returns
+ *  counts for /collapse diagnostics. Silent on every failure (cosmetic). */
 export function detachPass(
   pi: ExtensionAPI,
   sessionManager?: unknown,
@@ -961,7 +960,7 @@ export function detachPass(
       if (runId !== undefined && (row as { isStreaming?: unknown })?.isStreaming === true) {
         const text = extractThinkingText(message);
         if (text && !ownProseAfterThinking(message) && !messageHasProse(message)) {
-          upsertLiveThinking(row, { runId, ...anchorFor(i, prev, runId) }, text, pi, message);
+          upsertLiveThinking(row, { runId, ...anchorFor(i, prev, runId) }, text, message);
         }
         skip("streaming");
         continue;

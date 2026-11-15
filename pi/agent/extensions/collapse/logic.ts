@@ -174,7 +174,6 @@ function dropSplitSurrogate(text: string, side: "head" | "tail"): string {
   return /^[\uDC00-\uDFFF]/.test(text) ? text.slice(1) : text;
 }
 
-
 /** A collapsed one-line preview: middle-truncated, so it keeps the head AND
  *  the tail. Collapsing the whole text first would make the label cost
  *  O(thinking) — a megabyte block took ~8ms, and the label is rebuilt on
@@ -203,10 +202,6 @@ export function thinkingPreview(text: string, maxChars = 64): string {
     if (window >= text.length) return truncateMiddle(collapseWhitespace(text), cells);
     window *= 2;
   }
-}
-
-export function firstWord(command: string): string {
-  return collapseWhitespace(command).split(" ")[0] ?? "";
 }
 
 export type BashSegment =
@@ -454,19 +449,6 @@ export function extractThinkingText(message: {
   return blocks.join("\n\n");
 }
 
-export function findLatestThinkingText(
-  entries: Array<{ type?: unknown; message?: unknown }> | undefined | null,
-): string | undefined {
-  if (!Array.isArray(entries)) return undefined;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (!entry || entry.type !== "message") continue;
-    const thinking = extractThinkingText(entry.message as { role?: unknown; content?: unknown });
-    if (thinking) return thinking;
-  }
-  return undefined;
-}
-
 /** Does anything visible render ABOVE this message's first tool call?
  *  Mirrors Pi's own test in AssistantMessageComponent (trimmed text or
  *  trimmed thinking), so tool rows may merge across turns only when no
@@ -603,7 +585,7 @@ const ROW_FIRST_LINE = new Set(["prompt", "message", "task"]);
 
 /** Rows are one line: flatten whitespace before quoting, so a multi-line
  *  message reads as prose instead of `\n` escapes. */
-export function rowValue(value: unknown): string | undefined {
+function rowValue(value: unknown): string | undefined {
   if (typeof value === "string") {
     return JSON.stringify(value.slice(0, ROW_VALUE_CHARS).replace(/\s+/g, " ").trim());
   }
@@ -688,13 +670,6 @@ export function argsTextChars(args: unknown): number {
   return total;
 }
 
-/** Group history tool calls into shared runs, mirroring the live layout:
- *  contiguous own tools with no visible content between them share a run,
- *  so the rebuild renders them gapless. Anything visible (prose, thinking,
- *  foreign stock blocks, other roles) splits — merging across it would lift
- *  rows above their own context. toolResult entries are skipped: they render
- *  inside the tool component, never between rows. Returns toolCallId groups
- *  in transcript order; entries the planner cannot place keep single runs. */
 /** Whether a message renders a block in the transcript between tool rows.
  *  Custom messages with `display: false` are hidden entirely, and Pi never
  *  renders system messages — a run must not split across either, or the split
@@ -705,6 +680,13 @@ export function isVisibleMessage(role: unknown, display?: unknown): boolean {
   return true;
 }
 
+/** Group history tool calls into shared runs, mirroring the live layout:
+ *  contiguous own tools with no visible content between them share a run,
+ *  so the rebuild renders them gapless. Anything visible (prose, thinking,
+ *  foreign stock blocks, other roles) splits — merging across it would lift
+ *  rows above their own context. toolResult entries are skipped: they render
+ *  inside the tool component, never between rows. Returns toolCallId groups
+ *  in transcript order; entries the planner cannot place keep single runs. */
 export function planToolRuns(
   entries: Array<{ type?: unknown; message?: unknown; summary?: unknown; display?: unknown }> | undefined | null,
   isOwnTool: (name: string) => boolean,

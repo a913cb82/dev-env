@@ -177,9 +177,7 @@ function check(name, cond, extra) {
     check("small argument summary is unchanged", logic.fallbackArgsText({ a: 1, b: "x" }, false, 80) === 'a=1 b="x"', JSON.stringify(logic.fallbackArgsText({ a: 1, b: "x" }, false, 80)));
   }
 
-  // firstWord / summarizeBashCommand (no fixed cap: the row truncates to width)
-  check("first word", logic.firstWord("timeout 25 ls some/dist") === "timeout", logic.firstWord("timeout 25 ls some/dist"));
-  check("first word empty", logic.firstWord("   ") === "", JSON.stringify(logic.firstWord("   ")));
+  // summarizeBashCommand (no fixed cap: the row truncates to width)
   check(
     "bash short",
     logic.summarizeBashCommand("timeout 25 ls some/dist") === "timeout 25 ls some/dist",
@@ -242,7 +240,7 @@ function check(name, cond, extra) {
     check("preview short text", logic.previewLines("a\nb", false).remaining === 0, "");
   }
 
-  // extractThinkingText / findLatestThinkingText
+  // extractThinkingText
   check(
     "extract none",
     logic.extractThinkingText({ role: "assistant", content: [{ type: "text", text: "hi" }] }) === undefined,
@@ -263,19 +261,6 @@ function check(name, cond, extra) {
     logic.extractThinkingText({ role: "user", content: [{ type: "thinking", thinking: "a" }] }) === undefined,
     "should be undefined",
   );
-  {
-    const entries = [
-      { type: "message", message: { role: "user", content: "hi" } },
-      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "old" }] } },
-      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "" }] } },
-      { type: "custom", data: 1 },
-      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "new" }] } },
-    ];
-    check("latest thinking", logic.findLatestThinkingText(entries) === "new", JSON.stringify(logic.findLatestThinkingText(entries)));
-    check("latest thinking empty", logic.findLatestThinkingText([]) === undefined, "should be undefined");
-    check("latest thinking non-array", logic.findLatestThinkingText(null) === undefined, "should be undefined");
-  }
-
   // labelBudget / padLabel (label must be exactly columns-3: pad + scrollbar)
   check("budget wide", logic.labelBudget(200) === 197, logic.labelBudget(200));
   check("budget fallback", logic.labelBudget(undefined) === 77, logic.labelBudget(undefined));

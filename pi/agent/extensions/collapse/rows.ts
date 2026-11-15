@@ -4,7 +4,7 @@ import { Box, Container, MouseRegion, sliceByColumn, Text, visibleWidth, type Co
 import { CollapsedLine, thinkingMarkdown } from "./line.js";
 export { CollapsedLine };
 import { keyHint, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { ROW_RAIL, WHEEL_FRAMES, WHEEL_MS, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, formatRunDuration, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, summarizeRun, textCharCount, wheelFrameAt, type BashSegment, type GenericPair } from "./logic.js";
+import { WHEEL_FRAMES, WHEEL_MS, argsTextChars, bashSegments, extraArgPairs, fallbackArgsText, formatCharCount, formatRunDuration, genericToolRow, labelBudget, lsParts, previewLines, readLineParts, searchParts, splitDirBase, summarizeBashCommand, summarizeRun, textCharCount, wheelFrameAt, type BashSegment, type GenericPair } from "./logic.js";
 /** Re-exported so the wheel-test surface keeps its path (rows.ts owns the
  *  timer quantum BREATHE_MS; the frames live on the shared leaf). */
 export { WHEEL_FRAMES };
@@ -337,11 +337,6 @@ function buildOpenedRow(
   return box;
 }
 
-/** One component for a whole run. Every row rests as a one-liner; a row
- *  opened by a click shows its stock cell at the depth Pi currently asks
- *  for (collapsed cell while Pi is collapsed, expanded cell while Pi is
- *  expanded). The region handles the click, so Pi's own toggle never fires
- *  for row clicks. */
 /** Right column while a call is live: the argument text written so far.
  *  Dim like settled counts — the wheel in column 1 is the live signal. */
 export function liveCountSuffix(theme: Theme, chars: number): string {

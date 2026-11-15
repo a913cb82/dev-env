@@ -439,7 +439,6 @@ export default function (pi: ExtensionAPI) {
   // not join the previous run's trace (its row would teleport). Boundaries:
   // turn/message ends, non-assistant messages, foreign tools, user bash,
   // compaction, and session start (which also drops dead registrations).
-  const boundary = (reason: string) => traceBoundary(reason);
   pi.on("session_start", (_event, ctx) => {
     try {
       noteTheme(ctx);

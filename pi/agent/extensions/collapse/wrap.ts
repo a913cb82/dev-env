@@ -521,13 +521,13 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
       return counts;
     }
     const root = { children };
-    const stack: { node: unknown; parent: { children: unknown[] }; index: number }[] = children.map(
-      (node, index) => ({ node, parent: root as { children: unknown[] }, index }),
+    const stack: { node: unknown; parent: { children: unknown[] } }[] = children.map(
+      (node) => ({ node, parent: root as { children: unknown[] } }),
     );
     while (stack.length > 0) {
       const frame = stack.pop();
       if (!frame) continue;
-      const { node, parent, index } = frame;
+      const { node, parent } = frame;
       if (!node || typeof node !== "object") continue;
       if ((node as Record<symbol, unknown>)[WRAPPED] === true) {
         counts.already++;
@@ -577,7 +577,7 @@ export function wrappingPass(pi: ExtensionAPI): WrapCounts {
       if (Array.isArray(kids)) {
         const holder = { children: kids };
         for (let i = kids.length - 1; i >= 0; i--) {
-          stack.push({ node: kids[i], parent: holder as { children: unknown[] }, index: i });
+          stack.push({ node: kids[i], parent: holder as { children: unknown[] } });
         }
       }
     }
