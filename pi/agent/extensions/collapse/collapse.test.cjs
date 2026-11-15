@@ -5542,6 +5542,89 @@ function clickFirstRow(comp) {
     }
   }
 
+  // 108c. If a row's own handleMouse shadow is missing (a historical row, or
+  // a Pi rebuild that replaced it), the stock dispatch still reaches the
+  // hidden-label MouseRegion. That callback must open our block, not Pi's
+  // native full-text expansion.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    try {
+      const msg = {
+        role: "assistant", timestamp: now - 13000, stopReason: "stop", durationMs: 13000,
+        content: [{ type: "thinking", thinking: "stock dispatch body ".repeat(80) }],
+      };
+      const row = new agent.AssistantMessageComponent(
+        undefined, true, undefined, "Thinking...", 1, [],
+      );
+      row.updateContent(msg, false);
+      labelsLib.setActiveTheme(theme);
+      labelsLib.captureWalkerTui({ children: [row] });
+      labelsLib.setStandaloneThinking(msg, true);
+      labelsLib.reconcileThinkingLabels(piS);
+      // Simulate the historical row whose instance shadow was never applied
+      // (or was replaced): dispatch falls through Container -> MouseRegion.
+      delete row.handleMouse;
+      const closed = row.render(100).map(plainText);
+      row.handleMouse({ type: "click", button: "left", y: 1, width: 100, height: closed.length });
+      const opened = row.render(100).map(plainText);
+      check("stock row dispatch opens the block shape",
+        opened.length === 4 && opened[1].startsWith("▾1 thinking") &&
+        opened[2].startsWith("▏") && opened[3].startsWith("▴Collapse"),
+        JSON.stringify(opened));
+      check("stock row dispatch shows a preview, not the full text",
+        opened[2].includes("…") && /\d\.\dk\s*$/.test(opened[2]) && opened[2].length <= 100,
+        JSON.stringify(opened[2]));
+    } finally {
+      Date.now = realNow;
+      labelsLib.setActiveTheme(undefined);
+    }
+  }
+
+  // 108d. A Pi rebuild can replace both instance shadows while the rail
+  // marker stays. The next label click must reinstall them, not trust the
+  // marker and leave the stock full-text handler in place.
+  {
+    const labelsLib = await jiti.import(path.join(HERE, "labels.ts"));
+    const agent = await jiti.import("@earendil-works/pi-coding-agent");
+    const piS = { getSettings: () => ({ outputPad: 1, hideThinkingBlock: true }) };
+    const realNow = Date.now;
+    const now = 1700000000000;
+    Date.now = () => now;
+    try {
+      const msg = {
+        role: "assistant", timestamp: now - 13000, stopReason: "stop", durationMs: 13000,
+        content: [{ type: "thinking", thinking: "rebuilt rail body ".repeat(80) }],
+      };
+      const row = new agent.AssistantMessageComponent(
+        undefined, true, undefined, "Thinking...", 1, [],
+      );
+      row.updateContent(msg, false);
+      const stockRender = row.render;
+      const stockHandle = row.handleMouse;
+      labelsLib.setActiveTheme(theme);
+      labelsLib.captureWalkerTui({ children: [row] });
+      labelsLib.setStandaloneThinking(msg, true);
+      labelsLib.reconcileThinkingLabels(piS);
+      // Simulate Pi replacing the instance shadows; the rail symbol remains.
+      row.render = stockRender;
+      row.handleMouse = stockHandle;
+      const closed = row.render(100).map(plainText);
+      row.handleMouse({ type: "click", button: "left", y: 1, width: 100, height: closed.length });
+      const opened = row.render(100).map(plainText);
+      check("replaced rail shadows reinstall on click",
+        opened.length === 4 && opened[1].startsWith("▾1 thinking") &&
+        opened[3]?.startsWith("▴Collapse"), JSON.stringify(opened));
+    } finally {
+      Date.now = realNow;
+      labelsLib.setActiveTheme(undefined);
+    }
+  }
+
   // 109. Production theme wiring: session_start stores ctx.ui, and the
   // standalone block reads the live theme through that provider. Test 107
   // injects setActiveTheme directly, which cannot catch a broken noteTheme.

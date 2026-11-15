@@ -9,7 +9,7 @@
  * stops matching, everything below bails to stock behavior (never throws).
  */
 import { Container, type Component } from "@earendil-works/pi-tui";
-import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatCharCount, formatRunDuration, hasThinkingText, hasVisibleText, labelBudget, padLabel, thinkingLabelForWidth, thinkingPreview, thinkingRunCount, wheelFrameAt } from "./logic.js";
+import { ROW_RAIL, WHEEL_FRAMES, extractThinkingText, formatCharCount, formatRunDuration, hasThinkingText, hasVisibleText, labelBudget, padLabel, stripAnsi, thinkingLabelForWidth, thinkingPreview, thinkingRunCount, wheelFrameAt } from "./logic.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import { CollapsedLine, dimText as dim, quietText as quiet, thinkingMarkdown } from "./line.js";
@@ -457,13 +457,63 @@ function standaloneInfo(message: unknown, now = Date.now()): StandaloneInfo {
 /** Write the collapsed form for a standalone thinking, streaming or
  *  homeless (see setStandaloneThinking). Never cached: the duration ticks
  *  until it freezes at completion. */
-function writeStandaloneLabel(row: any, message: unknown, width: number | undefined, pad: number, nowMs = Date.now()): void {
+function writeStandaloneLabel(
+  row: any,
+  message: unknown,
+  width: number | undefined,
+  pad: number,
+  nowMs = Date.now(),
+  pi?: ExtensionAPI,
+): void {
   try {
     const info = standaloneInfo(message, nowMs);
     const label = standaloneThinkingLabel(Math.max(1, info.runs), info.duration, labelBudget(width, pad), !info.complete);
     if (row.hiddenThinkingLabel !== label) writeLabel(row, label);
+    // writeLabel can fall back to setHiddenThinkingLabel, which rebuilds the
+    // content tree and its label MouseRegion. Re-patch after the write.
+    if (pi) installStandaloneRegion(row, pi);
   } catch {
     // Cosmetic only.
+  }
+}
+
+/** The hidden label is Pi's MouseRegion around a Text child. Historical rows
+ *  can reach that child even when the row-level handleMouse shadow is absent
+ *  (or replaced by a Pi rebuild); route the label click to the block instead
+ *  of Pi's native full-text expansion. */
+const STANDALONE_REGION = Symbol("collapseStandaloneRegion");
+function standaloneLabelRegion(row: any): any {
+  const children = row?.contentContainer?.children;
+  if (!Array.isArray(children)) return undefined;
+  for (const child of children) {
+    const text = (child as any)?.child;
+    if (typeof text?.text !== "string") continue;
+    if (STANDALONE_THINKING_LABEL.test(stripAnsi(text.text))) return child;
+  }
+  return undefined;
+}
+
+function installStandaloneRegion(row: any, pi: ExtensionAPI): boolean {
+  try {
+    const region = standaloneLabelRegion(row);
+    if (!region || region[STANDALONE_REGION] === true) return false;
+    const original = typeof region.onMouse === "function" ? region.onMouse : undefined;
+    region.onMouse = (event: any): unknown => {
+      if (event?.type === "click" && event?.button === "left" &&
+          rowHasStandaloneLabel(row) && standaloneEligible(row, pi)) {
+        const view = standaloneView(row);
+        view.open = true;
+        view.expanded = false;
+        installRowRail(row, pi);
+        requestRowRender();
+        return { handled: true };
+      }
+      return original ? original(event) : undefined;
+    };
+    region[STANDALONE_REGION] = true;
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -513,7 +563,7 @@ export function restoreThinkingLabel(row: unknown, pi: ExtensionAPI): void {
     const pad = liveOutputPad(pi);
     installRowRail(row, pi);
     if (rowIsStreaming(row) || standaloneMessages.has(message)) {
-      writeStandaloneLabel(row, message, width, pad);
+      writeStandaloneLabel(row, message, width, pad, undefined, pi);
       return;
     }
     const label = thinkingLabelForWidth(thinking, width, pad);
@@ -552,7 +602,7 @@ function maybeRelabel(row: any, pi: ExtensionAPI): void {
     if (standaloneMessages.has(message as object) || rowIsStreaming(row) ||
         (rowHasStandaloneLabel(row) && standaloneEligible(row, pi))) {
       setStandaloneThinking(message, true);
-      writeStandaloneLabel(row, message, cols, pad);
+      writeStandaloneLabel(row, message, cols, pad, undefined, pi);
       return;
     }
     const label = thinkingLabelForWidth(thinking, cols, pad);
@@ -691,6 +741,16 @@ export function pokeStandaloneRows(): boolean {
 
 const RAILED = Symbol("collapseRowRail");
 
+interface RailShadow {
+  shadowRender: (width: number) => string[];
+  originalRender: unknown;
+  shadowHandle?: (event: any) => unknown;
+  originalHandle?: unknown;
+}
+/** The exact shadow functions installed per row, so a Pi rebuild that
+ *  replaces them can be detected and healed instead of trusting the marker. */
+const railShadows = new WeakMap<object, RailShadow>();
+
 /** Shadow one row's render so its thinking line joins the run's left margin.
  *  Instance-only and fail-open: the shadow keeps calling the row's own
  *  render and only edits the line that is exactly this row's label. */
@@ -698,11 +758,19 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
   try {
     if (!row || typeof row !== "object") return false;
     const target = row as Record<string | symbol, unknown> & { render?: unknown };
-    if (target[RAILED] === true) return false;
-    const render = target.render;
-    if (typeof render !== "function") return false;
-    const orig = render.bind(row);
-    target.render = (width: number): string[] => {
+    // Patch the stock label region even if the instance shadow is already
+    // installed: a Pi rebuild can replace the child callback at any time.
+    installStandaloneRegion(row, pi);
+    const prior = railShadows.get(row);
+    const currentRender = target.render;
+    const currentHandle = target.handleMouse;
+    const renderIntact = !!prior && currentRender === prior.shadowRender;
+    const handleIntact = !!prior && currentHandle === prior.shadowHandle;
+    if (target[RAILED] === true && renderIntact && handleIntact) return false;
+    const renderBase = renderIntact ? prior!.originalRender : currentRender;
+    if (typeof renderBase !== "function") return false;
+    const orig = renderBase.bind(row);
+    const shadowRender = (width: number): string[] => {
       maybeRelabel(row, pi);
       const block = standaloneLines(row, width, pi);
       if (block) return block;
@@ -710,14 +778,16 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
       const lines = orig(width);
       return railLines(lines, row, pi);
     };
+    target.render = shadowRender;
     // A standalone block is all ours: the row's stock MouseRegion would
     // expand the thinking text on the first click. Route header / preview /
     // footer clicks to the block's own depth instead. Mixed rows and rows
     // that are not standalone keep Pi's native handler.
-    const originalHandle = target.handleMouse;
-    if (typeof originalHandle === "function") {
-      const handle = originalHandle.bind(row);
-      target.handleMouse = (event: any): unknown => {
+    const handleBase = handleIntact ? prior!.originalHandle : currentHandle;
+    let shadowHandle: ((event: any) => unknown) | undefined;
+    if (typeof handleBase === "function") {
+      const handle = handleBase.bind(row);
+      shadowHandle = (event: any): unknown => {
         if (event?.type !== "click" || event?.button !== "left" || !standaloneCandidate(row, pi)) {
           return handle(event);
         }
@@ -753,7 +823,16 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
         }
         return handle(event);
       };
+      target.handleMouse = shadowHandle;
+    } else if (handleIntact) {
+      shadowHandle = prior!.shadowHandle;
     }
+    railShadows.set(row, {
+      shadowRender,
+      originalRender: renderBase,
+      shadowHandle,
+      originalHandle: handleBase,
+    });
     target[RAILED] = true;
     return true;
   } catch {
@@ -814,7 +893,7 @@ export function reconcileThinkingLabels(pi: ExtensionAPI): number {
           cached.width === width && cached.pad === pad) continue;
       installRowRail(row, pi);
       if (standalone) {
-        writeStandaloneLabel(row, message, width, pad);
+        writeStandaloneLabel(row, message, width, pad, undefined, pi);
         labeled++;
         continue;
       }
@@ -947,7 +1026,7 @@ export function reconcileStreamingLabel(
       // a hosted thinking inside an opened run.
       setStandaloneThinking(own, true);
       const before = row.hiddenThinkingLabel;
-      writeStandaloneLabel(row, own, width, pad, now);
+      writeStandaloneLabel(row, own, width, pad, now, pi);
       labeledFor.delete(row);
       if (row.hiddenThinkingLabel !== before) {
         streamWrites++;

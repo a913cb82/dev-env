@@ -369,7 +369,9 @@ preview (`▾`, a middle-truncated line with its size, `▴Collapse`) instead
 of expanding Pi's hidden label immediately; clicking the preview then shows
 the full text. The standalone label is also the block's ownership proof:
 when Pi hands the row a fresh final message object, the block stays a block
-instead of reverting to Pi's native full-text click. A streaming thinking
+instead of reverting to Pi's native full-text click. The hidden-label
+`MouseRegion` is also patched directly, so a historical row that loses the
+instance shadows still opens the block rather than Pi's full text. A streaming thinking
 that later gains a host gives up this block to the run; an unsafe conclusion
 (a tool-less abort, for example) falls back to the stock preview instead. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
