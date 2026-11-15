@@ -897,7 +897,7 @@ function scanThinkingContent(
 ): ThinkingScan | undefined {
   const content = message?.content;
   if (!Array.isArray(content)) return undefined;
-  let hasVisibleText = false;
+  let visible = false;
   let hasToolCalls = false;
   let runIndex = 0;
   let hiddenRuns = 0;
@@ -905,7 +905,7 @@ function scanThinkingContent(
   for (let i = 0; i < content.length; i++) {
     const block = content[i];
     if (isVisibleTextBlock(block)) {
-      hasVisibleText = true;
+      visible = true;
     } else if (block?.type === "toolCall") {
       hasToolCalls = true;
     } else if (block?.type === "thinking") {
@@ -926,7 +926,7 @@ function scanThinkingContent(
       runIndex++;
     }
   }
-  return { hasVisibleText, hasToolCalls, hiddenRuns, allHidden };
+  return { hasVisibleText: visible, hasToolCalls, hiddenRuns, allHidden };
 }
 
 /** Shared veto chain for both detach modes. Whole-row detach also refuses
