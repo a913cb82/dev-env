@@ -626,6 +626,61 @@ const ROW_PRIMARY_KEYS = [
 /** Prompts and messages are multi-line: their first line is the intent. */
 const ROW_FIRST_LINE = new Set(["prompt", "message", "task"]);
 
+/** JSON head for nested values: exact for normal arguments, bounded for
+ *  pathological ones. The string path in `rowValue` handles plain strings;
+ *  this keeps an object/array from serializing a megabyte before the row
+ *  cap can reject it. Circular references become "[Circular]" instead of
+ *  throwing out of a render. */
+const ROW_VALUE_NODES = 32;
+const ROW_VALUE_DEPTH = 4;
+function boundedJsonValue(value: unknown): string | undefined {
+  const seen = new WeakSet<object>();
+  let left = ROW_VALUE_CHARS;
+  let nodes = 0;
+  const trim = (value: unknown, depth: number): unknown => {
+    if (left <= 0 || nodes >= ROW_VALUE_NODES) return undefined;
+    nodes++;
+    if (typeof value === "string") {
+      if (value.length <= left) {
+        left -= value.length;
+        return value;
+      }
+      const head = value.slice(0, Math.max(0, left - 1));
+      left = 0;
+      return `${head}…`;
+    }
+    if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value !== "object") return undefined;
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    if (typeof (value as { toJSON?: unknown }).toJSON === "function") {
+      return trim((value as { toJSON: () => unknown }).toJSON(), depth + 1);
+    }
+    if (depth >= ROW_VALUE_DEPTH) return "…";
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      for (const item of value) {
+        if (left <= 0 || nodes >= ROW_VALUE_NODES) break;
+        out.push(trim(item, depth + 1));
+      }
+      return out;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (left <= 0 || nodes >= ROW_VALUE_NODES) break;
+      const shown = key.slice(0, 64);
+      left -= shown.length + 4;
+      out[shown] = trim(item, depth + 1);
+    }
+    return out;
+  };
+  try {
+    return JSON.stringify(trim(value, 0));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Rows are one line: flatten whitespace before quoting, so a multi-line
  *  message reads as prose instead of `\n` escapes. */
 function rowValue(value: unknown): string | undefined {
@@ -635,8 +690,7 @@ function rowValue(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (value === null) return "null";
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  const json = JSON.stringify(value);
-  return json === undefined ? undefined : json;
+  return boundedJsonValue(value);
 }
 
 /** The remaining arguments as pairs, in the tool's declared order, skipping

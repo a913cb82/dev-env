@@ -276,6 +276,28 @@ function check(name, cond, extra) {
     check("visible text ignores thinking", logic.hasVisibleText([t("b")]) === false, "");
   }
 
+  // Generic row values: normal JSON is preserved exactly; pathological
+  // nested values are bounded and circular structures cannot throw.
+  {
+    const small = logic.genericToolRow({ payload: { a: 1, b: "x" } });
+    check("generic value keeps small JSON", small.pairs[0]?.value === '{"a":1,"b":"x"}', JSON.stringify(small));
+    const huge = logic.genericToolRow({ payload: { text: "x".repeat(1_000_000) } });
+    check("generic value bounds large nested JSON",
+      huge.pairs.length === 1 && huge.pairs[0].value.length < 600,
+      JSON.stringify(huge).slice(0, 120));
+    const circular = {};
+    circular.self = circular;
+    let circularRow;
+    try {
+      circularRow = logic.genericToolRow({ payload: circular });
+    } catch (error) {
+      circularRow = undefined;
+    }
+    check("generic value tolerates circular JSON",
+      !!circularRow && circularRow.pairs.length === 1 && circularRow.pairs[0].value.includes("[Circular]"),
+      JSON.stringify(circularRow ?? "threw"));
+  }
+
   // labelBudget / padLabel (label must be exactly columns-3: pad + scrollbar)
   check("budget wide", logic.labelBudget(200) === 197, logic.labelBudget(200));
   check("budget fallback", logic.labelBudget(undefined) === 77, logic.labelBudget(undefined));
