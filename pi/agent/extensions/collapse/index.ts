@@ -137,11 +137,9 @@ const COLLAPSE_REVISION = 102;
 const WRAP_SLOT = "__collapseWrapTool";
 const POLL_SLOT = "__collapsePollTick";
 const BREATHE_SLOT = "__collapseBreatheTick";
-/** Slots/timers owned by this activation, so shutdown never clears a newer
- *  activation's state. */
-let ownWrapSlot: ((definition: any) => any) | undefined;
-let ownPollTimer: ReturnType<typeof setInterval> | undefined;
-let ownBreatheTimer: ReturnType<typeof setInterval> | undefined;
+/** Newest activation in this module instance. A newer activation owns the
+ *  shared globals, so an older shutdown must not clear them. */
+let newestActivation = 0;
 // Test surface: the shared wheel clock (quantum + wall-clock frame) and the
 // repaint tick that drives live rows while they run.
 export { BREATHE_MS, breatheFrame, breatheTick };
@@ -302,6 +300,12 @@ function collapseTick(pi: ExtensionAPI): void {
 }
 
 export default function (pi: ExtensionAPI) {
+  const activation = ++newestActivation;
+  // Slots/timers owned by this activation, so shutdown never clears a newer
+  // activation's state.
+  let ownWrapSlot: ((definition: any) => any) | undefined;
+  let ownPollTimer: ReturnType<typeof setInterval> | undefined;
+  let ownBreatheTimer: ReturnType<typeof setInterval> | undefined;
   const cwd = process.cwd();
   try {
     collapseLastHidden = (pi?.getSettings?.()?.hideThinkingBlock ?? false) === true;
@@ -383,10 +387,12 @@ export default function (pi: ExtensionAPI) {
     ownWrapSlot = undefined;
     ownPollTimer = undefined;
     ownBreatheTimer = undefined;
-    collapseUi = undefined;
-    setThemeProvider(undefined);
-    clearCollapsePokes();
-    clearWrappedToolNames();
+    if (activation === newestActivation) {
+      collapseUi = undefined;
+      setThemeProvider(undefined);
+      clearCollapsePokes();
+      clearWrappedToolNames();
+    }
   });
 
 
