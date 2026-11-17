@@ -885,6 +885,52 @@ const loadFixture = (name) =>
       !lines.some((l) => l.includes("Analyzing a code condition")), lines.join("\n"));
   }
 
+  // R30. A finished mixed standalone (thinking + own prose + own tool, R9
+  // shape) honors the same click depth as a pure block: label → preview →
+  // full → label, without hiding the prose. Before, the first click fell
+  // through to Pi native and expanded the full text immediately.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    const deep = "A".repeat(150) + " NEEDLE-DEEP-IN-FULL-TEXT " + "B".repeat(250);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "m1" },
+      { op: "thinking", id: "m1", text: deep },
+      { op: "tick" },
+      { op: "text", id: "m1", text: "Some prose here" },
+      { op: "tick" },
+      { op: "tool", id: "m1", toolId: "t1", name: "bash", args: { command: "echo hi" } },
+      { op: "tick" },
+      { op: "end", id: "m1", stop: "toolUse" },
+      { op: "result", toolId: "t1", text: "hi" },
+      { op: "tick" },
+    ]);
+    const row = world.assistantComps.get("m1");
+    const plain = (lines) => lines.map((l) => l
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-9;]*m/g, ""));
+    const labelY = plain(row.render(100)).findIndex((l) => /\s*▸\d+ thinking\b/.test(l));
+    check("mixed row wears the block label", labelY >= 0, plain(row.render(100)).join("\n"));
+    row.handleMouse({ type: "click", button: "left", x: 2, y: labelY, width: 100, height: 60 });
+    const first = plain(row.render(100));
+    const firstText = first.join("\n");
+    check("first click shows the preview, not the full text",
+      first.some((l) => l.includes("\u258f")) && !firstText.includes("NEEDLE-DEEP-IN-FULL-TEXT"), firstText);
+    check("first click keeps the prose", firstText.includes("Some prose here"), firstText);
+    const previewY = first.findIndex((l) => l.includes("\u258f"));
+    row.handleMouse({ type: "click", button: "left", x: 2, y: previewY, width: 100, height: 60 });
+    const secondText = plain(row.render(100)).join("\n");
+    check("second click expands the full text",
+      secondText.includes("NEEDLE-DEEP-IN-FULL-TEXT") && secondText.includes("Some prose here"), secondText);
+    const fullY = plain(row.render(100)).findIndex((l) => l.includes("NEEDLE-DEEP-IN-FULL-TEXT"));
+    row.handleMouse({ type: "click", button: "left", x: 2, y: fullY, width: 100, height: 60 });
+    const thirdText = plain(row.render(100)).join("\n");
+    check("third click collapses back to the label",
+      /\s*▸\d+ thinking\b/.test(thirdText) && !thirdText.includes("NEEDLE-DEEP-IN-FULL-TEXT") &&
+      thirdText.includes("Some prose here"), thirdText);
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

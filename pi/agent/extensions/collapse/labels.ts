@@ -348,6 +348,41 @@ function escapeEnd(text: string, from = 0): number {
   }
 }
 
+/** Index of the rendered line that IS this row's hidden-thinking label,
+ *  plus the escape-aware offsets railLines needs to rewrite it. Matches by
+ *  label identity (plus the extension's own styling), never by visible
+ *  text, so prose repeating the preview can never match. */
+function findLabelLine(
+  lines: string[],
+  label: unknown,
+  pad: number,
+): { index: number; at: number; textAt: number } | undefined {
+  if (typeof label !== "string" || label === "") return undefined;
+  const spaces = " ".repeat(Math.max(0, pad));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (typeof line !== "string") continue;
+    const at = escapeEnd(line);
+    if (line.slice(at, at + pad) !== spaces) continue;
+    const textAt = escapeEnd(line, at + pad);
+    if (!line.startsWith(label, textAt)) continue;
+    // The label owns the line: after it, only escapes and padding may
+    // follow (Pi closes its styling before the row's trailing spaces).
+    let whole = true;
+    for (let j = textAt + label.length; ; ) {
+      j = escapeEnd(line, j);
+      if (j >= line.length) break;
+      if (line[j] !== " ") {
+        whole = false;
+        break;
+      }
+      j++;
+    }
+    if (!whole) continue;
+    return { index: i, at, textAt };
+  }
+  return undefined;
+}
 /** Put the run rail in the pad cell of the hidden-thinking line only. Rows
  *  are Pi's `Text` at `outputPad`, so the rail must replace that cell rather
  *  than be prefixed to the label: same width, content still on column 2, and
@@ -373,27 +408,11 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
     if (typeof label !== "string" || label === "") return lines;
     const pad = typeof row?.outputPad === "number" ? row.outputPad : liveOutputPad(pi);
     if (pad < 1) return lines;
-    const spaces = " ".repeat(pad);
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (typeof line !== "string") continue;
-      const at = escapeEnd(line);
-      if (line.slice(at, at + pad) !== spaces) continue;
-      const textAt = escapeEnd(line, at + pad);
-      if (!line.startsWith(label, textAt)) continue;
-      // The label owns the line: after it, only escapes and padding may
-      // follow (Pi closes its styling before the row's trailing spaces).
-      let whole = true;
-      for (let j = textAt + label.length; ; ) {
-        j = escapeEnd(line, j);
-        if (j >= line.length) break;
-        if (line[j] !== " ") {
-          whole = false;
-          break;
-        }
-        j++;
-      }
-      if (!whole) continue;
+    const found = findLabelLine(lines, label, pad);
+    if (!found) return lines;
+    const line = lines[found.index];
+    if (typeof line !== "string") return lines;
+    const { at, textAt } = found;
       // Replace the FIRST pad cell with the rail in the label's own style;
       // the remaining pad, the label and its style stay where Pi put them.
       // A streaming row is still live: spin the wheel in that same cell.
@@ -401,18 +420,16 @@ function railLines(lines: string[], row: any, pi: ExtensionAPI): string[] {
       // A standalone thinking already carries its own `▸` marker in the
       // label; adding a rail would double the marker.
       const rowLabel = String((row as { hiddenThinkingLabel?: unknown })?.hiddenThinkingLabel ?? "");
-      if (STANDALONE_THINKING_LABEL.test(rowLabel)) continue;
+      if (STANDALONE_THINKING_LABEL.test(rowLabel)) return lines;
       const glyph = streaming ? WHEEL_FRAMES[wheelFrameAt()]! : ROW_RAIL;
       const out = lines.slice();
-      out[i] =
+      out[found.index] =
         line.slice(0, at) +
         line.slice(at + pad, textAt) +
         glyph +
         "\x1b[0m" +
         line.slice(at + 1);
       return out;
-    }
-    return lines;
   } catch {
     return lines;
   }
@@ -500,7 +517,8 @@ function installStandaloneRegion(row: any, pi: ExtensionAPI): boolean {
     const original = typeof region.onMouse === "function" ? region.onMouse : undefined;
     region.onMouse = (event: any): unknown => {
       if (event?.type === "click" && event?.button === "left" &&
-          rowHasStandaloneLabel(row) && standaloneEligible(row, pi)) {
+          rowHasStandaloneLabel(row) &&
+          (standaloneEligible(row, pi) || standaloneInlineApplicable(row, pi))) {
         const view = standaloneView(row);
         view.open = true;
         view.expanded = false;
@@ -718,6 +736,80 @@ function buildStandaloneLines(row: any, width: number, pi?: ExtensionAPI): strin
   return lines;
 }
 
+/** A row wearing our standalone label that the block cannot honor: prose
+ *  and/or Pi's own abort/error line stay mounted below it, so replacing
+ *  the row would hide user-visible content. Clicks cycle only the label
+ *  line (label → preview → full → label) instead of falling through to Pi
+ *  native full-text on the first click; everything else renders natively. */
+function standaloneInlineApplicable(row: any, pi?: ExtensionAPI): boolean {
+  try {
+    if (!row || typeof row !== "object") return false;
+    if (pi && !isHiddenThinking(pi)) return false;
+    if (isRowLiveHosted(row)) return false;
+    if (!rowHasStandaloneLabel(row)) return false;
+    if (standaloneCandidate(row, pi)) return false;
+    const message = (row as { lastMessage?: unknown }).lastMessage;
+    if (!message || typeof message !== "object") return false;
+    if ((message as { role?: unknown }).role !== "assistant") return false;
+    if (!hasThinkingText(message)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Inline preview swap for an applicable row: Pi's native lines with only
+ *  the label line replaced per the view state (closed keeps the label, so
+ *  the R9 layout is byte-identical; open swaps in the preview or the full
+ *  text). Returns the lines plus the swapped span for click routing, or
+ *  undefined to fall back to stock + rail. */
+function standaloneInlineRender(
+  row: any,
+  width: number,
+  pi: ExtensionAPI,
+  renderOrig: () => string[],
+): { lines: string[]; start: number; end: number } | undefined {
+  try {
+    if (!standaloneInlineApplicable(row, pi)) return undefined;
+    const message = (row as { lastMessage?: unknown }).lastMessage as {
+      role?: unknown; content?: unknown; stopReason?: unknown;
+    };
+    const text = extractThinkingText(message);
+    if (!text) return undefined;
+    const pad = typeof (row as { outputPad?: unknown }).outputPad === "number"
+      ? (row as { outputPad: number }).outputPad
+      : liveOutputPad(pi);
+    const lines = railLines(renderOrig(), row, pi);
+    const found = findLabelLine(lines, row?.hiddenThinkingLabel, pad);
+    if (!found) return undefined;
+    const view = standaloneView(row);
+    if (!view.open) return { lines, start: found.index, end: found.index + 1 };
+    const theme = activeTheme() ?? plainTheme;
+    const streaming = (row as { isStreaming?: unknown }).isStreaming === true ||
+      message.stopReason == null || message.stopReason === "pending";
+    let swap: string[];
+    if (view.expanded) {
+      swap = thinkingMarkdown(text, pad, theme).render(width);
+    } else {
+      const preview = new CollapsedLine(
+        quiet(theme, thinkingPreview(text, 240)),
+        dim(theme, formatCharCount(text.length)),
+        pad,
+        theme,
+        streaming,
+      );
+      swap = preview.render(width);
+    }
+    return {
+      lines: [...lines.slice(0, found.index), ...swap, ...lines.slice(found.index + 1)],
+      start: found.index,
+      end: found.index + swap.length,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function requestRowRender(): void {
   try {
     (capturedTui as { requestRender?: () => void } | undefined)?.requestRender?.();
@@ -730,7 +822,8 @@ function requestRowRender(): void {
  *  this the wheel and elapsed time freeze between model deltas. */
 export function pokeStandaloneRows(): boolean {
   try {
-    const live = liveRows.some((row) => standaloneCandidate(row) &&
+    const live = liveRows.some((row) =>
+      (standaloneCandidate(row) || standaloneInlineApplicable(row, undefined)) &&
       (row as { isStreaming?: unknown }).isStreaming === true);
     if (live) requestRowRender();
     return live;
@@ -774,6 +867,8 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
       maybeRelabel(row, pi);
       const block = standaloneLines(row, width, pi);
       if (block) return block;
+      const inline = standaloneInlineRender(row, width, pi, () => orig(width));
+      if (inline) return inline.lines;
       standaloneViews.delete(row);
       const lines = orig(width);
       return railLines(lines, row, pi);
@@ -781,17 +876,37 @@ export function installRowRail(row: unknown, pi: ExtensionAPI): boolean {
     target.render = shadowRender;
     // A standalone block is all ours: the row's stock MouseRegion would
     // expand the thinking text on the first click. Route header / preview /
-    // footer clicks to the block's own depth instead. Mixed rows and rows
-    // that are not standalone keep Pi's native handler.
+    // footer clicks to the block's own depth instead. A labeled row the
+    // block cannot honor (prose and/or Pi's own abort/error line stay
+    // mounted) keeps Pi's native render, but its label line still cycles
+    // label → preview → full; everything else keeps the native handler.
     const handleBase = handleIntact ? prior!.originalHandle : currentHandle;
     let shadowHandle: ((event: any) => unknown) | undefined;
     if (typeof handleBase === "function") {
       const handle = handleBase.bind(row);
       shadowHandle = (event: any): unknown => {
-        if (event?.type !== "click" || event?.button !== "left" || !standaloneCandidate(row, pi)) {
+        if (event?.type !== "click" || event?.button !== "left") {
           return handle(event);
         }
         const width = typeof event.width === "number" ? event.width : (currentColumns() ?? 80);
+        if (!standaloneCandidate(row, pi)) {
+          const inline = standaloneInlineRender(row, width, pi, () => orig(width));
+          if (!inline) return handle(event);
+          const y = typeof event.y === "number" ? event.y : -1;
+          if (y < inline.start || y >= inline.end) return handle(event);
+          const view = standaloneView(row);
+          if (!view.open) {
+            view.open = true;
+            view.expanded = false;
+          } else if (!view.expanded) {
+            view.expanded = true;
+          } else {
+            view.open = false;
+            view.expanded = false;
+          }
+          requestRowRender();
+          return { handled: true };
+        }
         const lines = standaloneLines(row, width, pi);
         if (!lines) return handle(event);
         const y = typeof event.y === "number" ? event.y : -1;

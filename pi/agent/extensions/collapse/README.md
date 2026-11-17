@@ -210,8 +210,10 @@ thinking style, and the footer closes it. The block keeps Pi's blank spacer
 above its header, so it never glues itself to a preceding row. A thinking
 preview inside an opened run renders its full text the same way, so hidden
 thinking matches a visible thinking block once expanded.
-(Mixed thinking-plus-prose rows keep their prose and their native label
-click; the block view is only for a thinking-only row.)
+(Mixed thinking-plus-prose rows keep their prose in place: the label line
+itself cycles label → preview → full text → label on click, so the depth
+matches a pure block without ever hiding the prose. The same inline cycle
+covers a standalone row carrying Pi's own abort/error line.)
 Each row opens its stock cell at the depth Pi currently asks for:
 
 | Pi (ctrl+o) | At rest | After click |
