@@ -948,15 +948,22 @@ function detachSafety(
   if (scan.hiddenRuns === 0 || !scan.allHidden) return false;
   const stop = message?.stopReason;
   if (stop == null || stop === "" || stop === "pending" || stop === "length") return false;
-  if (!scan.hasToolCalls && (stop === "aborted" || stop === "error")) return false;
+  // A tool-less abort/error row carries Pi's own "Operation aborted" /
+  // "Error: ..." line, so whole-row detach would erase it — but partial
+  // detach leaves that line mounted while only the thinking children move
+  // into the run. The veto therefore applies to whole rows only.
+  if (!allowVisibleText && !scan.hasToolCalls && (stop === "aborted" || stop === "error")) return false;
   return true;
 }
 
 /** Detach-safety predicate: detaching this assistant component from the
  *  transcript tree hides nothing but hidden-thinking label rows (plus the
  *  ignorable blank spacers Pi puts around them). Requires at least one
- *  hidden thinking run, no visible text, and a completed message; length /
- *  tool-less abort/error lines would be lost with the row. */
+ *  hidden thinking run, no visible text, and a completed message; length
+ *  stops always stay (their truncation notice would be lost), and tool-less
+ *  abort/error rows stay whole (their "Operation aborted" / "Error: ..."
+ *  line would be lost) — those fall back to partial detach, which leaves
+ *  the line mounted while the thinking still joins its run. */
 export function isSafeToDetach(
   message: {
     content?: Array<{ type?: string; text?: string; thinking?: string }>;
@@ -978,9 +985,12 @@ export function stripAnsi(line: string): string {
 /** Partial-detach predicate: the thinking children of a MIXED message
  *  (visible prose plus hidden thinking) may be removed while the prose
  *  stays mounted. Same vetoes as whole-row detach except the visible-text
- *  veto — and the message must be completed, so streaming labels never
- *  flicker between the row and the run. Requires every thinking run
- *  hidden (all-or-nothing keeps the stashed text exact). */
+ *  veto — and except tool-less abort/error: Pi's "Operation aborted" /
+ *  "Error: ..." line stays mounted (only the thinking children go), so
+ *  the thinking still joins its run while the interrupt stays visible.
+ *  Requires every thinking run hidden (all-or-nothing keeps the stashed
+ *  text exact), and the message must be completed, so streaming labels
+ *  never flicker between the row and the run. */
 export function isPartialSafeToDetach(
   message: {
     content?: Array<{ type?: string; text?: string; thinking?: string }>;

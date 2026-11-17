@@ -647,8 +647,10 @@ function check(name, cond, extra) {
       partial({ content: [text("hello")], stopReason: "stop" }, true) === false, "");
     check("partial: length stop keeps its line",
       partial({ content: [think("plan"), text("hello")], stopReason: "length" }, true) === false, "");
-    check("partial: aborted without tools keeps its line",
-      partial({ content: [think("plan")], stopReason: "aborted" }, true) === false, "");
+    check("partial: aborted without tools stashes the thinking (abort line stays mounted)",
+      partial({ content: [think("plan")], stopReason: "aborted" }, true) === true, "");
+    check("partial: error without tools stashes the thinking too",
+      partial({ content: [think("plan")], stopReason: "error" }, true) === true, "");
   }
 
   // stripAnsi: SGR plus OSC (rows carry both).

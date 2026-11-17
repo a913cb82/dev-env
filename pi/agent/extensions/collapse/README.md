@@ -381,7 +381,11 @@ instead of reverting to Pi's native full-text click. The hidden-label
 `MouseRegion` is also patched directly, so a historical row that loses the
 instance shadows still opens the block rather than Pi's full text. A streaming thinking
 that later gains a host gives up this block to the run; an unsafe conclusion
-(a tool-less abort, for example) falls back to the stock preview instead. Detach runs on
+(a length stop, for example) falls back to the stock preview instead. A
+tool-less abort/error is only unsafe for whole-row detach (which would
+erase Pi's "Operation aborted" / "Error: ..." line): the thinking still
+joins its run through partial detach while that line stays mounted, so an
+interrupted thinking never strands outside its block. Detach runs on
 `message_end` / `turn_end` / `session_start` (history backfill) plus the
 1-second poll tick, which heals any rebuild path within a second. Messages
 are never edited, so history, replay, compaction, and reload backfill keep

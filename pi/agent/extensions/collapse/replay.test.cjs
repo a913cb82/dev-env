@@ -856,6 +856,35 @@ const loadFixture = (name) =>
       lines.some((l) => l.includes("1 bash") && l.includes("1 thinking")), lines.join("\n"));
   }
 
+  // R29. Interrupting while the latest row is a streaming thinking-only
+  // message must not strand it outside the block. The thinking joins its
+  // run (header counts it, preview inside the open run); Pi's own
+  // "Operation aborted" line stays mounted, so the interrupt is still
+  // visible — partial detach removes only the thinking children.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "m1" },
+      { op: "tool", id: "m1", toolId: "k1", name: "bash", args: { command: "echo one" } },
+      { op: "end", id: "m1", stop: "toolUse" },
+      { op: "start", id: "m2" },
+      { op: "thinking", id: "m2", text: "Analyzing a code condition for tool calls " },
+      { op: "abort", id: "m2" },
+      { op: "result", toolId: "k1", text: "one" },
+      { op: "turn" },
+      { op: "tick" },
+    ]);
+    const lines = driver.dump(world).lines;
+    check("interrupted thinking joins the run header",
+      lines.some((l) => l.includes("1 bash") && l.includes("1 thinking")), lines.join("\n"));
+    check("the interrupt stays visible",
+      lines.some((l) => l.includes("Operation aborted")), lines.join("\n"));
+    check("no stranded stock thinking row outside the block",
+      !lines.some((l) => l.includes("Analyzing a code condition")), lines.join("\n"));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });
