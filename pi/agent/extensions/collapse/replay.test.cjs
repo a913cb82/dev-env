@@ -805,6 +805,57 @@ const loadFixture = (name) =>
       JSON.stringify([map.get("dur-a")?.durationMs, map.get("dur-b")?.durationMs]));
   }
 
+  // R27. A thinking that already grew its own tool is done: its preview
+  // must not keep the live wheel while the tool builds/executes. Only the
+  // tool row spins; the thinking preview settles to the rail.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "go" },
+      { op: "start", id: "m1" },
+      { op: "thinking", id: "m1", text: "thinking text here " },
+      { op: "tool", id: "m1", toolId: "k1", name: "bash", args: { command: "echo two" } },
+    ]);
+    driver.openRun(world, "k1");
+    const lines = driver.dump(world).lines;
+    const wheel = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/;
+    const thinkIdx = lines.findIndex((l) => l.includes("thinking text here"));
+    const toolIdx = lines.findIndex((l) => l.includes("echo two"));
+    check("thinking preview settles once its own tool builds",
+      thinkIdx >= 0 && !wheel.test(lines[thinkIdx]), lines.join("\n"));
+    check("the building tool row keeps the wheel",
+      toolIdx >= 0 && wheel.test(lines[toolIdx]), lines.join("\n"));
+  }
+
+  // R28. The thinking joins its own tool's run as soon as the tool arrives
+  // (same message), without waiting for a tick/end: no standalone thinking
+  // line lingers underneath the new header.
+  {
+    const world = driver.createWorld(PI, { width: 100 });
+    await driver.restore(world, []);
+    await driver.runLive(world, [
+      { op: "user", text: "first" },
+      { op: "start", id: "m0" },
+      { op: "tool", id: "m0", toolId: "k0", name: "bash", args: { command: "echo one" } },
+      { op: "end", id: "m0", stop: "toolUse" },
+      { op: "result", toolId: "k0", text: "one" },
+      { op: "turn" },
+      { op: "tick" },
+      { op: "user", text: "second" },
+      { op: "start", id: "m1" },
+      { op: "thinking", id: "m1", text: "new turn thinking " },
+      { op: "tool", id: "m1", toolId: "k1", name: "bash", args: { command: "echo two" } },
+    ]);
+    const lines = driver.dump(world).lines;
+    const standalone = lines.filter((l) => /^\s*[▸⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\d+ thinking\b/.test(l));
+    const header = lines.find((l) => l.includes("echo") || (l.includes("1 bash") && l.includes("1 thinking")));
+    check("no standalone thinking lingers under the new header",
+      standalone.length === 0, lines.join("\n"));
+    check("the new header counts the thinking",
+      lines.some((l) => l.includes("1 bash") && l.includes("1 thinking")), lines.join("\n"));
+  }
+
   console.log(failures === 0 ? "PASS: collapse replay" : `FAILURES: ${failures}`);
   process.exitCode = failures === 0 ? 0 : 1;
 })().catch((e) => { console.error("FATAL", e); process.exitCode = 1; });

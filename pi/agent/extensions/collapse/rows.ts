@@ -23,6 +23,7 @@ export { WHEEL_FRAMES };
 import { currentColumns, isHiddenThinking, liveOutputPad } from "./settings.js";
 import {
   isRunHidden,
+  isSpinningLiveItem,
   liveThinkingRevision,
   runThinkingCount,
   runThinkingItems,
@@ -449,7 +450,9 @@ function addThinkingPreview(
   theme: Theme,
   pi: ExtensionAPI,
 ): void {
-  const thinkingLive = item.live !== undefined;
+  // A thinking that already grew its own (traced) tool is done: the tool
+  // row spins, this preview settles to the rail.
+  const thinkingLive = isSpinningLiveItem(item);
   const thinkingRow = item.open
     ? thinkingMarkdown(item.text, liveOutputPad(pi), theme)
     : new CollapsedLine(thinkingRowPreview(theme, item.text), theme.fg("dim", formatCharCount(item.text.length)), liveOutputPad(pi), theme, thinkingLive);

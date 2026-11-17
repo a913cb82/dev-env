@@ -255,8 +255,13 @@ is not yet persisted never attaches across a turn-resetting boundary
 yet; the poll would otherwise teleport it into the previous turn).
 Same-turn content splits (trailing prose) never strand: the pass defers
 only across hard boundaries and retries once the turn's tools land. A host
-toolCall in the same message is direct evidence and always counts, and
-settled history keeps the old behavior. A re-detach moves the text
+toolCall in the same message is direct evidence and always counts — even
+when its component has not mounted yet (the tool arrived in this same
+delta but Pi's UI listener runs after the extension handler): the message
+already names the future run (history plan, else the join pointer), so the
+thinking hosts there immediately, anchored before the tool that is about
+to appear, instead of lingering outside the block until a tick. Settled
+history keeps the old behavior. A re-detach moves the text
 (latest placement wins — Pi rebuilds re-add removed rows) instead of
 stacking duplicates across runs; and the replacement preview row (one per
 hosted thinking block, starting with real text and middle-truncated once by
@@ -367,7 +372,10 @@ header shape, frozen at completion; while it streams the marker is the
 wheel and the elapsed time ticks. Clicking the header opens the block
 preview (`▾`, a middle-truncated line with its size, `▴Collapse`) instead
 of expanding Pi's hidden label immediately; clicking the preview then shows
-the full text. The standalone label is also the block's ownership proof:
+the full text. A preview whose thinking already grew its own (traced) tool
+is done: the tool row keeps the wheel while it builds/executes, and the
+preview settles to the rail — only a preview with no tool yet (or whose
+tool has not mounted) still spins. The standalone label is also the block's ownership proof:
 when Pi hands the row a fresh final message object, the block stays a block
 instead of reverting to Pi's native full-text click. The hidden-label
 `MouseRegion` is also patched directly, so a historical row that loses the

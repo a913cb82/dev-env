@@ -302,6 +302,18 @@ export function runErrorCount(runId: number): number {
   return count;
 }
 
+/** The run the next live tool will join (the join pointer). Live thinking
+ *  that already grew its own toolCall (same message) belongs to this run
+ *  even before the tool component mounts and traces. */
+export function joinRunId(): number {
+  return traceRunId;
+}
+
+/** History-planned run for a toolCall id, if the startup plan named it. */
+export function plannedRunFor(toolCallId: string): number | undefined {
+  return plannedRunById.get(toolCallId);
+}
+
 /** History runs planned at session_start (see planToolRuns in logic): the
  *  rebuild rendered one run per tool before this event, so merge each
  *  contiguous group into one run here. Every component repaints from this

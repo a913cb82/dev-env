@@ -20,7 +20,7 @@ import { extractThinkingText, hasThinkingText, hasVisibleText, isPartialSafeToDe
 import { isDetachEnabled, isHiddenThinking } from "./settings.js";
 import { STANDALONE_THINKING_LABEL, findStreamingRow, hasVisibleProse, isThinkingRow, restoreThinkingLabel, setRowLiveHosted, setStandaloneThinking, walkerTui } from "./labels.js";
 import { isSpacerLike } from "./tree.js";
-import { registerRunClose, registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent, isRunOpen } from "./trace.js";
+import { registerRunClose, registerRunRemap, traceEntries, tracePokeOwner, traceRuns, isTurnCurrent, isRunOpen, joinRunId, plannedRunFor } from "./trace.js";
 
 /** Full thinking texts by trace run id for the replacement rows (a run can
  *  host several thinking-only messages; each keeps its own preview row).
@@ -275,17 +275,31 @@ export function runThinkingSpan(runId: number): { startedAt?: number; endedAt?: 
   return { startedAt, endedAt };
 }
 
-/** A provisional thinking is still streaming; its run is active even when
- *  every tool in it has already settled. */
-export function runThinkingLive(runId: number): boolean {
-  return (runThinking.get(runId) ?? []).some((item) => item.live !== undefined);
+/** A provisional thinking is still streaming AND still thinking: once its
+ *  own toolCall is visible (traced), the thinking is done — the tool's own
+ *  wheel carries the live signal, so the preview settles to the rail.
+ *  A `before` anchor naming a tool that is not traced yet (predicted future
+ *  host) still spins: the tool has not mounted, so nothing else shows the
+ *  activity. */
+export function isSpinningLiveItem(item: ThinkingItem): boolean {
+  return item.live !== undefined &&
+    (item.before === undefined || !traceEntries.has(item.before));
 }
 
-/** Runs with a streaming thinking, for the breathe timer. */
+/** A still-thinking preview keeps its run active even when every tool in it
+ *  has already settled. A thinking that already grew its own (traced) tool
+ *  is done: the tool row spins, the preview does not. */
+export function runThinkingLive(runId: number): boolean {
+  return (runThinking.get(runId) ?? []).some(isSpinningLiveItem);
+}
+
+/** Runs with a still-thinking preview, for the header wheel and the 80ms
+ *  breather. A thinking that already grew its own (traced) tool is done:
+ *  the tool row spins, the preview does not. */
 export function liveThinkingRunIds(): number[] {
   const out: number[] = [];
   for (const [runId, items] of runThinking) {
-    if (items.some((item) => item.live !== undefined)) out.push(runId);
+    if (items.some(isSpinningLiveItem)) out.push(runId);
   }
   return out;
 }
@@ -480,6 +494,23 @@ function ownToolRun(message: unknown): { runId: number; toolCallId: string } | u
   return undefined;
 }
 
+/** First toolCall id in the message that has no trace entry yet: the tool
+ *  arrived in this same delta but its component has not mounted (Pi's UI
+ *  listener runs after the extension handler). The tool will join the
+ *  planned run or the current join pointer, so host there now instead of
+ *  leaving the thinking outside until the next tick. */
+function futureOwnTool(message: unknown): { runId: number; toolCallId: string } | undefined {
+  const content = (message as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    const part = block as { type?: unknown; id?: unknown } | null | undefined;
+    if (part?.type !== "toolCall" || typeof part.id !== "string") continue;
+    if (traceEntries.has(part.id)) continue;
+    return { runId: plannedRunFor(part.id) ?? joinRunId(), toolCallId: part.id };
+  }
+  return undefined;
+}
+
 function findLiveItem(token: object): { runId: number; index: number; item: ThinkingItem } | undefined {
   for (const [runId, items] of runThinking) {
     const index = items.findIndex((item) => item.live === token);
@@ -642,15 +673,20 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
     }
     const text = extractThinkingText(msg)!;
     const own = ownToolRun(msg);
+    const future = own ? undefined : futureOwnTool(msg);
     if (existing) {
       // Same row, still streaming: no transcript scan. Keep the host stable
       // until the message grows its own tool; that tool's run is the only
-      // thing that can move the preview.
+      // thing that can move the preview. A same-delta toolCall whose
+      // component has not mounted yet already names the future run, so
+      // move there now instead of lingering outside until a tick.
       let host: { runId: number; before?: string; after?: string } = { runId: existing.runId, before: existing.before, after: existing.after };
       if (own && (existing.runId !== own.runId || existing.before !== own.toolCallId)) {
         host = { runId: own.runId, before: own.toolCallId };
+      } else if (future && (existing.runId !== future.runId || existing.before !== future.toolCallId)) {
+        host = { runId: future.runId, before: future.toolCallId };
       }
-      if (!own && !isTurnCurrent(existing.runId)) {
+      if (!own && !future && !isTurnCurrent(existing.runId)) {
         removeLiveThinking(row);
         restoreThinkingLabel(row, pi);
         return 0;
@@ -661,6 +697,8 @@ export function reconcileLiveThinking(pi: ExtensionAPI, message?: unknown): numb
     let host: { runId: number; before?: string; after?: string } | undefined;
     if (own) {
       host = { runId: own.runId, before: own.toolCallId };
+    } else if (future) {
+      host = { runId: future.runId, before: future.toolCallId };
     } else {
       const prev = newestRunInfo();
       if (prev && isTurnCurrent(prev.runId) && !visibleAfterTool(prev.toolCallId)) {
@@ -917,6 +955,20 @@ export function detachPass(
       const overrides = (row as { thinkingVisibilityOverrides?: unknown })
         .thinkingVisibilityOverrides as Map<number, boolean> | undefined;
       if (runId === undefined) {
+        // A same-message toolCall whose component has not mounted yet
+        // already names the future run: host there (streaming, prose-free
+        // only) instead of leaving the thinking outside until a tick.
+        if ((row as { isStreaming?: unknown })?.isStreaming === true) {
+          const futureText = extractThinkingText(message);
+          const future = futureText && !ownProseAfterThinking(message) &&
+            !hasVisibleText((message as { content?: unknown } | undefined)?.content)
+            ? futureOwnTool(message) : undefined;
+          if (future && futureText) {
+            upsertLiveThinking(row, { runId: future.runId, before: future.toolCallId }, futureText, message);
+            skip("streaming");
+            continue;
+          }
+        }
         // No home: a completed thinking with nowhere to go collapses in
         // place (standalone block) instead of lingering as a stock row.
         // Streaming rows keep their live block; unsafe rows keep stock.
@@ -961,7 +1013,14 @@ export function detachPass(
       if (runId !== undefined && (row as { isStreaming?: unknown })?.isStreaming === true) {
         const text = extractThinkingText(message);
         if (text && !ownProseAfterThinking(message) && !hasVisibleText((message as { content?: unknown } | undefined)?.content)) {
-          upsertLiveThinking(row, { runId, ...anchorFor(index, i, prev, runId) }, text, message);
+          // A same-message toolCall whose component has not mounted yet
+          // already names the future run: anchor before it (above the tool
+          // that is about to appear) instead of guessing the previous run
+          // and leaving the thinking outside until a tick.
+          const future = futureOwnTool(message);
+          const host = future ? { runId: future.runId, before: future.toolCallId }
+            : { runId, ...anchorFor(index, i, prev, runId) };
+          upsertLiveThinking(row, host, text, message);
         }
         skip("streaming");
         continue;
