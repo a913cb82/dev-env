@@ -1,6 +1,6 @@
 ---
 name: android-development
-description: Build, install, debug, and test Android apps from WSL, without Android Studio. Covers toolchain setup, the adb bridge, the PC-first dev loop, OEM-ROM gotchas, optional native-engine and device-probe specializations. Use when the task touches an Android build, adb, or a real device.
+description: Personal-phone Android dev — build, install, debug, and test my own apps on my phone from WSL, without Android Studio. Covers toolchain setup, the adb bridge, the PC-first dev loop, OEM-ROM gotchas, optional native-engine and device-probe specializations. Use when the task touches an Android build, adb, or my real device.
 ---
 
 # Android Development
@@ -8,6 +8,8 @@ description: Build, install, debug, and test Android apps from WSL, without Andr
 ## When To Use
 
 Use this skill when the task touches an Android build. Use this skill when the task touches `adb`. Use this skill when the task touches a real device. Use this skill when device behavior differs from the code logic.
+
+Scope is personal stuff for my phone, not generic Android / Play-store dev.
 
 ## Terms
 

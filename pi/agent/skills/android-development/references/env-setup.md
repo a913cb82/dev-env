@@ -41,7 +41,9 @@ unzip -q commandlinetools-linux-13114758_latest.zip
 mkdir -p latest && mv cmdline-tools/* latest/ && rmdir cmdline-tools
 ```
 
-If that URL 404s, fetch the current `commandlinetools-linux-*_latest.zip` from the Android developer site. `sdkmanager` needs the `latest/` nesting. It fails without it. Persist the `bin` dir on PATH in `~/.bashrc`.
+If that URL 404s, fetch the current `commandlinetools-linux-*_latest.zip` from the Android developer site. `sdkmanager` needs the `latest/` nesting. It fails without it. Persist the `bin` dir on PATH in `~/.bashrc`, then `source ~/.bashrc` (non-interactive shells do not load it).
+
+Minimal Ubuntu images lack `unzip`: `sudo apt install -y unzip` first. Python-unzip fallback loses exec bits — repair with `chmod +x ~/Android/Sdk/cmdline-tools/latest/bin/*`.
 
 Install the platform, build tools, and licenses the project declares (examples below — substitute the project's own levels):
 
@@ -80,30 +82,48 @@ adb shell "pm install -r /data/local/tmp/app.apk"
 
 ## ADB Bridge (WSL to Phone)
 
+Install `usbipd-win` on Windows first (admin shell):
+
+```powershell
+winget install usbipd
+```
+
 Open Windows PowerShell once ever (admin shell):
 
 ```powershell
 usbipd bind --busid <BUSID>   # persistent
 ```
 
-A hidden logon task re-attaches on every logon (it needs a WSL terminal open at plug time). Use this pattern. One scheduled task runs `usbipd attach --wsl --hardware-id <VID:PID> --auto-attach` hidden. If attach lapses:
+A hidden logon task re-attaches on every logon (it needs a WSL terminal open at plug time). Use this pattern. One scheduled task runs `usbipd attach --wsl --hardware-id <VID:PID> --auto-attach` hidden (`--hardware-id` is stable; `--busid` changes ports). Example (admin PowerShell):
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "C:\Program Files\usbipd-win\usbipd.exe" -Argument "attach --wsl --hardware-id <VID:PID> --auto-attach"
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
+Register-ScheduledTask -TaskName "usbipd-autoattach-<phone>" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
+```
+
+If attach lapses:
 
 ```powershell
 usbipd attach --wsl --busid <BUSID>
 ```
 
-You need no Windows terminal. WSL reaches `usbipd` through interop. Run the same re-attach from the dev shell. Real case: you plugged in the phone, but `adb devices` was empty. The attach below restored it:
+You need no Windows terminal. WSL reaches `usbipd` through interop. Run the same re-attach from the dev shell. Fresh `winget` installs may not be on the interop PATH until reboot — use the full path then. Real case: you plugged in the phone, but `adb devices` was empty. The attach below restored it:
 
 ```bash
-powershell.exe -NoProfile -Command "usbipd attach --wsl --busid <BUSID>"
+powershell.exe -NoProfile -Command "& 'C:\Program Files\usbipd-win\usbipd.exe' attach --wsl --busid <BUSID>"
 ```
 
-Make the WSL side persistent with udev (one rule per observed vendor ID — the phone can re-enumerate, observed: an `18d1` "Google" descriptor instead of the vendor's `2717`):
+`bind` flips `usbipd list` from `Not shared` to `Shared`; `attach` is still required after that.
+
+Make the WSL side persistent with udev (one rule per observed vendor ID — the phone can re-enumerate, observed: an `18d1` "Google" descriptor instead of the vendor's `2717`; Xiaomi: add both up front). `usbipd list` already gives `VID:PID` — `lsusb` (`usbutils`, often missing) is optional:
 
 ```bash
 echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="<VID>", MODE="0666", GROUP="plugdev"' \
   | sudo tee /etc/udev/rules.d/51-<vendor>.rules
 sudo udevadm control --reload-rules
+# Reload alone does not re-permission an already-attached device. Detach/re-attach (or replug, or `sudo udevadm trigger`), then:
 adb kill-server; adb devices   # expect: <id>  device
 ```
 
@@ -111,7 +131,7 @@ adb kill-server; adb devices   # expect: <id>  device
 
 Traps from bridge setup:
 
-- `no permissions` means the udev rule or server restart is missing. Keep one udev rule per observed `idVendor`.
+- `no permissions` means the udev rule or server restart is missing. Keep one udev rule per observed `idVendor`. Reload alone is not enough on an attached device — detach/re-attach afterwards. `sudo` needs the user password; the agent cannot run it.
 - WSL-to-Windows interop itself can die (`UtilAcceptVsock: accept4
   failed 110` from any `powershell.exe` call). It looks exactly like the
   phone disappearing, but it sits below USB: no `usbipd` command can run.
