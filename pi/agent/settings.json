@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "1.5.0",
+  "lastChangelogVersion": "1.5.2",
   "theme": "light",
   "defaultProvider": "opencode-go",
   "defaultModel": "kimi-k3",
@@ -19,7 +19,7 @@
   "enabledModels": [
     "opencode-go/muse-spark-1.3-contributor",
     "opencode-go/deepseek-v4.1-flash",
-    "opencode-go/mimo-v2.5"
+    "opencode-go/mimo-v2.6-flash"
   ],
   "fullscreenScrollbar": "always",
   "fullscreenWheelScrollLines": 5,

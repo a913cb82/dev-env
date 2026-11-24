@@ -5,7 +5,7 @@ import type { AgentRecord } from "./types.ts";
 /** Default registry re-read interval for cross-process change detection.
  * Same-process changes wake via notifyWaiters instantly; the poll covers child
  * processes writing their own records. Kept at 250ms for explicit waits
- * (check_subagents wait:true collects cross-process finishes): each poll is
+ * (wait_subagents collects cross-process finishes): each poll is
  * now a ~microsecond cache check plus tree walk instead of a full rescan,
  * so responsiveness no longer costs churn. */
 export const DEFAULT_POLL_MS = 250;
@@ -106,14 +106,14 @@ export async function waitUntilSubagentsIdle(
 	const snapshot = () => snapshotWatched(agentDir, parentRunId, targetIds);
 	let rows = snapshot();
 	if (isDone(rows) || timeoutMs <= 0) return rows;
-	if (options.signal?.aborted) throw new Error("check_subagents was aborted");
+	if (options.signal?.aborted) throw new Error("wait_subagents was aborted");
 
 	return new Promise<AgentRecord[]>((resolveWait, rejectWait) => {
 		let settled = false;
 		const key = dirKey(agentDir);
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let poll: ReturnType<typeof setInterval> | undefined;
-		const onAbort = () => finish(new Error("check_subagents was aborted"));
+		const onAbort = () => finish(new Error("wait_subagents was aborted"));
 		const finish = (error?: Error) => {
 			if (settled) return;
 			settled = true;

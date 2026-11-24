@@ -58,9 +58,14 @@ const CheckSchema = Type.Object({
 	targets: Type.Optional(Type.Array(Type.String(), {
 		description: "Tree path, name, run id, or session id. Omit for all of them. A path can be /a/b, me/child, or ../sibling.",
 	})),
-	wait: Type.Optional(Type.Boolean({ description: "Block until the targets finish or the timeout ends." })),
+});
+
+const WaitSchema = Type.Object({
+	targets: Type.Optional(Type.Array(Type.String(), {
+		description: "Tree path, name, run id, or session id. Omit for all of them. A path can be /a/b, me/child, or ../sibling.",
+	})),
 	mode: Type.Optional(Type.String({
-		description: "all waits for every target. any returns at the first finished target. Default all.",
+		description: "all waits for every target. any returns at the first newly finished target. Default all.",
 		enum: ["any", "all"],
 	})),
 	timeoutMs: Type.Optional(Type.Integer({ description: "Max wait in ms (default 30000, max 300000)" })),
@@ -563,6 +568,29 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 		scheduleDelivery();
 
+		// Root sessions check without waiting; only non-root sessions wait.
+		// wait_subagents is registered inactive and toggled per session depth.
+		try {
+			const api = pi as unknown as { getActiveTools?: () => string[]; setActiveTools?: (names: string[]) => void };
+			if (typeof api.getActiveTools === "function" && typeof api.setActiveTools === "function") {
+				const shortName = (name: string) => name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : (name.includes("__") ? name.slice(name.lastIndexOf("__") + 1) : name);
+				const isRoot = runtime.depth === 0;
+				const activeTools = api.getActiveTools();
+				const hasWait = activeTools.some((name) => shortName(name) === "wait_subagents");
+				if (isRoot && hasWait) {
+					api.setActiveTools(activeTools.filter((name) => shortName(name) !== "wait_subagents"));
+				} else if (!isRoot && !hasWait) {
+					const hasCheck = activeTools.some((name) => shortName(name) === "check_subagents" || shortName(name) === "spawn_agent");
+					if (hasCheck) {
+						// Active lists may use plain or namespaced names; offer both, Pi ignores unknown.
+						api.setActiveTools([...activeTools, "wait_subagents", "default.wait_subagents"]);
+					}
+				}
+			}
+		} catch {
+			// Tool visibility is best effort; execution still enforces nothing here.
+		}
+
 		// Socket mesh: this session is addressable tree-wide by its run id.
 		// Binding never breaks startup; without it only owned children are reachable.
 		// Capture the directory synchronously: async continuations below may
@@ -1014,11 +1042,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		name: "spawn_agent",
 		label: "Spawn Agent",
 		description:
-			"Start a background subagent. It can spawn its own subagents. It returns immediately. When it finishes, you get a notice. Use check_subagents to read the result.",
+			"Start a background subagent. It can spawn its own subagents. It returns immediately. When it finishes, you get a notice. Use wait_subagents (non-root) to wait, check_subagents to read the result.",
 		promptSnippet: "Delegate work to a background subagent",
 		promptGuidelines: [
 			"spawn_agent returns immediately. Keep working while the child runs.",
-			"Call check_subagents with wait:true before you use spawned results. cancel_subagent stops a runaway.",
+			"Use wait_subagents to wait (non-root only), then check_subagents to read results. cancel_subagent stops a runaway.",
 		],
 		parameters: SpawnAgentSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -1060,7 +1088,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Spawned subagent "${record.name}" (run ${shortId(record.runId)}, depth ${record.depth}/${record.maxDepth}, model ${record.model}). It is ${record.status === "queued" ? "queued" : "running in the background"}. Continue your other work. Call check_subagents (wait:true) to collect its result.`,
+						text: `Spawned subagent "${record.name}" (run ${shortId(record.runId)}, depth ${record.depth}/${record.maxDepth}, model ${record.model}). It is ${record.status === "queued" ? "queued" : "running in the background"}. Continue your other work. ${runtime.depth === 0 ? "Use check_subagents to read its result." : "Use wait_subagents to wait, check_subagents to read its result."}`,
 					},
 				],
 				details: { record },
@@ -1085,75 +1113,70 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	const resolveTargetIds = (requested: readonly string[] | undefined): Set<string> | undefined => {
+		if (!requested || requested.length === 0) return undefined;
+		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
+		const agentDir = getAgentDir();
+		return new Set(requested.map((target) => {
+			const resolved = resolveAgentPath(getCachedRecords(agentDir), { anchorRunId: runtime!.runId, rootRunId: runtime!.rootRunId, target });
+			if (!resolved.record) throw new Error(`"${target.trim()}" is the root session, not a subagent.`);
+			return resolved.record.runId;
+		}));
+	};
+	const snapshotWithTargets = (targetIds: Set<string> | undefined) => {
+		if (!runtime) throw new Error("Subagent extension settings failed to initialize");
+		const agentDir = getAgentDir();
+		const all = getCachedRecords(agentDir);
+		const rows = descendantsOf(all, runtime!.runId);
+		if (!targetIds) return rows;
+		const selected = rows.filter((record) => targetIds.has(record.runId));
+		const seen = new Set(selected.map((record) => record.runId));
+		const byId = new Map(all.map((record) => [record.runId, record]));
+		for (const id of targetIds) {
+			if (!seen.has(id)) {
+				const record = byId.get(id);
+				if (record) { selected.push(record); seen.add(id); }
+			}
+		}
+		return selected;
+	};
+	const formatShortStatus = (record: AgentRecord): string => {
+		if (!runtime) return `${record.name} — ${record.status}`;
+		const agentDir = getAgentDir();
+		const activity = isTerminalStatus(record.status)
+			? record.status
+			: `running ${record.currentTool ? `\`${record.currentTool}\`` : (record.activity || record.status)}`;
+		const readOnly = record.parentRunId !== runtime!.runId
+			? (descendantsOf(getCachedRecords(agentDir), runtime!.runId).some((r) => r.runId === record.runId) ? " · read-only descendant" : " · read-only")
+			: "";
+		const via = record.parentRunId !== runtime!.runId ? ` · via ${senderName(record.parentRunId)}` : "";
+		const offline = readMeshOffline(agentDir, record.runId) ? " · mesh offline" : "";
+		return `${record.name} — ${activity} (run ${shortId(record.runId)}${readOnly}${via}${offline})`;
+	};
+
 	registerTool({
 		name: "check_subagents",
 		label: "Check Subagents",
 		description:
-			"Check your subagents. Omit targets to check all of them. check_subagents delivers each finished result once. Delivered results never repeat. Mode all waits for every target. Mode any returns at the first newly finished (unclaimed) result; already-delivered rows never retrigger the wait. The footer lists uncollected results. They hide after 10 minutes and 5 of your turns.",
+			"Check your subagents without waiting. Omit targets to check all of them. check_subagents delivers each finished direct-child result once with its full body. Delivered results never repeat. Use wait_subagents (non-root only) to block until subagents finish, then check_subagents to read bodies. The footer lists uncollected results. They hide after 10 minutes.",
 		promptSnippet: "Check subagent results",
+		promptGuidelines: [
+			"check_subagents never waits. Use wait_subagents to block, then check_subagents to read bodies.",
+		],
 		parameters: CheckSchema,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (!runtime) throw new Error("Subagent extension settings failed to initialize");
+			const legacy = params as unknown as { wait?: unknown; mode?: unknown; timeoutMs?: unknown };
+			if (legacy.wait === true || legacy.mode !== undefined || legacy.timeoutMs !== undefined) {
+				throw new Error("check_subagents no longer waits; use wait_subagents to block, then check_subagents to read results.");
+			}
 			await ensureMeshBound(ctx?.ui);
 			const agentDir = getAgentDir();
-			// Resolve the optional target list once; targets address any tree node
-			// (unknown or ambiguous targets fail before waiting).
-			const requested = params.targets && params.targets.length > 0 ? params.targets : undefined;
-			const targetIds = requested
-				? new Set(requested.map((target) => {
-				const resolved = resolveAgentPath(getCachedRecords(agentDir), { anchorRunId: runtime!.runId, rootRunId: runtime!.rootRunId, target });
-				if (!resolved.record) throw new Error(`"${target.trim()}" is the root session, not a subagent.`);
-				return resolved.record.runId;
-			}))
-				: undefined;
-			const snapshot = () => {
-				const all = getCachedRecords(agentDir);
-				const rows = descendantsOf(all, runtime!.runId);
-				if (!targetIds) return rows;
-				const selected = rows.filter((record) => targetIds.has(record.runId));
-				// Targets outside the subtree (siblings, ancestors) stay visible
-				// read-only; claiming remains the direct parent's job.
-				const seen = new Set(selected.map((record) => record.runId));
-				const byId = new Map(all.map((record) => [record.runId, record]));
-				for (const id of targetIds) {
-					if (!seen.has(id)) {
-						const record = byId.get(id);
-						if (record) {
-							selected.push(record);
-							seen.add(id);
-						}
-					}
-				}
-				return selected;
-			};
-			if (params.wait) {
-				const timeoutMs = Math.min(Math.max(params.timeoutMs ?? 30000, 0), 300000);
-				// Claims already consumed (session memory plus persisted delivery
-				// flags) never retrigger an "any" wait: only a newly finished
-				// result resolves it. Keyed per execution, so a re-run under a
-				// new key still triggers.
-				const claimedKeys = new Set<string>();
-				for (const key of deliveredResults) claimedKeys.add(key);
-				for (const key of seenDescendantResults) claimedKeys.add(key);
-				for (const record of getCachedRecords(agentDir)) {
-					if (record.resultsDelivered) claimedKeys.add(resultKey(record));
-				}
-				await waitUntilSubagentsIdle(agentDir, runtime.runId, {
-					timeoutMs,
-					signal,
-					targets: targetIds ? [...targetIds] : undefined,
-					mode: params.mode === "any" ? "any" : "all",
-					excludeKeys: claimedKeys,
-				});
-			}
-			// Refresh before claiming results so auto-delivery that happened while
-			// waiting is not repeated by this check. Uncollected terminal rows
-			// older than the hide gate stay out of untargeted rows: stale rows
-			// only invite dead-end actions. Records and audits are untouched.
+			const targetIds = resolveTargetIds(params.targets);
 			const hideGate: UncollectedHideGate = {
 				hideAfterMinutes: runtime!.settings.hideUncollectedAfterMinutes ?? 10,
 			};
-			const rows = targetIds ? snapshot() : snapshot().filter((record) => {
+			const rows = targetIds ? snapshotWithTargets(targetIds) : snapshotWithTargets(undefined).filter((record) => {
 				if (!isTerminalStatus(record.status) || record.resultsDelivered) return true;
 				return !hideUncollectedRow(record, Date.now(), hideGate);
 			});
@@ -1201,6 +1224,53 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			return {
 				content: [{ type: "text", text: `${summary}\n\n${sectionText}` }],
 				details: { records: rows, resultKeys: newlyFinished.map(resultKey), seenDescendantResults: observedDescendants },
+			};
+		},
+	});
+
+	registerTool({
+		name: "wait_subagents",
+		label: "Wait Subagents",
+		description:
+			"Wait until subagents finish without claiming results. Omit targets to wait for all descendants. Mode all waits for every target; mode any returns at the first newly finished (unclaimed) target. Returns short status lines only, never bodies. Call check_subagents afterwards to read full results.",
+		promptSnippet: "Wait for subagents",
+		promptGuidelines: [
+			"wait_subagents never returns bodies and never claims results. Call check_subagents afterwards to read.",
+		],
+		parameters: WaitSchema,
+		defaultActive: false,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (!runtime) throw new Error("Subagent extension settings failed to initialize");
+			await ensureMeshBound(ctx?.ui);
+			const agentDir = getAgentDir();
+			const targetIds = resolveTargetIds(params.targets);
+			const timeoutMs = Math.min(Math.max(params.timeoutMs ?? 30000, 0), 300000);
+			const claimedKeys = new Set<string>();
+			for (const key of deliveredResults) claimedKeys.add(key);
+			for (const key of seenDescendantResults) claimedKeys.add(key);
+			for (const record of getCachedRecords(agentDir)) {
+				if (record.resultsDelivered) claimedKeys.add(resultKey(record));
+			}
+			await waitUntilSubagentsIdle(agentDir, runtime.runId, {
+				timeoutMs,
+				signal,
+				targets: targetIds ? [...targetIds] : undefined,
+				mode: params.mode === "any" ? "any" : "all",
+				excludeKeys: claimedKeys,
+			});
+			const rows = snapshotWithTargets(targetIds);
+			if (rows.length === 0) {
+				return { content: [{ type: "text", text: "No subagents have been spawned by this session." }], details: { records: [] } };
+			}
+			const running = rows.filter((record) => !isTerminalStatus(record.status));
+			const summary =
+				running.length > 0
+					? `${rows.length - running.length}/${rows.length} finished, ${running.length} still running.`
+					: `All ${rows.length} subagent${rows.length === 1 ? "" : "s"} finished.`;
+			const lines = rows.map((record) => `- ${formatShortStatus(record)}`);
+			return {
+				content: [{ type: "text", text: `${summary}\n\n${lines.join("\n")}\n\nUse check_subagents to read results.` }],
+				details: { records: rows },
 			};
 		},
 	});

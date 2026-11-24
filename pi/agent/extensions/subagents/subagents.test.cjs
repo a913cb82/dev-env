@@ -214,7 +214,7 @@ function check(name, cond, extra) {
 			startedAt: wnow3, updatedAt: wnow3,
 		});
 		let anyDone = false;
-		const anyPending = wireTools.get("check_subagents").execute("x", { wait: true, mode: "any", timeoutMs: 5000 }, undefined, undefined, {}).then((result) => {
+		const anyPending = wireTools.get("wait_subagents").execute("x", { mode: "any", timeoutMs: 5000 }, undefined, undefined, {}).then((result) => {
 			anyDone = true;
 			return result;
 		});
@@ -1249,7 +1249,7 @@ function check(name, cond, extra) {
 		const checkRecord = (runId, status, extra = {}) => mk(runId, "check-parent", { rootRunId: "check-parent", status, ...extra });
 		registry.saveRecord(checkAgentDir, checkRecord("first", "completed", { latestText: "first result" }));
 		registry.saveRecord(checkAgentDir, checkRecord("second", "thinking", { activity: "working" }));
-		const firstCheck = await checkTool.execute("check-1", { wait: false }, undefined, undefined, {});
+		const firstCheck = await checkTool.execute("check-1", {}, undefined, undefined, {});
 		const firstText = firstCheck.content[0].text;
 		check("first check returns first result", firstText.includes("first result"), firstText);
 		check("first check reports second running", firstText.includes("second") && firstText.includes("still running"), firstText);
@@ -1258,13 +1258,14 @@ function check(name, cond, extra) {
 			registry.saveRecord(checkAgentDir, checkRecord("second", "completed", { latestText: "second result" }));
 		}, 50);
 		const waitStarted = Date.now();
-		const secondCheck = await checkTool.execute("check-2", { wait: true, timeoutMs: 1000 }, undefined, undefined, {});
+		await checkTools.get("wait_subagents").execute("check-2-wait", { timeoutMs: 1000 }, undefined, undefined, {});
+		const secondCheck = await checkTool.execute("check-2", {}, undefined, undefined, {});
 		clearTimeout(finishTimer);
 		const secondText = secondCheck.content[0].text;
 		check("second check returns newly finished result", secondText.includes("second result"), secondText);
 		check("second check returns before timeout once child finishes", Date.now() - waitStarted < 800, String(Date.now() - waitStarted));
 		check("second check omits previously delivered result", !secondText.includes("first result"), secondText);
-		const thirdCheck = await checkTool.execute("check-3", { wait: false }, undefined, undefined, {});
+		const thirdCheck = await checkTool.execute("check-3", {}, undefined, undefined, {});
 		const thirdText = thirdCheck.content[0].text;
 		check("later check omits all delivered results", !thirdText.includes("first result") && !thirdText.includes("second result"), thirdText);
 		check("later check explains no new results", thirdText.includes("No new subagent results since the last check."), thirdText);
@@ -1274,7 +1275,7 @@ function check(name, cond, extra) {
 		registry.saveRecord(checkAgentDir, mk("owner-grand", "owner-child", {
 			rootRunId: "check-parent", depth: 2, status: "completed", latestText: "grandchild result",
 		}));
-		const rootOwnershipCheck = await checkTool.execute("check-owner-root", { wait: false }, undefined, undefined, {});
+		const rootOwnershipCheck = await checkTool.execute("check-owner-root", {}, undefined, undefined, {});
 		const rootOwnershipText = rootOwnershipCheck.content[0].text;
 		const afterRootOwnership = registry.readRecords(checkAgentDir);
 		check("root claims its direct child result", afterRootOwnership.find((r) => r.runId === "owner-child")?.resultsDelivered === true);
@@ -1296,20 +1297,24 @@ function check(name, cond, extra) {
 		registry.saveRecord(checkAgentDir, checkRecord("bystander", "completed", { latestText: "bystander result" }));
 		registry.saveRecord(checkAgentDir, checkRecord("target-a", "thinking"));
 		registry.saveRecord(checkAgentDir, checkRecord("target-b", "thinking"));
-		const anyWait = checkTool.execute("check-any", { targets: ["target-a", "target-b"], wait: true, mode: "any", timeoutMs: 2000 }, undefined, undefined, {});
+		const anyWait = checkTools.get("wait_subagents").execute("check-any", { targets: ["target-a", "target-b"], mode: "any", timeoutMs: 2000 }, undefined, undefined, {});
 		setTimeout(() => registry.saveRecord(checkAgentDir, checkRecord("target-b", "completed", { latestText: "target-b done" })), 30);
 		const anyResult = await anyWait;
-		check("targeted any wait returns on the first finish", anyResult.content[0].text.includes("target-b done"), anyResult.content[0].text);
-		check("targeted check omits unselected children", !anyResult.content[0].text.includes("bystander"), anyResult.content[0].text);
+		check("targeted any wait returns on the first finish", anyResult.content[0].text.includes("target-b"), anyResult.content[0].text);
+		check("targeted wait omits unselected children", !anyResult.content[0].text.includes("bystander"), anyResult.content[0].text);
+		check("targeted wait does not leak bodies", !anyResult.content[0].text.includes("target-b done"), anyResult.content[0].text);
+		const anyBody = await checkTool.execute("check-any-body", { targets: ["target-a", "target-b"] }, undefined, undefined, {});
+		check("targeted check after wait delivers body", anyBody.content[0].text.includes("target-b done"), anyBody.content[0].text);
 		registry.saveRecord(checkAgentDir, checkRecord("target-a", "completed", { latestText: "target-a done" }));
-		const allResult = await checkTool.execute("check-all", { targets: ["target-a"], wait: true, mode: "all", timeoutMs: 2000 }, undefined, undefined, {});
+		await checkTools.get("wait_subagents").execute("check-all-wait", { targets: ["target-a"], mode: "all", timeoutMs: 2000 }, undefined, undefined, {});
+		const allResult = await checkTool.execute("check-all", { targets: ["target-a"] }, undefined, undefined, {});
 		check("targeted all wait resolves on the selected target", allResult.content[0].text.includes("target-a done"), allResult.content[0].text);
 		registry.saveRecord(checkAgentDir, checkRecord("timeout-target", "thinking"));
 		const timeoutStarted = performance.now();
-		const timeoutResult = await checkTool.execute("check-timeout", { targets: ["timeout-target"], wait: true, mode: "all", timeoutMs: 300 }, undefined, undefined, {});
+		const timeoutResult = await checkTools.get("wait_subagents").execute("check-timeout", { targets: ["timeout-target"], mode: "all", timeoutMs: 300 }, undefined, undefined, {});
 		const timeoutElapsed = performance.now() - timeoutStarted;
 		check("targeted wait waits instead of returning instantly", timeoutElapsed >= 250, String(timeoutElapsed));
-		check("targeted wait times out with the running snapshot", timeoutResult.content[0].text.includes("still running"), String(timeoutElapsed));
+		check("targeted wait times out with the running snapshot", timeoutResult.content[0].text.includes("timeout-target") && timeoutResult.content[0].text.includes("running"), timeoutResult.content[0].text);
 		registry.saveRecord(checkAgentDir, checkRecord("timeout-target", "completed", { latestText: "timed-out target done" }));
 		await checkTool.execute("check-timeout-cleanup", {}, undefined, undefined, {});
 		let unknownTargetError;
@@ -1322,10 +1327,10 @@ function check(name, cond, extra) {
 		registry.saveRecord(checkAgentDir, mk("path-grand", "path-direct", {
 			rootRunId: "check-parent", depth: 2, status: "completed", latestText: "path-grand result",
 		}));
-		const pathDirectCheck = await checkTool.execute("check-path-direct", { targets: ["me/path-direct"], wait: false }, undefined, undefined, {});
+		const pathDirectCheck = await checkTool.execute("check-path-direct", { targets: ["me/path-direct"] }, undefined, undefined, {});
 		check("check resolves me/child", pathDirectCheck.content[0].text.includes("path-direct result"), pathDirectCheck.content[0].text);
 		check("check claims path-resolved direct child", registry.readRecords(checkAgentDir).find((r) => r.runId === "path-direct")?.resultsDelivered === true);
-		const pathDeepCheck = await checkTool.execute("check-path-deep", { targets: ["/path-direct/path-grand"], wait: false }, undefined, undefined, {});
+		const pathDeepCheck = await checkTool.execute("check-path-deep", { targets: ["/path-direct/path-grand"] }, undefined, undefined, {});
 		check("check resolves absolute deep path read-only", pathDeepCheck.content[0].text.includes("path-grand result") && pathDeepCheck.content[0].text.includes("read-only descendant"), pathDeepCheck.content[0].text);
 		let pathDirectSendError;
 		try { await checkTools.get("send_to_subagent").execute("send-path-direct", { target: "me/path-direct", message: "hello" }); } catch (error) { pathDirectSendError = error; }
@@ -1337,7 +1342,7 @@ function check(name, cond, extra) {
 		check("terminal path send refused when parent settled", /cannot resume .* already /i.test(pathDeepSendError?.message ?? ""), pathDeepSendError?.message);
 		let pathUnknownError;
 		const pathUnknownStarted = Date.now();
-		try { await checkTool.execute("check-path-unknown", { targets: ["me/nope"], wait: true, timeoutMs: 5000 }, undefined, undefined, {}); } catch (error) { pathUnknownError = error; }
+		try { await checkTools.get("wait_subagents").execute("check-path-unknown", { targets: ["me/nope"], timeoutMs: 5000 }, undefined, undefined, {}); } catch (error) { pathUnknownError = error; }
 		check("unknown path rejected before waiting", pathUnknownError?.message.includes("No subagent matches") && Date.now() - pathUnknownStarted < 1000, `${pathUnknownError?.message} (${Date.now() - pathUnknownStarted}ms)`);
 
 		// --- mesh transport: any node reaches any node (except self) ---
@@ -1651,7 +1656,7 @@ function check(name, cond, extra) {
 		};
 		// 1. A mesh settle notice wakes a check wait faster than the registry poll (250ms) ever could.
 		const childCheck = meshTools.child.get("check_subagents");
-		const nephewWait = childCheck.execute("settle-wait", { targets: ["me/mesh-nephew"], wait: true, mode: "all", timeoutMs: 5000 }, undefined, undefined, {});
+		const nephewWait = meshTools.child.get("wait_subagents").execute("settle-wait", { targets: ["me/mesh-nephew"], mode: "all", timeoutMs: 5000 }, undefined, undefined, {});
 		// The settled notice wakes the waiter event-driven: with the default
 		// 250ms poll interval, resolution within a wall-free flush proves
 		// the wake path, not the poll tick, delivered it (clocks play no part).
@@ -1665,26 +1670,28 @@ function check(name, cond, extra) {
 		for (let i = 0; i < 50 && !nephewResolved; i++) await tick();
 		check("mesh settle wakes check wait before the poll interval", nephewResolved === true);
 		const nephewResult = await nephewWait;
-		check("mesh settle delivers the result", nephewResult.content[0].text.includes("nephew done"), nephewResult.content[0].text.slice(0, 120));
+		check("mesh settle wakes with short status", nephewResult.content[0].text.includes("nephew") && !nephewResult.content[0].text.includes("nephew done"), nephewResult.content[0].text.slice(0, 200));
+		const nephewBody = await childCheck.execute("settle-wait-body", { targets: ["me/mesh-nephew"] }, undefined, undefined, {});
+		check("mesh settle delivers the result", nephewBody.content[0].text.includes("nephew done"), nephewBody.content[0].text.slice(0, 200));
 		// 2. Ancestor observation is read-only; the direct parent still claims exactly once.
 		const parentCheck = meshTools.parent.get("check_subagents");
-		const ancestorView = await parentCheck.execute("settle-ancestor", { targets: ["/mesh-child/mesh-grand"], wait: false }, undefined, undefined, {});
+		const ancestorView = await parentCheck.execute("settle-ancestor", { targets: ["/mesh-child/mesh-grand"] }, undefined, undefined, {});
 		check("ancestor sees deep result read-only", ancestorView.content[0].text.includes("grand done") && ancestorView.content[0].text.includes("read-only"), ancestorView.content[0].text);
 		check("ancestor observation claims nothing", registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-grand")?.resultsDelivered !== true);
-		const ancestorRepeat = await parentCheck.execute("settle-ancestor-repeat", { targets: ["/mesh-child/mesh-grand"], wait: false }, undefined, undefined, {});
+		const ancestorRepeat = await parentCheck.execute("settle-ancestor-repeat", { targets: ["/mesh-child/mesh-grand"] }, undefined, undefined, {});
 		check("ancestor does not repeat an observed execution", !ancestorRepeat.content[0].text.includes("grand done"), ancestorRepeat.content[0].text);
-		const parentClaim = await childCheck.execute("settle-claim", { targets: ["me/mesh-grand"], wait: false }, undefined, undefined, {});
+		const parentClaim = await childCheck.execute("settle-claim", { targets: ["me/mesh-grand"] }, undefined, undefined, {});
 		check("direct parent claims after ancestor observation", parentClaim.content[0].text.includes("grand done") && registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-grand")?.resultsDelivered === true, parentClaim.content[0].text);
 		const ancestorAfter = await parentCheck.execute("settle-ancestor-after", { targets: ["/mesh-child/mesh-grand"] }, undefined, undefined, {});
 		check("ancestor omits claimed result", !ancestorAfter.content[0].text.includes("grand done"), ancestorAfter.content[0].text);
 		// 3. Sibling check shows a non-descendant read-only without claiming.
 		await completeMesh("mesh-aunt", "aunt", "aunt done");
 		const grandCheck = meshTools.grand.get("check_subagents");
-		const siblingView = await grandCheck.execute("settle-sibling", { targets: ["../mesh-aunt"], wait: false }, undefined, undefined, {});
+		const siblingView = await grandCheck.execute("settle-sibling", { targets: ["../mesh-aunt"] }, undefined, undefined, {});
 		check("sibling check shows read-only non-descendant", siblingView.content[0].text.includes("aunt done") && siblingView.content[0].text.includes("read-only") && !siblingView.content[0].text.includes("read-only descendant"), siblingView.content[0].text);
 		check("sibling observation claims nothing", registry.readRecords(meshAgentDir).find((r) => r.runId === "mesh-aunt")?.resultsDelivered !== true);
 		// 4. any-wait resolves on an absolute path target.
-		const anyPath = await parentCheck.execute("settle-any", { targets: ["/mesh-child/mesh-rgrand"], wait: true, mode: "any", timeoutMs: 2000 }, undefined, undefined, {});
+		const anyPath = await meshTools.parent.get("wait_subagents").execute("settle-any", { targets: ["/mesh-child/mesh-rgrand"], mode: "any", timeoutMs: 2000 }, undefined, undefined, {});
 		check("any wait resolves on absolute path target", anyPath.content[0].text.includes("rgrand"), anyPath.content[0].text);
 		for (const handlers of Object.values(meshHandlers)) await handlers.get("session_shutdown")?.({}, { mode: "rpc" });
 		process.env.PI_CODING_AGENT_DIR = checkAgentDir;
@@ -1708,10 +1715,10 @@ function check(name, cond, extra) {
 		});
 		delete process.env.PI_SUBAGENT_RUN_ID;
 		delete process.env.PI_SUBAGENT_ROOT_ID;
-		const childOwnershipCheck = await childTools.get("check_subagents").execute("check-owner-child", { wait: false }, undefined, undefined, {});
+		const childOwnershipCheck = await childTools.get("check_subagents").execute("check-owner-child", {}, undefined, undefined, {});
 		check("child receives grandchild result", childOwnershipCheck.content[0].text.includes("grandchild result"), childOwnershipCheck.content[0].text);
 		check("child claims grandchild result", registry.readRecords(checkAgentDir).find((r) => r.runId === "owner-grand")?.resultsDelivered === true);
-		const rootAfterParentClaim = await checkTool.execute("check-owner-root-again", { wait: false }, undefined, undefined, {});
+		const rootAfterParentClaim = await checkTool.execute("check-owner-root-again", {}, undefined, undefined, {});
 		check("root omits grandchild after parent claims it", !rootAfterParentClaim.content[0].text.includes("grandchild result"), rootAfterParentClaim.content[0].text);
 
 		// A sibling path resolves (legacy would report no match) but transport still refuses it.
@@ -1761,7 +1768,7 @@ function check(name, cond, extra) {
 		for (let i = 0; i < 100 && automaticGrandchildMessages < 1; i++) await new Promise((r) => setTimeout(r, 25));
 		check("automatic grandchild delivery reaches direct parent", automaticGrandchildMessages === 1, String(automaticGrandchildMessages));
 		check("automatic grandchild ping leaves body unclaimed for check", registry.readRecords(checkAgentDir).find((r) => r.runId === "automatic-grand")?.resultsDelivered !== true);
-		const automaticGrandBody = await childTools.get("check_subagents").execute("check-automatic-grand-body", { wait: false }, undefined, undefined, {});
+		const automaticGrandBody = await childTools.get("check_subagents").execute("check-automatic-grand-body", {}, undefined, undefined, {});
 		check("pinged grandchild body is pulled via check", automaticGrandBody.content[0].text.includes("automatic-grand"), automaticGrandBody.content[0].text);
 		childHandlers.get("session_shutdown")?.({}, { mode: "rpc" });
 
@@ -1967,9 +1974,9 @@ function check(name, cond, extra) {
 
 	// --- capability narrowing ---
 	const inheritedTools = spawn.resolveChildTools(undefined, ["read", "spawn_agent", "read"]);
-	check("omitted tools inherit active tools", JSON.stringify(inheritedTools) === JSON.stringify(["read", "spawn_agent"]), JSON.stringify(inheritedTools));
+	check("omitted tools inherit active tools plus wait", JSON.stringify(inheritedTools) === JSON.stringify(["read", "spawn_agent", "wait_subagents"]), JSON.stringify(inheritedTools));
 	const narrowedTools = spawn.resolveChildTools(["read"], ["read", "bash", "spawn_agent"]);
-	check("explicit tools may narrow active tools", JSON.stringify(narrowedTools) === JSON.stringify(["read"]), JSON.stringify(narrowedTools));
+	check("explicit tools narrow but keep wait", JSON.stringify(narrowedTools) === JSON.stringify(["read", "wait_subagents"]), JSON.stringify(narrowedTools));
 	check("explicit empty tools stays empty", spawn.resolveChildTools([], ["read", "spawn_agent"]).length === 0);
 	for (const [label, tools] of [["blank", ["  "]], ["surrounding whitespace", [" read"]], ["comma", ["read,bash"]], ["control", ["read\n"]]]) {
 		let threw = false;
@@ -1980,7 +1987,7 @@ function check(name, cond, extra) {
 	try { spawn.resolveChildTools(["read", "write"], ["read"]); } catch (error) { escalationThrew = String(error).includes("subset"); }
 	check("explicit tools cannot add a parent-inactive tool", escalationThrew);
 	const safeSubset = spawn.resolveChildTools(["read"], ["read", "bad,parent-tool"]);
-	check("excluded unserializable parent tool does not block a subset", JSON.stringify(safeSubset) === JSON.stringify(["read"]), JSON.stringify(safeSubset));
+	check("excluded unserializable parent tool does not block a subset", JSON.stringify(safeSubset) === JSON.stringify(["read", "wait_subagents"]), JSON.stringify(safeSubset));
 	check("empty model scope keeps legacy model selection", spawn.resolveChildModel("fuzzy-model", []) === "fuzzy-model");
 	const modelScope = [{ provider: "one", id: "shared" }, { provider: "two", id: "other" }];
 	check("scoped bare model canonicalized", spawn.resolveChildModel("OTHER", modelScope) === "two/other");
@@ -2177,7 +2184,7 @@ function check(name, cond, extra) {
 	check("fake output captured", polled && polled.latestText === "fake done", polled && `${polled.latestText} :: ${polled.error}`);
 	check("usage captured", polled && polled.usage.input === 10, polled && `${JSON.stringify(polled.usage)} :: ${polled.error}`);
 	const inheritedArgs = JSON.parse(fs.readFileSync(path.join(fakeArgsDir, `${rec1.runId}.json`), "utf8"));
-	check("omitted tools become a child CLI allowlist", inheritedArgs[inheritedArgs.indexOf("--tools") + 1] === "read,spawn_agent", JSON.stringify(inheritedArgs));
+	check("omitted tools become a child CLI allowlist", inheritedArgs[inheritedArgs.indexOf("--tools") + 1] === "read,spawn_agent,wait_subagents", JSON.stringify(inheritedArgs));
 	check("empty model scope emits no --models flag", !inheritedArgs.includes("--models"), JSON.stringify(inheritedArgs));
 	for (let i = 0; i < 80 && !settled.includes("completed"); i++) await new Promise((r) => setTimeout(r, 25));
 	check("onSettled fired", settled.includes("completed"), JSON.stringify(settled));
@@ -2282,7 +2289,7 @@ function check(name, cond, extra) {
 		await new Promise((r) => setTimeout(r, 25));
 	}
 	const narrowedArgs = JSON.parse(fs.readFileSync(path.join(fakeArgsDir, `${narrowedRec.runId}.json`), "utf8"));
-	check("explicit tools remove recursive spawn when excluded", narrowedArgs[narrowedArgs.indexOf("--tools") + 1] === "read", JSON.stringify(narrowedArgs));
+	check("explicit tools remove recursive spawn when excluded", narrowedArgs[narrowedArgs.indexOf("--tools") + 1] === "read,wait_subagents", JSON.stringify(narrowedArgs));
 
 	const scopedRec = await spawn.startSubagent(
 		{ task: "scoped", name: "scoped-other", model: "allowed" },
@@ -3403,12 +3410,53 @@ function check(name, cond, extra) {
 			});
 			check("tools wrap once collapse appears", tools.get("spawn_agent").__collapseWrapped === true);
 			check("wrap keeps execute", typeof tools.get("spawn_agent").execute === "function");
-			check("all subagent tools wrapped", ["spawn_agent", "check_subagents", "send_to_subagent", "cancel_subagent"]
+			check("all subagent tools wrapped", ["spawn_agent", "check_subagents", "wait_subagents", "send_to_subagent", "cancel_subagent"]
 				.every((name) => tools.get(name)?.__collapseWrapped === true));
 		} finally {
 			if (slotPrev === undefined) delete globalThis.__collapseWrapTool;
 			else globalThis.__collapseWrapTool = slotPrev;
 		}
+	}
+
+	// --- check/wait split: wait syncs short, check claims bodies ---
+	{
+		const splitDir = fs.mkdtempSync(path.join(os.tmpdir(), "split-perm-"));
+		const splitTools = new Map();
+		const splitHandlers = new Map();
+		let splitActive = ["spawn_agent", "check_subagents", "send_to_subagent", "cancel_subagent", "wait_subagents"];
+		subagentsExtension({ registerFlag: () => {}, on: (e, h) => splitHandlers.set(e, h), registerMessageRenderer: () => {}, registerCommand: () => {}, registerTool: (tool) => splitTools.set(tool.name, tool), getFlag: () => undefined, getActiveTools: () => [...splitActive], setActiveTools: (n) => { splitActive = [...n]; }, getSettings: () => ({}), sendMessage: async () => {}, sendUserMessage: async () => {} });
+		check("wait_subagents registered", splitTools.has("wait_subagents"));
+		check("check has no wait/mode/timeout", !("wait" in (splitTools.get("check_subagents").parameters.properties || {})), JSON.stringify(Object.keys(splitTools.get("check_subagents").parameters.properties || {})));
+		check("wait has mode/timeout", "mode" in (splitTools.get("wait_subagents").parameters.properties || {}) && "timeoutMs" in (splitTools.get("wait_subagents").parameters.properties || {}));
+		process.env.PI_CODING_AGENT_DIR = splitDir;
+		delete process.env.PI_SUBAGENT_RUN_ID;
+		delete process.env.PI_SUBAGENT_ROOT_ID;
+		splitActive = ["spawn_agent", "check_subagents", "send_to_subagent", "cancel_subagent", "wait_subagents"];
+		await splitHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "split-root", getBranch: () => [] }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+		check("root hides wait", !splitActive.includes("wait_subagents"), splitActive.join(","));
+		process.env.PI_SUBAGENT_RUN_ID = "split-child";
+		process.env.PI_SUBAGENT_ROOT_ID = "split-root";
+		process.env.PI_SUBAGENT_DEPTH = "1";
+		splitActive = ["spawn_agent", "check_subagents", "send_to_subagent", "cancel_subagent"];
+		await splitHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "split-child", getBranch: () => [] }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+		check("non-root shows wait", splitActive.includes("wait_subagents"), splitActive.join(","));
+		delete process.env.PI_SUBAGENT_DEPTH;
+		delete process.env.PI_SUBAGENT_RUN_ID;
+		delete process.env.PI_SUBAGENT_ROOT_ID;
+		process.env.PI_CODING_AGENT_DIR = splitDir;
+		await splitHandlers.get("session_start")({}, { sessionManager: { getSessionId: () => "split-p", getBranch: () => [] }, cwd: sandbox, isProjectTrusted: () => false, mode: "rpc", hasUI: false });
+		const mkSplit = (runId, status, extra = {}) => ({ version: 1, runId, parentRunId: "split-p", rootRunId: "split-p", sessionId: runId, name: runId, task: "t", cwd: "/tmp", model: "prov/m", thinking: "off", depth: 1, maxDepth: 3, status, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 }, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...extra });
+		registry.saveRecord(splitDir, mkSplit("s1", "completed", { latestText: "SECRET" }));
+		const w = await splitTools.get("wait_subagents").execute("w", { targets: ["s1"] }, undefined, undefined, {});
+		check("wait short no body", w.content[0].text.includes("s1") && !w.content[0].text.includes("SECRET"), w.content[0].text);
+		check("wait does not claim", registry.readRecords(splitDir).find((r) => r.runId === "s1")?.resultsDelivered !== true);
+		const c = await splitTools.get("check_subagents").execute("c", { targets: ["s1"] }, undefined, undefined, {});
+		check("check delivers after wait", c.content[0].text.includes("SECRET"), c.content[0].text);
+		let legacyErr;
+		try { await splitTools.get("check_subagents").execute("c2", { targets: ["s1"], wait: true }, undefined, undefined, {}); } catch (e) { legacyErr = e; }
+		check("legacy wait rejected", /wait_subagents/i.test(legacyErr?.message ?? ""), legacyErr?.message);
+		process.env.PI_CODING_AGENT_DIR = checkAgentDir;
+		fs.rmSync(splitDir, { recursive: true, force: true });
 	}
 
 	delete process.env.PI_SUBAGENT_COMMAND;

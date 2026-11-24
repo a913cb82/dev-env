@@ -12,7 +12,7 @@ Based on [`williamcr01/pi-subagents`](https://github.com/williamcr01/pi-subagent
 - **Recursive delegation** — children can create grandchildren within the configured depth budget.
 - **Parallel work** — concurrency is configurable, including unlimited mode with `maxConcurrency: -1`.
 - **Status footer** — a passive footer lists outstanding subagents with model and live activity; a line disappears once its result is read.
-- **Targeted checks and quorum waits** — `check_subagents` checks all descendants or a path-addressed subset anywhere in the tree, and can block until any or all of them finish.
+- **Targeted checks and quorum waits** — `check_subagents` checks all descendants or a path-addressed subset anywhere in the tree; `wait_subagents` (non-root only) blocks until any or all finish with short status lines.
 - **Tree-wide messaging** — every session (root or subagent) owns a socket, so any node messages any other node except itself: steer, follow up, interrupt, resume finished ones from transcript, or park on queued ones until they start.
 - **Steering and follow-ups** — send a steer to redirect after the tool call, a follow-up to queue until settle, or an interrupt to stop the tool call at once; messaging a finished or cancelled run restarts it from its transcript in a fresh process without changing its owner.
 - **Automatic delivery** — finishing sends an invisible steering ping (name + status); full results are pulled via `check_subagents`.
@@ -50,11 +50,12 @@ spawn_agent({
 })
 ```
 
-Use `check_subagents` to check progress, narrow to specific children, or wait for results:
+Use `wait_subagents` (non-root only) to wait, `check_subagents` to read bodies:
 
 ```text
-check_subagents({ wait: true, timeoutMs: 120000 })
-check_subagents({ targets: ["auth-reviewer", "test-runner"], wait: true, mode: "any" })
+wait_subagents({ timeoutMs: 120000 })
+wait_subagents({ targets: ["auth-reviewer", "test-runner"], mode: "any" })
+check_subagents({ targets: ["auth-reviewer"] })
 ```
 
 Use `send_to_subagent` to steer running work or continue a finished or cancelled run. Use `cancel_subagent` to abort a run's current turn. Targets are tree paths — `/team/worker` absolute from root, `me/child`, `../sibling`, `../../grandparent` — or a full run ID, a unique run-ID prefix (including the eight characters shown in tool output), a session ID, or an exact name. Exact matches take precedence over prefixes; ambiguous targets are rejected with full run IDs for disambiguation.
@@ -96,14 +97,25 @@ Thinking level follows the same precedence and is clamped to the selected child 
 
 ### `check_subagents`
 
-Inspect descendants and collect newly finished results without repeating results already delivered. Each ancestor sees a descendant execution once, without claiming the direct parent's result. `targets` narrows the check to a path-addressed subset anywhere in the tree (siblings and ancestors render read-only); only direct children are claimed:
+Inspect descendants without waiting and collect newly finished direct-child bodies. Each ancestor sees a descendant execution once, without claiming the direct parent's result. `targets` narrows the check to a path-addressed subset anywhere in the tree (siblings and ancestors render read-only); only direct children are claimed:
 
 ```text
-check_subagents({ wait: true, timeoutMs: 120000 })
-check_subagents({ targets: ["/team/worker", "../sibling"], wait: true, mode: "any" })
+check_subagents()
+check_subagents({ targets: ["/team/worker", "../sibling"] })
 ```
 
-Each target is a tree path, exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected before waiting. `wait: true` blocks until the selected runs finish: `mode: "all"` (default) waits for every one, `mode: "any"` returns on the first. `timeoutMs` defaults to 30 seconds, is capped at 300 seconds, and is only a maximum; omitted `targets` watches every descendant. Uncollected terminal rows hide once terminal over `hideUncollectedAfterMinutes` (default 10, display only: records and audits stay, and explicit `targets` bypass the hiding).
+Each target is a tree path, exact name, run id, unique run-id prefix, or session id; unknown or ambiguous targets are rejected. Uncollected terminal rows hide once terminal over `hideUncollectedAfterMinutes` (default 10, display only: records and audits stay, and explicit `targets` bypass the hiding). Legacy `wait/mode/timeoutMs` are rejected — use `wait_subagents`.
+
+### `wait_subagents`
+
+Block until subagents finish without claiming results. Non-root sessions only (root hides it and checks without waiting). Returns short status lines only, never bodies — call `check_subagents` afterwards:
+
+```text
+wait_subagents({ timeoutMs: 120000 })
+wait_subagents({ targets: ["/team/worker", "../sibling"], mode: "any" })
+```
+
+`mode: "all"` (default) waits for every target, `mode: "any"` returns at the first newly finished (unclaimed) target. `timeoutMs` defaults to 30 seconds, capped at 300 seconds, maximum only; omitted `targets` watches every descendant.
 
 ### `send_to_subagent`
 
@@ -198,7 +210,7 @@ Source files live in `extensions/subagents`, organized by responsibility:
 - `config.ts` — settings validation and precedence
 - `registry.ts` — atomic run records, tree-path resolution, pending-message and audit sidecars
 - `mesh.ts` — one Unix socket per live session: tree-wide steer/followUp delivery, settle notices, presence waits
-- `wait.ts` — event-driven wait over resolved runs (`check_subagents` wait:true)
+- `wait.ts` — event-driven wait over resolved runs (`wait_subagents`)
 - `spawn-agent.ts` — RPC process control, concurrency, cancellation, depth enforcement, mesh sending
 - `self-report.ts` — orphan completion: finalize own record at settle, wake the settled parent
 - `mesh.test.cjs` / `paths.test.cjs` / `self-report.test.cjs` — socket, path-resolution, and self-report suites

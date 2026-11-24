@@ -306,19 +306,29 @@ function validateToolName(name: string): void {
 	if (/\p{Cc}/u.test(name)) throw new Error(`Subagent tool name must not contain control characters: ${JSON.stringify(name)}`);
 }
 
-/** Resolve the child's exact tool allowlist without granting anything its parent lacks. */
+/** Resolve the child's exact tool allowlist without granting anything its parent lacks,
+ * except wait_subagents: non-root sessions wait via wait_subagents while the root
+ * only checks, so every child with tools is granted wait even when the creating
+ * session hides it. A child with no tools at all (--no-tools) stays tool-less. */
+const WAIT_TOOL = "wait_subagents";
 export function resolveChildTools(requested: readonly string[] | undefined, parentTools: readonly string[]): string[] {
 	const effective = requested === undefined ? parentTools : requested;
 	for (const name of effective) validateToolName(name);
-	if (requested === undefined) return [...new Set(parentTools)];
+	if (requested === undefined) {
+		const inherited = [...new Set(parentTools)];
+		if (inherited.length > 0 && !inherited.includes(WAIT_TOOL)) inherited.push(WAIT_TOOL);
+		return inherited;
+	}
 	const available = new Set(parentTools);
-	const unavailable = [...new Set(requested.filter((name) => !available.has(name)))];
+	const unavailable = [...new Set(requested.filter((name) => !available.has(name) && name !== WAIT_TOOL))];
 	if (unavailable.length > 0) {
 		throw new Error(
 			`Subagent tools must be a subset of the creating session's active tools; unavailable: ${unavailable.join(", ")}`,
 		);
 	}
-	return [...new Set(requested)];
+	const granted = [...new Set(requested)];
+	if (granted.length > 0 && !granted.includes(WAIT_TOOL)) granted.push(WAIT_TOOL);
+	return granted;
 }
 
 function canonicalModel(model: ScopedModelCapability): string {
