@@ -15,6 +15,9 @@ Formatter (pick the project's own):
 
 - Spotless project: `./gradlew spotlessCheck` (fix: `spotlessApply`). Wraps `ktlint` in one observed project.
 - ktlint project: `./gradlew ktlintCheck` (fix: `ktlintFormat`).
+- Ktlint traps that cost a build: one-class files must match the class name;
+  `@Composable` functions still need lowercase names; `MutableInteractionSource`
+  must be `remember`ed. See [Compose UI](compose-ui.md#ktlint-traps).
 
 Variants (pick the project's own):
 
@@ -117,7 +120,9 @@ step, so the failing step names itself:
   repeatedly. Direct `pm install` returned Success in seconds. The wrapper
   hung, not the link.
 - A locked phone cannot unlock over `adb`. This is a hard boundary.
-  Plan UI checks for unlocked windows. Screen stay-on: `settings put
+  Plan UI checks for unlocked windows. An install can stall behind the
+  keyguard too; wake it (`input keyevent 224`) or ask for unlock before the
+  install step. Screen stay-on: `settings put
   system screen_off_timeout` is ignored by some skins; use
   `svc power stayon true` while USB-plugged, revert with `false` after.
 
@@ -132,6 +137,9 @@ Check that the install landed:
 - Check that the device runs it. Run
   `dumpsys package <pkg> | grep lastUpdateTime`.
 - `versionCode` should rise per installed build (strategy-dependent — see [env setup](env-setup.md)), so `dumpsys` tells which build is live.
+- A reinstall restarts the process. In-memory-only state (last-seen app,
+  cached flags) resets; persisted DataStore survives. Do not treat a changed
+  label as a regression until the app has seen the event again.
 
 ## 3. Check Without Touching the Phone
 
@@ -145,6 +153,7 @@ adb shell input keyevent 3   # home
 adb logcat -d | grep <TAG>
 adb shell uiautomator dump /dev/stdout | grep -oE 'package="[^"]+"'
 adb exec-out screencap -p > shot.png
+adb shell cmd statusbar expand-notifications   # then screencap; collapse after
 ```
 
 Probe discipline. A negative probe proves nothing until its channel is

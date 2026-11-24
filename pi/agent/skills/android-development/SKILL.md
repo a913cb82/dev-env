@@ -1,13 +1,13 @@
 ---
 name: android-development
-description: Personal-phone Android dev — build, install, debug, and test my own apps on my phone from WSL, without Android Studio. Covers toolchain setup, the adb bridge, the PC-first dev loop, OEM-ROM gotchas, optional native-engine and device-probe specializations. Use when the task touches an Android build, adb, or my real device.
+description: Personal-phone Android dev — build, install, debug, and test my own apps on my phone from WSL, without Android Studio. Covers toolchain setup, the adb bridge, the PC-first dev loop, Compose UI and gesture checks, status notifications, OEM-ROM gotchas, optional native-engine and device-probe specializations. Use when the task touches an Android build, adb, my real device, Compose screens, or notifications.
 ---
 
 # Android Development
 
 ## When To Use
 
-Use this skill when the task touches an Android build. Use this skill when the task touches `adb`. Use this skill when the task touches a real device. Use this skill when device behavior differs from the code logic.
+Use this skill when the task touches an Android build. Use this skill when the task touches `adb`. Use this skill when the task touches a real device. Use this skill when device behavior differs from the code logic. Use this skill when the task touches Compose screens or a status notification.
 
 Scope is personal stuff for my phone, not generic Android / Play-store dev.
 
@@ -51,6 +51,8 @@ Rules for the loop:
 - When a test fails, check the fixture's own assumptions before the production code.
 - Change one causal variable per build. Batch only independent changes. A build that changes three things answers nothing about any of them.
 - If the UI uses stacked Compose gesture detectors, see [compose gestures](references/compose-gestures.md) before debugging gesture feel as logic. Detectors fail silently (restart amputation, eaten downs, held taps).
+- For Compose screens, back handling, and progress bars, see [Compose UI](references/compose-ui.md).
+- For a persistent status notification with a live countdown, see [notifications](references/notifications.md).
 - Check that the APK holds the change before install. Use `unzip -l` for assets. Use `unzip -p` plus `strings` for code. aapt2 transforms some assets.
 - Only if the app does background work: never judge a feature before the power exemptions hold (FGS plus battery unrestricted plus autostart). The OS starves the rest silently.
 - Never `force-stop` a dev app casually. It drops state and (especially for accessibility apps) bindings that reinstalls do not restore. Never `uninstall` casually. Fresh installs need a manual Allow tap plus fresh permission grants.
@@ -90,6 +92,8 @@ Test in this order, cheapest first:
 - See [dev loop](references/dev-loop.md) for the iteration loop, check commands, and budgets.
 - See [HyperOS gotchas](references/hyperos-gotchas.md) for the Xiaomi-only gotcha catalog.
 - See [compose gestures](references/compose-gestures.md) for pointer-input rules: restarts, consumption, tap latency, finger tracking.
+- See [Compose UI](references/compose-ui.md) for back/IME, smooth progress, one-click toggles, theme, and ktlint traps.
+- See [notifications](references/notifications.md) for status channels, live countdowns, and shade checks.
 - See [native engine](references/native-engine.md) for vendoring, starting, and patching native binaries.
 - See [performance](references/performance.md) for measurement method and tuning order.
 - See [device probe](references/device-probe.md) for probe scripts, FIFO harnesses, and UI hygiene.
